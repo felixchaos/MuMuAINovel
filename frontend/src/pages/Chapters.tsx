@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge, Tag, Card, InputNumber, Alert, Radio, Descriptions, Collapse, Popconfirm, Pagination, theme } from 'antd';
-import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined } from '@ant-design/icons';
+import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
@@ -46,6 +46,14 @@ const setCachedWordCount = (value: number): void => {
   }
 };
 
+const isAntdValidationError = (error: unknown): boolean => {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    Array.isArray((error as { errorFields?: unknown }).errorFields)
+  );
+};
+
 export default function Chapters() {
   const { currentProject, chapters, outlines, setCurrentChapter, setCurrentProject } = useStore();
   const [modal, contextHolder] = Modal.useModal();
@@ -75,8 +83,18 @@ export default function Chapters() {
 
   // 列表查询与分页状态
   const [chapterSearchKeyword, setChapterSearchKeyword] = useState('');
+  const [chapterStatusFilter, setChapterStatusFilter] = useState('all');
+  const [chapterAnalysisFilter, setChapterAnalysisFilter] = useState('all');
+  const [chapterContentFilter, setChapterContentFilter] = useState('all');
+  const [chapterOutlineFilter, setChapterOutlineFilter] = useState('all');
   const [chapterPage, setChapterPage] = useState(1);
   const [chapterPageSize, setChapterPageSize] = useState(20);
+
+  // 导出状态
+  const [exportModalVisible, setExportModalVisible] = useState(false);
+  const [exportRangeType, setExportRangeType] = useState<'all' | 'custom'>('all');
+  const [exporting, setExporting] = useState(false);
+  const [exportForm] = Form.useForm();
 
   // 阅读器状态
   const [readerVisible, setReaderVisible] = useState(false);
@@ -93,6 +111,7 @@ export default function Chapters() {
   const [selectionStartPosition, setSelectionStartPosition] = useState(0);
   const [selectionEndPosition, setSelectionEndPosition] = useState(0);
   const [partialRegenerateModalVisible, setPartialRegenerateModalVisible] = useState(false);
+  const [partialRegenerateTitle, setPartialRegenerateTitle] = useState('AI局部重写');
 
   // 单章节生成进度状态
   const [singleChapterProgress, setSingleChapterProgress] = useState(0);
@@ -132,28 +151,12 @@ export default function Chapters() {
       return;
     }
 
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
-
-    const selectedText = selection.toString().trim();
-    
-    // 至少选中10个字符才显示工具栏
-    if (selectedText.length < 10) {
-      setPartialRegenerateToolbarVisible(false);
-      return;
-    }
-
-    // 检查选中是否在 TextArea 内
     const textArea = contentTextAreaRef.current?.resizableTextArea?.textArea;
     if (!textArea) {
       setPartialRegenerateToolbarVisible(false);
       return;
     }
-    
-    // 检查选中是否在 textarea 内（需要特殊处理，因为 textarea 的选中不会创建 range）
+
     if (document.activeElement !== textArea) {
       setPartialRegenerateToolbarVisible(false);
       return;
@@ -617,19 +620,64 @@ export default function Chapters() {
     return { sortedChapters: sorted };
   }, [chapters]);
 
+  const chapterOutlineOptions = useMemo(() => {
+    const optionMap = new Map<string, string>();
+    sortedChapters.forEach((chapter) => {
+      const key = chapter.outline_id || 'no_outline';
+      const label = chapter.outline_title || '未关联大纲';
+      if (!optionMap.has(key)) {
+        optionMap.set(key, label);
+      }
+    });
+
+    return Array.from(optionMap.entries()).map(([value, label]) => ({ value, label }));
+  }, [sortedChapters]);
+
   // 章节查询过滤（前端过滤，减少渲染压力）
   const filteredSortedChapters = useMemo(() => {
     const keyword = chapterSearchKeyword.trim().toLowerCase();
-    if (!keyword) return sortedChapters;
 
     return sortedChapters.filter((chapter) => {
-      return (
+      const matchesKeyword = !keyword || (
         String(chapter.chapter_number).includes(keyword) ||
         chapter.title.toLowerCase().includes(keyword) ||
         (chapter.outline_title || '').toLowerCase().includes(keyword)
       );
+
+      const matchesStatus = chapterStatusFilter === 'all' || chapter.status === chapterStatusFilter;
+
+      const task = analysisTasksMap[chapter.id];
+      const isAnalyzing = task?.status === 'pending' || task?.status === 'running';
+      const isAnalyzed = task?.status === 'completed';
+      const isAnalysisFailed = task?.status === 'failed';
+      const isUnanalyzed = !task || !task.has_task || task.status === 'none';
+      const matchesAnalysis =
+        chapterAnalysisFilter === 'all' ||
+        (chapterAnalysisFilter === 'completed' && isAnalyzed) ||
+        (chapterAnalysisFilter === 'unanalyzed' && isUnanalyzed) ||
+        (chapterAnalysisFilter === 'running' && isAnalyzing) ||
+        (chapterAnalysisFilter === 'failed' && isAnalysisFailed);
+
+      const hasContent = Boolean(chapter.content && chapter.content.trim() !== '');
+      const matchesContent =
+        chapterContentFilter === 'all' ||
+        (chapterContentFilter === 'has_content' && hasContent) ||
+        (chapterContentFilter === 'empty' && !hasContent);
+
+      const outlineKey = chapter.outline_id || 'no_outline';
+      const matchesOutline = chapterOutlineFilter === 'all' || outlineKey === chapterOutlineFilter;
+
+      return matchesKeyword && matchesStatus && matchesAnalysis && matchesContent && matchesOutline;
     });
-  }, [sortedChapters, chapterSearchKeyword]);
+  }, [
+    sortedChapters,
+    chapterSearchKeyword,
+    chapterStatusFilter,
+    chapterAnalysisFilter,
+    chapterContentFilter,
+    chapterOutlineFilter,
+    analysisTasksMap,
+  ]);
 
   // 分页后的扁平章节
   const pagedSortedChapters = useMemo(() => {
@@ -665,7 +713,15 @@ export default function Chapters() {
   // 搜索词或分页大小变化时重置到第一页
   useEffect(() => {
     setChapterPage(1);
-  }, [chapterSearchKeyword, chapterPageSize, currentProject?.outline_mode]);
+  }, [
+    chapterSearchKeyword,
+    chapterStatusFilter,
+    chapterAnalysisFilter,
+    chapterContentFilter,
+    chapterOutlineFilter,
+    chapterPageSize,
+    currentProject?.outline_mode,
+  ]);
 
   // 数据变化导致页码越界时自动纠正
   useEffect(() => {
@@ -727,6 +783,13 @@ export default function Chapters() {
       return task.status !== 'completed' && task.status !== 'pending' && task.status !== 'running';
     }).length;
   }, [sortedChapters, analysisTasksMap]);
+
+  const hasActiveChapterFilters =
+    chapterSearchKeyword.trim() !== '' ||
+    chapterStatusFilter !== 'all' ||
+    chapterAnalysisFilter !== 'all' ||
+    chapterContentFilter !== 'all' ||
+    chapterOutlineFilter !== 'all';
 
   if (!currentProject) return null;
 
@@ -1041,21 +1104,49 @@ export default function Chapters() {
       return;
     }
 
-    modal.confirm({
-      title: '导出项目章节',
-      content: `确定要将《${currentProject.title}》的所有章节导出为TXT文件吗？`,
-      centered: true,
-      okText: '确定导出',
-      cancelText: '取消',
-      onOk: () => {
-        try {
-          projectApi.exportProject(currentProject.id);
-          message.success('开始下载导出文件');
-        } catch {
-          message.error('导出失败，请重试');
-        }
-      },
+    const firstChapter = sortedChapters[0]?.chapter_number || 1;
+    const lastChapter = sortedChapters[sortedChapters.length - 1]?.chapter_number || firstChapter;
+    setExportRangeType('all');
+    exportForm.setFieldsValue({
+      rangeType: 'all',
+      start_chapter: firstChapter,
+      end_chapter: lastChapter,
+      exportMode: 'merged',
     });
+    setExportModalVisible(true);
+  };
+
+  const handleExportSubmit = async () => {
+    try {
+      const values = await exportForm.validateFields();
+      const startChapter = Number(values.start_chapter);
+      const endChapter = Number(values.end_chapter);
+
+      if (values.rangeType === 'custom' && startChapter > endChapter) {
+        message.warning('起始章节不能大于结束章节');
+        return;
+      }
+
+      setExporting(true);
+      await projectApi.exportProject(currentProject.id, {
+        start_chapter: values.rangeType === 'custom' ? startChapter : undefined,
+        end_chapter: values.rangeType === 'custom' ? endChapter : undefined,
+        split: values.exportMode === 'split',
+      });
+      setExportModalVisible(false);
+      message.success(values.exportMode === 'split' ? '开始下载分章ZIP' : '开始下载TXT文件');
+    } catch (error) {
+      if (isAntdValidationError(error)) {
+        return;
+      }
+      if (error instanceof Error && error.message) {
+        message.error(`导出失败：${error.message}`);
+      } else if (error) {
+        message.error('导出失败，请重试');
+      }
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleShowAnalysis = (chapterId: string) => {
@@ -1898,6 +1989,46 @@ export default function Chapters() {
   // 打开局部重写弹窗
   const handleOpenPartialRegenerate = () => {
     setPartialRegenerateToolbarVisible(false);
+    setPartialRegenerateTitle('AI精准重写选中段落');
+    setPartialRegenerateModalVisible(true);
+  };
+
+  const handleOpenSelectedTextRegenerate = () => {
+    const textArea = contentTextAreaRef.current?.resizableTextArea?.textArea;
+    if (!textArea) {
+      message.warning('请先打开章节内容编辑器');
+      return;
+    }
+
+    const start = textArea.selectionStart;
+    const end = textArea.selectionEnd;
+    const selectedText = textArea.value.substring(start, end);
+
+    if (start === end || selectedText.trim().length < 10) {
+      message.warning('请先在章节内容中选中至少10个字');
+      return;
+    }
+
+    setSelectedTextForRegenerate(selectedText);
+    setSelectionStartPosition(start);
+    setSelectionEndPosition(end);
+    setPartialRegenerateToolbarVisible(false);
+    setPartialRegenerateTitle('AI精准重写选中段落');
+    setPartialRegenerateModalVisible(true);
+  };
+
+  const handleOpenFullChapterRegenerate = () => {
+    const content = String(editorForm.getFieldValue('content') || '');
+    if (!content.trim()) {
+      message.warning('章节内容为空，无法重写');
+      return;
+    }
+
+    setSelectedTextForRegenerate(content);
+    setSelectionStartPosition(0);
+    setSelectionEndPosition(content.length);
+    setPartialRegenerateToolbarVisible(false);
+    setPartialRegenerateTitle('AI提示词重写整章');
     setPartialRegenerateModalVisible(true);
   };
 
@@ -1931,9 +2062,9 @@ export default function Chapters() {
         borderBottom: `1px solid ${token.colorBorderSecondary}`,
         display: 'flex',
         flexDirection: isMobile ? 'column' : 'row',
-        gap: isMobile ? 12 : 0,
+        gap: isMobile ? 12 : 16,
         justifyContent: 'space-between',
-        alignItems: isMobile ? 'stretch' : 'center'
+        alignItems: isMobile ? 'stretch' : 'flex-start'
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <h2 style={{ margin: 0, fontSize: isMobile ? 18 : 24 }}>
@@ -1949,60 +2080,141 @@ export default function Chapters() {
               : '细化模式：章节可在大纲页面展开'}
           </Tag>
         </div>
-        <Space direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: isMobile ? '100%' : 'auto' }}>
-          <Input.Search
-            allowClear
-            placeholder="搜索章节（序号/标题/大纲）"
-            value={chapterSearchKeyword}
-            onChange={(e) => setChapterSearchKeyword(e.target.value)}
-            style={{ width: isMobile ? '100%' : 280 }}
-          />
-          {currentProject.outline_mode === 'one-to-many' && (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: isMobile ? 'stretch' : 'flex-end',
+          gap: 8,
+          width: isMobile ? '100%' : 'auto',
+          minWidth: isMobile ? 0 : 520,
+        }}>
+          <Space
+            wrap
+            size={8}
+            style={{
+              width: '100%',
+              justifyContent: isMobile ? 'flex-start' : 'flex-end',
+              alignItems: 'center',
+            }}
+          >
+            <Input
+              allowClear
+              prefix={<SearchOutlined />}
+              placeholder="搜索章节（序号/标题/大纲）"
+              value={chapterSearchKeyword}
+              onChange={(e) => setChapterSearchKeyword(e.target.value)}
+              style={{ width: isMobile ? '100%' : 300 }}
+            />
+            {currentProject.outline_mode === 'one-to-many' && (
+              <Button
+                icon={<PlusOutlined />}
+                onClick={showManualCreateChapterModal}
+                block={isMobile}
+              >
+                手动创建
+              </Button>
+            )}
             <Button
-              icon={<PlusOutlined />}
-              onClick={showManualCreateChapterModal}
+              type="primary"
+              icon={<ThunderboltOutlined />}
+              onClick={handleBatchAnalyzeUnanalyzed}
+              loading={batchAnalyzingUnanalyzed}
+              disabled={chapters.length === 0 || batchAnalyzableChapterCount === 0}
               block={isMobile}
-              size={isMobile ? 'middle' : 'middle'}
+              style={{ background: token.colorWarning, borderColor: token.colorWarning }}
+              title={batchAnalyzableChapterCount === 0 ? '暂无可一键分析章节' : `可一键分析 ${batchAnalyzableChapterCount} 章`}
             >
-              手动创建
+              一键分析{batchAnalyzableChapterCount > 0 ? ` (${batchAnalyzableChapterCount})` : ''}
             </Button>
-          )}
-          <Button
-            type="primary"
-            icon={<ThunderboltOutlined />}
-            onClick={handleBatchAnalyzeUnanalyzed}
-            loading={batchAnalyzingUnanalyzed}
-            disabled={chapters.length === 0 || batchAnalyzableChapterCount === 0}
-            block={isMobile}
-            size={isMobile ? 'middle' : 'middle'}
-            style={{ background: token.colorWarning, borderColor: token.colorWarning }}
-            title={batchAnalyzableChapterCount === 0 ? '暂无可一键分析章节' : `可一键分析 ${batchAnalyzableChapterCount} 章`}
+            <Button
+              type="primary"
+              icon={<RocketOutlined />}
+              onClick={handleOpenBatchGenerate}
+              disabled={chapters.length === 0 || batchGenerating}
+              loading={batchGenerating}
+              block={isMobile}
+              style={batchGenerating ? {} : { background: token.colorInfo, borderColor: token.colorInfo }}
+            >
+              {batchGenerating ? '生成中...' : '批量生成'}
+            </Button>
+            <Button
+              type="default"
+              icon={<DownloadOutlined />}
+              onClick={handleExport}
+              disabled={chapters.length === 0}
+              block={isMobile}
+            >
+              导出章节
+            </Button>
+          </Space>
+          <Space
+            wrap
+            size={8}
+            style={{
+              width: '100%',
+              justifyContent: isMobile ? 'flex-start' : 'flex-end',
+              alignItems: 'center',
+            }}
           >
-            一键分析{batchAnalyzableChapterCount > 0 ? ` (${batchAnalyzableChapterCount})` : ''}
-          </Button>
-          <Button
-            type="primary"
-            icon={<RocketOutlined />}
-            onClick={handleOpenBatchGenerate}
-            disabled={chapters.length === 0 || batchGenerating}
-            loading={batchGenerating}
-            block={isMobile}
-            size={isMobile ? 'middle' : 'middle'}
-            style={batchGenerating ? {} : { background: token.colorInfo, borderColor: token.colorInfo }}
-          >
-            {batchGenerating ? '生成中...' : '批量生成'}
-          </Button>
-          <Button
-            type="default"
-            icon={<DownloadOutlined />}
-            onClick={handleExport}
-            disabled={chapters.length === 0}
-            block={isMobile}
-            size={isMobile ? 'middle' : 'middle'}
-          >
-            导出为TXT
-          </Button>
-        </Space>
+            <Select
+              value={chapterStatusFilter}
+              onChange={setChapterStatusFilter}
+              style={{ width: isMobile ? 'calc(50% - 4px)' : 116 }}
+              suffixIcon={<FilterOutlined />}
+              options={[
+                { value: 'all', label: '全部状态' },
+                { value: 'draft', label: '草稿' },
+                { value: 'pending', label: '待处理' },
+                { value: 'writing', label: '创作中' },
+                { value: 'completed', label: '已完成' },
+              ]}
+            />
+            <Select
+              value={chapterAnalysisFilter}
+              onChange={setChapterAnalysisFilter}
+              style={{ width: isMobile ? 'calc(50% - 4px)' : 116 }}
+              options={[
+                { value: 'all', label: '全部分析' },
+                { value: 'completed', label: '已分析' },
+                { value: 'unanalyzed', label: '未分析' },
+                { value: 'running', label: '分析中' },
+                { value: 'failed', label: '分析失败' },
+              ]}
+            />
+            <Select
+              value={chapterContentFilter}
+              onChange={setChapterContentFilter}
+              style={{ width: isMobile ? 'calc(50% - 4px)' : 116 }}
+              options={[
+                { value: 'all', label: '全部正文' },
+                { value: 'has_content', label: '有正文' },
+                { value: 'empty', label: '空章节' },
+              ]}
+            />
+            <Select
+              value={chapterOutlineFilter}
+              onChange={setChapterOutlineFilter}
+              style={{ width: isMobile ? 'calc(50% - 4px)' : 168 }}
+              options={[
+                { value: 'all', label: '全部大纲' },
+                ...chapterOutlineOptions,
+              ]}
+            />
+            <Button
+              icon={<ClearOutlined />}
+              disabled={!hasActiveChapterFilters}
+              onClick={() => {
+                setChapterSearchKeyword('');
+                setChapterStatusFilter('all');
+                setChapterAnalysisFilter('all');
+                setChapterContentFilter('all');
+                setChapterOutlineFilter('all');
+              }}
+            >
+              重置
+            </Button>
+          </Space>
+        </div>
       </div>
 
 
@@ -2436,6 +2648,66 @@ export default function Chapters() {
       )}
 
       <Modal
+        title="导出项目章节"
+        open={exportModalVisible}
+        onCancel={() => setExportModalVisible(false)}
+        onOk={handleExportSubmit}
+        confirmLoading={exporting}
+        okText="开始导出"
+        cancelText="取消"
+        centered
+        width={isMobile ? 'calc(100vw - 32px)' : 560}
+      >
+        <Form
+          form={exportForm}
+          layout="vertical"
+          initialValues={{ rangeType: 'all', exportMode: 'merged' }}
+        >
+          <Form.Item label="导出范围" name="rangeType">
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
+              onChange={(event) => setExportRangeType(event.target.value)}
+              options={[
+                { value: 'all', label: '全部章节' },
+                { value: 'custom', label: '指定范围' },
+              ]}
+            />
+          </Form.Item>
+
+          {exportRangeType === 'custom' && (
+            <Space size={12} style={{ width: '100%' }} align="start">
+              <Form.Item
+                label="起始章节"
+                name="start_chapter"
+                rules={[{ required: true, message: '请输入起始章节' }]}
+              >
+                <InputNumber min={1} precision={0} style={{ width: 160 }} addonBefore="第" addonAfter="章" />
+              </Form.Item>
+              <Form.Item
+                label="结束章节"
+                name="end_chapter"
+                rules={[{ required: true, message: '请输入结束章节' }]}
+              >
+                <InputNumber min={1} precision={0} style={{ width: 160 }} addonBefore="第" addonAfter="章" />
+              </Form.Item>
+            </Space>
+          )}
+
+          <Form.Item label="导出方式" name="exportMode">
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
+              options={[
+                { value: 'merged', label: '合并TXT' },
+                { value: 'split', label: '分章ZIP' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
         title={editingId ? '编辑章节信息' : '添加章节'}
         open={isModalOpen}
         onCancel={() => setIsModalOpen(false)}
@@ -2683,13 +2955,36 @@ export default function Chapters() {
             </Form.Item>
           </div>
 
-          <Form.Item label="章节内容" name="content">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <span style={{ color: token.colorTextSecondary }}>章节内容</span>
+            <Space wrap size={8}>
+              <Button
+                size="small"
+                icon={<ThunderboltOutlined />}
+                onClick={handleOpenFullChapterRegenerate}
+                disabled={isGenerating}
+              >
+                提示词重写整章
+              </Button>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={handleOpenSelectedTextRegenerate}
+                disabled={isGenerating}
+              >
+                精准重写选中段落
+              </Button>
+            </Space>
+          </div>
+
+          <Form.Item name="content">
             <TextArea
               ref={contentTextAreaRef}
               rows={isMobile ? 12 : 20}
               placeholder="开始写作..."
               style={{ fontFamily: 'monospace', fontSize: isMobile ? 12 : 14 }}
               disabled={isGenerating}
+              onSelect={handleTextSelection}
             />
           </Form.Item>
 
@@ -3016,6 +3311,7 @@ export default function Chapters() {
         <PartialRegenerateModal
           visible={partialRegenerateModalVisible}
           chapterId={editingId}
+          title={partialRegenerateTitle}
           selectedText={selectedTextForRegenerate}
           startPosition={selectionStartPosition}
           endPosition={selectionEndPosition}

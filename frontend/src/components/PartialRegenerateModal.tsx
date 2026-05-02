@@ -9,6 +9,7 @@ const { Text, Paragraph } = Typography;
 interface PartialRegenerateModalProps {
   visible: boolean;
   chapterId: string;
+  title?: string;
   selectedText: string;
   startPosition: number;
   endPosition: number;
@@ -26,6 +27,7 @@ type LengthMode = 'similar' | 'expand' | 'condense' | 'custom';
 export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   visible,
   chapterId,
+  title = 'AI局部重写',
   selectedText,
   startPosition,
   endPosition,
@@ -42,6 +44,8 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   const [hasGenerated, setHasGenerated] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
+  const [appliedStartPosition, setAppliedStartPosition] = useState(startPosition);
+  const [appliedEndPosition, setAppliedEndPosition] = useState(endPosition);
   const abortControllerRef = useRef<AbortController | null>(null);
   const generatedTextRef = useRef<HTMLDivElement>(null);
 
@@ -56,8 +60,10 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       setHasGenerated(false);
       setProgress(0);
       setProgressMessage('');
+      setAppliedStartPosition(startPosition);
+      setAppliedEndPosition(endPosition);
     }
-  }, [visible, selectedText.length]);
+  }, [visible, selectedText, startPosition, endPosition]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -74,11 +80,16 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
 
     setIsGenerating(true);
     setGeneratedText('');
+    setHasGenerated(false);
     setProgress(0);
     setProgressMessage('准备生成...');
 
     // 创建 AbortController 用于取消请求
+    abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
+    let receivedText = false;
+    let handledError = false;
+    let accumulatedText = '';
 
     try {
       await chapterApi.partialRegenerateStream(
@@ -99,29 +110,59 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
             setProgressMessage(msg);
           },
           onChunk: (content) => {
-            setGeneratedText(prev => prev + content);
+            accumulatedText += content;
+            if (accumulatedText.trim()) {
+              receivedText = true;
+            }
+            setGeneratedText(accumulatedText);
           },
-          onResult: () => {
+          onResult: (data) => {
+            const finalText = typeof data?.new_text === 'string' ? data.new_text : '';
+            if (finalText.trim()) {
+              receivedText = true;
+              accumulatedText = finalText;
+              setGeneratedText(finalText);
+              setAppliedStartPosition(
+                typeof data.start_position === 'number' ? data.start_position : startPosition
+              );
+              setAppliedEndPosition(
+                typeof data.end_position === 'number' ? data.end_position : endPosition
+              );
+            }
             setProgress(100);
             setProgressMessage('生成完成');
-            setHasGenerated(true);
+            setHasGenerated(Boolean(finalText.trim()) || receivedText);
           },
           onError: (error) => {
+            handledError = true;
             console.error('SSE错误:', error);
             message.error(error || '生成过程中发生错误');
+            setHasGenerated(false);
+            setIsGenerating(false);
+            if (!accumulatedText.trim()) {
+              setGeneratedText('');
+            }
           },
           onComplete: () => {
             setIsGenerating(false);
-            setHasGenerated(true);
+            const hasUsableText = receivedText && accumulatedText.trim().length > 0;
+            setHasGenerated(hasUsableText);
+            if (!hasUsableText) {
+              message.warning('AI未返回可用重写内容，请重新生成');
+            }
           },
+          signal: abortControllerRef.current.signal,
         }
       );
     } catch (error) {
       console.error('生成失败:', error);
-      if ((error as Error).name !== 'AbortError') {
-        message.error('生成失败，请重试');
+      if ((error as Error).name !== 'AbortError' && !handledError) {
+        message.error((error as Error).message || '生成失败，请重试');
       }
       setIsGenerating(false);
+      setHasGenerated(false);
+    } finally {
+      abortControllerRef.current = null;
     }
   };
 
@@ -140,16 +181,17 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       return;
     }
 
-    try {
-      // 调用后端应用更改
-      await chapterApi.applyPartialRegenerate(chapterId, {
-        new_text: generatedText,
-        start_position: startPosition,
-        end_position: endPosition,
-      });
+      try {
+        // 调用后端应用更改
+        await chapterApi.applyPartialRegenerate(chapterId, {
+          new_text: generatedText,
+          start_position: appliedStartPosition,
+          end_position: appliedEndPosition,
+          original_text: selectedText,
+        });
 
       message.success('已应用重写内容');
-      onApply(generatedText, startPosition, endPosition);
+      onApply(generatedText, appliedStartPosition, appliedEndPosition);
       onClose();
     } catch (error) {
       console.error('应用失败:', error);
@@ -180,7 +222,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       title={
         <Space>
           <EditOutlined style={{ color: token.colorPrimary }} />
-          <span>AI局部重写</span>
+          <span>{title}</span>
         </Space>
       }
       open={visible}
@@ -192,8 +234,8 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       keyboard={!isGenerating}
       footer={
         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-          <Button onClick={handleCancel} disabled={isGenerating}>
-            取消
+          <Button onClick={handleCancel}>
+            {isGenerating ? '停止生成' : '取消'}
           </Button>
           {!hasGenerated ? (
             <Button

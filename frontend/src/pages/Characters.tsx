@@ -1,15 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
-import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined, HighlightOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
+import { eventBus } from '../store/eventBus';
 import { useCharacterSync } from '../store/hooks';
 import { charactersPageGridConfig } from '../components/CardStyles';
 import { CharacterCard } from '../components/CharacterCard';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 import type { Character, ApiError } from '../types';
-import { characterApi } from '../services/api';
+import { characterApi, polishApi } from '../services/api';
 import { SSEPostClient } from '../utils/sseClient';
 import api from '../services/api';
+import { pollTaskUntilComplete } from '../services/backgroundTaskService';
+import { extractJsonObject } from '../utils/jsonExtract';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -93,6 +96,128 @@ interface CharacterUpdateData {
   color?: string;
 }
 
+type CharacterSettingsSource = Partial<Character> & Partial<CharacterFormValues>;
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseLabeledSections(text: string, labelMap: Record<string, string[]>): Record<string, string> {
+  const allLabels = Object.values(labelMap).flat().map(escapeRegExp).join('|');
+  const sections: Record<string, string> = {};
+
+  Object.entries(labelMap).forEach(([field, labels]) => {
+    for (const label of labels) {
+      const pattern = new RegExp(
+        `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*[：:]\\s*([\\s\\S]*?)(?=\\n\\s*(?:${allLabels})\\s*[：:]|$)`,
+        'i'
+      );
+      const match = text.match(pattern);
+      const value = match?.[1]?.trim();
+      if (value) {
+        sections[field] = value;
+        break;
+      }
+    }
+  });
+
+  return sections;
+}
+
+function getStringField(data: Record<string, unknown> | null, key: string): string | undefined {
+  const value = data?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function getCharacterOptimizeInstruction(isOrganization?: boolean) {
+  if (isOrganization) {
+    return [
+      '你是小说设定编辑，请优化组织/势力设定。',
+      '只优化表达、层次和可读性，不改变既有事实、名称、阵营、世界观和时间线。',
+      '严格只输出 JSON，不要 Markdown，不要解释。',
+      'JSON 字段：organization_purpose、motto、background。'
+    ].join('\n');
+  }
+
+  return [
+    '你是小说设定编辑，请优化角色设定。',
+    '只优化表达、层次和可读性，不改变既有事实、姓名、定位、年龄、性别、阵营、能力来源和时间线。',
+    '严格只输出 JSON，不要 Markdown，不要解释。',
+    'JSON 字段：personality、appearance、background。'
+  ].join('\n');
+}
+
+function buildCharacterOptimizeSource(character: CharacterSettingsSource) {
+  if (character.is_organization) {
+    return JSON.stringify({
+      type: 'organization',
+      name: character.name || '',
+      organization_type: character.organization_type || '',
+      organization_purpose: character.organization_purpose || '',
+      power_level: character.power_level,
+      location: character.location || '',
+      motto: character.motto || '',
+      color: character.color || '',
+      background: character.background || ''
+    }, null, 2);
+  }
+
+  return JSON.stringify({
+    type: 'character',
+    name: character.name || '',
+    role_type: character.role_type || '',
+    age: character.age || '',
+    gender: character.gender || '',
+    personality: character.personality || '',
+    appearance: character.appearance || '',
+    background: character.background || ''
+  }, null, 2);
+}
+
+function parseOptimizedCharacterSettings(polishedText: string, isOrganization?: boolean): CharacterUpdateData {
+  const json = extractJsonObject(polishedText);
+
+  if (isOrganization) {
+    const fromJson: CharacterUpdateData = {
+      organization_purpose: getStringField(json, 'organization_purpose'),
+      motto: getStringField(json, 'motto'),
+      background: getStringField(json, 'background')
+    };
+    const labeled = parseLabeledSections(polishedText, {
+      organization_purpose: ['组织目的', '宗旨目标'],
+      motto: ['格言', '口号', '格言/口号'],
+      background: ['组织背景', '背景']
+    });
+
+    return {
+      organization_purpose: fromJson.organization_purpose || labeled.organization_purpose,
+      motto: fromJson.motto || labeled.motto,
+      background: fromJson.background || labeled.background
+    };
+  }
+
+  const fromJson: CharacterUpdateData = {
+    personality: getStringField(json, 'personality'),
+    appearance: getStringField(json, 'appearance'),
+    background: getStringField(json, 'background')
+  };
+  const labeled = parseLabeledSections(polishedText, {
+    personality: ['性格特点', '性格'],
+    appearance: ['外貌描写', '外貌'],
+    background: ['角色背景', '背景']
+  });
+
+  return {
+    personality: fromJson.personality || labeled.personality,
+    appearance: fromJson.appearance || labeled.appearance,
+    background: fromJson.background || labeled.background
+  };
+}
+
+function hasOptimizedFields(data: CharacterUpdateData) {
+  return Object.values(data).some(value => typeof value === 'string' && value.trim());
+}
+
 export default function Characters() {
   const { token } = theme.useToken();
   const { currentProject, characters } = useStore();
@@ -112,7 +237,10 @@ export default function Characters() {
   const [subCareers, setSubCareers] = useState<Career[]>([]);
   const [selectedCharacters, setSelectedCharacters] = useState<string[]>([]);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isOptimizingCharacter, setIsOptimizingCharacter] = useState(false);
+  const [isOptimizingBatch, setIsOptimizingBatch] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const characterOptimizePollCancelRef = useRef<ReturnType<typeof pollTaskUntilComplete> | null>(null);
 
   const {
     refreshCharacters,
@@ -126,6 +254,13 @@ export default function Characters() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    return () => {
+      characterOptimizePollCancelRef.current?.();
+      characterOptimizePollCancelRef.current = null;
+    };
+  }, []);
   const [modal, contextHolder] = Modal.useModal();
 
   const fetchCareers = async () => {
@@ -344,6 +479,153 @@ export default function Characters() {
       console.error('更新失败:', error);
       message.error('更新失败');
     }
+  };
+
+  const optimizeCharacterSettings = async (source: CharacterSettingsSource) => {
+    const result = await polishApi.polishText({
+      original_text: buildCharacterOptimizeSource(source),
+      instruction: getCharacterOptimizeInstruction(source.is_organization),
+      temperature: 0.6,
+    });
+
+    const updateData = parseOptimizedCharacterSettings(
+      result.polished_text || '',
+      source.is_organization
+    );
+
+    if (!hasOptimizedFields(updateData)) {
+      throw new Error('AI返回格式无法识别');
+    }
+
+    return updateData;
+  };
+
+  const handleOptimizeEditingCharacter = async () => {
+    if (!editingCharacter) return;
+
+    try {
+      setIsOptimizingCharacter(true);
+      const values = editForm.getFieldsValue();
+      const updateData = await optimizeCharacterSettings({
+        ...editingCharacter,
+        ...values,
+        is_organization: editingCharacter.is_organization
+      });
+
+      editForm.setFieldsValue(updateData);
+      message.success('AI优化结果已填入表单，请检查后保存');
+    } catch (error) {
+      console.error('AI优化设定失败:', error);
+      message.error(error instanceof Error ? error.message : 'AI优化设定失败');
+    } finally {
+      setIsOptimizingCharacter(false);
+    }
+  };
+
+  const handleBatchOptimizeSelected = () => {
+    if (selectedCharacters.length === 0) {
+      message.warning('请至少选择一个角色或组织');
+      return;
+    }
+
+    const selectedItems = characters.filter(character => selectedCharacters.includes(character.id));
+    if (selectedItems.length === 0) {
+      message.warning('未找到已选择的角色或组织');
+      return;
+    }
+
+    modal.confirm({
+      title: '批量优化角色设定',
+      centered: true,
+      width: 560,
+      content: (
+        <div>
+          <p>将使用现有 AI 润色流程优化已选的 {selectedItems.length} 个角色/组织设定。</p>
+          <p style={{ color: token.colorTextSecondary, marginBottom: 0 }}>
+            会保留名称、身份、阵营、能力来源等既有事实，优化结果将直接保存到数据库。
+          </p>
+        </div>
+      ),
+      okText: '开始优化',
+      cancelText: '取消',
+      onOk: async () => {
+        const messageKey = 'batch-character-optimize';
+
+        if (!currentProject?.id) {
+          message.warning('请先选择项目');
+          return;
+        }
+
+        setIsOptimizingBatch(true);
+        characterOptimizePollCancelRef.current?.();
+        characterOptimizePollCancelRef.current = null;
+        try {
+          message.loading({
+            key: messageKey,
+            content: `正在提交 ${selectedItems.length} 个角色/组织优化任务...`,
+            duration: 0
+          });
+
+          const response = await polishApi.optimizeCharactersBackground({
+            project_id: currentProject.id,
+            character_ids: selectedItems.map(character => character.id),
+            temperature: 0.6,
+          });
+
+          message.success({
+            key: messageKey,
+            content: '角色设定优化任务已提交，可在右下角后台任务中查看或取消',
+            duration: 3
+          });
+          eventBus.emit('background-task-created');
+
+          characterOptimizePollCancelRef.current = pollTaskUntilComplete(
+            response.task_id,
+            (status) => {
+              if (status.status === 'pending' || status.status === 'running') {
+                message.loading({
+                  key: messageKey,
+                  content: status.status_message || `角色设定优化中 ${Math.round(status.progress)}%`,
+                  duration: 0
+                });
+              }
+            },
+            (status) => {
+              characterOptimizePollCancelRef.current = null;
+              void (async () => {
+                await refreshCharacters();
+                setSelectedCharacters([]);
+                message.success({
+                  key: messageKey,
+                  content: status.status_message || '角色设定优化完成',
+                  duration: 3
+                });
+                setIsOptimizingBatch(false);
+                eventBus.emit('background-task-created');
+              })();
+            },
+            (error) => {
+              characterOptimizePollCancelRef.current = null;
+              message.error({
+                key: messageKey,
+                content: error || '角色设定优化任务失败',
+                duration: 4
+              });
+              setIsOptimizingBatch(false);
+              eventBus.emit('background-task-created');
+            }
+          );
+        } catch (error) {
+          console.error('提交角色设定优化任务失败:', error);
+          message.error({
+            key: messageKey,
+            content: error instanceof Error ? error.message : '提交角色设定优化任务失败',
+            duration: 4
+          });
+          setIsOptimizingBatch(false);
+        }
+      }
+    });
   };
 
   const handleDeleteCharacterWrapper = (id: string) => {
@@ -691,13 +973,25 @@ export default function Characters() {
             导入
           </Button>
           {selectedCharacters.length > 0 && (
-            <Button
-              icon={<ExportOutlined />}
-              onClick={handleExportSelected}
-              size={isMobile ? 'small' : 'middle'}
-            >
-              批量导出 ({selectedCharacters.length})
-            </Button>
+            <>
+              <Button
+                type="dashed"
+                icon={<HighlightOutlined />}
+                onClick={handleBatchOptimizeSelected}
+                loading={isOptimizingBatch}
+                disabled={isOptimizingCharacter}
+                size={isMobile ? 'small' : 'middle'}
+              >
+                批量优化设定 ({selectedCharacters.length})
+              </Button>
+              <Button
+                icon={<ExportOutlined />}
+                onClick={handleExportSelected}
+                size={isMobile ? 'small' : 'middle'}
+              >
+                批量导出 ({selectedCharacters.length})
+              </Button>
+            </>
           )}
         </Space>
       </div>
@@ -936,18 +1230,28 @@ export default function Characters() {
           setEditingCharacter(null);
         }}
         footer={
-          <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-            <Button onClick={() => {
-              setIsEditModalOpen(false);
-              editForm.resetFields();
-              setEditingCharacter(null);
-            }}>
-              取消
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, width: '100%', flexWrap: 'wrap' }}>
+            <Button
+              icon={<HighlightOutlined />}
+              onClick={handleOptimizeEditingCharacter}
+              loading={isOptimizingCharacter}
+              disabled={!editingCharacter}
+            >
+              {editingCharacter?.is_organization ? 'AI优化组织设定' : 'AI优化角色设定'}
             </Button>
-            <Button type="primary" onClick={() => editForm.submit()}>
-              保存
-            </Button>
-          </Space>
+            <Space style={{ marginLeft: 'auto' }}>
+              <Button onClick={() => {
+                setIsEditModalOpen(false);
+                editForm.resetFields();
+                setEditingCharacter(null);
+              }}>
+                取消
+              </Button>
+              <Button type="primary" onClick={() => editForm.submit()}>
+                保存
+              </Button>
+            </Space>
+          </div>
         }
         centered
         width={isMobile ? '100%' : 700}

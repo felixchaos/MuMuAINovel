@@ -1,10 +1,19 @@
 """Gemini 客户端"""
 from typing import Any, AsyncGenerator, Dict, List, Optional
+import json
 import httpx
 from app.services.ai_config import AIClientConfig, default_config
 from app.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class GeminiResponseError(ValueError):
+    """Gemini 返回了非 HTTP 错误，但没有可用正文。"""
+
+
+class GeminiPromptBlockedError(GeminiResponseError):
+    """Gemini 在 promptFeedback 层拦截了请求。"""
 
 
 class GeminiClient:
@@ -44,6 +53,64 @@ class GeminiClient:
                 gemini_tools.append(decl)
         return [{"functionDeclarations": gemini_tools}] if gemini_tools else []
 
+    def _normalize_finish_reason(self, finish_reason: Optional[str]) -> str:
+        mapping = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "safety",
+            "RECITATION": "recitation",
+            "OTHER": "other",
+            "BLOCKLIST": "blocklist",
+            "PROHIBITED_CONTENT": "prohibited_content",
+            "SPII": "spii",
+            "MALFORMED_FUNCTION_CALL": "malformed_function_call",
+        }
+        if not finish_reason:
+            return "stop"
+        return mapping.get(finish_reason, finish_reason.lower())
+
+    def _compact_safety_ratings(self, ratings: Optional[list]) -> str:
+        if not ratings:
+            return ""
+        compact = []
+        for rating in ratings[:6]:
+            category = rating.get("category")
+            probability = rating.get("probability")
+            blocked = rating.get("blocked")
+            parts = [str(x) for x in (category, probability) if x]
+            if blocked is True:
+                parts.append("blocked=True")
+            if parts:
+                compact.append("/".join(parts))
+        return "; ".join(compact)
+
+    def _usage_from_metadata(self, usage: Dict[str, Any]) -> Dict[str, Optional[int]]:
+        return {
+            "prompt_tokens": usage.get("promptTokenCount"),
+            "completion_tokens": usage.get("candidatesTokenCount"),
+            "total_tokens": usage.get("totalTokenCount"),
+        }
+
+    def _raise_for_prompt_block(self, data: Dict[str, Any]) -> None:
+        prompt_feedback = data.get("promptFeedback") or {}
+        block_reason = prompt_feedback.get("blockReason")
+        if not block_reason:
+            return
+
+        ratings = self._compact_safety_ratings(prompt_feedback.get("safetyRatings"))
+        message = f"Gemini 请求被拦截: promptFeedback.blockReason={block_reason}"
+        if ratings:
+            message += f", safetyRatings={ratings}"
+        raise GeminiPromptBlockedError(message)
+
+    def _raise_for_empty_candidate(self, candidate: Dict[str, Any]) -> None:
+        finish_reason = candidate.get("finishReason")
+        ratings = self._compact_safety_ratings(candidate.get("safetyRatings"))
+        message = f"Gemini 返回空候选: finishReason={finish_reason or 'UNKNOWN'}"
+        if ratings:
+            message += f", safetyRatings={ratings}"
+        raise GeminiResponseError(message)
+
     async def chat_completion(
         self,
         messages: list,
@@ -73,17 +140,14 @@ class GeminiClient:
         response = await self.client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
+        self._raise_for_prompt_block(data)
         
         candidates = data.get("candidates", [])
         if not candidates or len(candidates) == 0:
-            # 返回空内容而不是报错，保持流程继续
-            return {
-                "content": "",
-                "tool_calls": None,
-                "finish_reason": "stop"
-            }
+            raise GeminiResponseError("Gemini 返回空 candidates")
         
-        parts = candidates[0].get("content", {}).get("parts", [])
+        candidate = candidates[0]
+        parts = candidate.get("content", {}).get("parts", [])
         text = ""
         tool_calls = []
         
@@ -97,20 +161,16 @@ class GeminiClient:
                     "type": "function",
                     "function": {"name": fc["name"], "arguments": fc.get("args", {})}
                 })
+
+        if not text and not tool_calls:
+            self._raise_for_empty_candidate(candidate)
         
         usage = data.get("usageMetadata") or {}
-        prompt_tokens = usage.get("promptTokenCount")
-        completion_tokens = usage.get("candidatesTokenCount")
-        total_tokens = usage.get("totalTokenCount")
         return {
             "content": text,
             "tool_calls": tool_calls if tool_calls else None,
-            "finish_reason": "tool_calls" if tool_calls else "stop",
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
-            }
+            "finish_reason": "tool_calls" if tool_calls else self._normalize_finish_reason(candidate.get("finishReason")),
+            "usage": self._usage_from_metadata(usage)
         }
 
     async def chat_completion_stream(
@@ -152,23 +212,25 @@ class GeminiClient:
             async with self.client.stream("POST", url, json=payload) as response:
                 response.raise_for_status()
                 try:
+                    saw_content = False
+                    saw_tool_calls = False
+                    saw_finish_reason = False
+
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
-                            import json
                             try:
                                 data = json.loads(line[6:])
                                 usage = data.get("usageMetadata") or {}
                                 if usage:
-                                    yield {
-                                        "usage": {
-                                            "prompt_tokens": usage.get("promptTokenCount"),
-                                            "completion_tokens": usage.get("candidatesTokenCount"),
-                                            "total_tokens": usage.get("totalTokenCount"),
-                                        }
-                                    }
+                                    yield {"usage": self._usage_from_metadata(usage)}
+
+                                self._raise_for_prompt_block(data)
+
                                 candidates = data.get("candidates", [])
                                 if candidates and len(candidates) > 0:
-                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    candidate = candidates[0]
+                                    parts = candidate.get("content", {}).get("parts", [])
+                                    finish_reason = candidate.get("finishReason")
                                     if parts and len(parts) > 0:
                                         text = ""
                                         function_calls = []
@@ -187,11 +249,25 @@ class GeminiClient:
                                                 })
                                         
                                         if text:
+                                            saw_content = True
                                             yield {"content": text}
                                         if function_calls:
+                                            saw_tool_calls = True
                                             yield {"tool_calls": function_calls}
+
+                                    if finish_reason:
+                                        saw_finish_reason = True
+                                        if not parts and (finish_reason != "STOP" or (not saw_content and not saw_tool_calls)):
+                                            self._raise_for_empty_candidate(candidate)
+                                        yield {
+                                            "finish_reason": self._normalize_finish_reason(finish_reason),
+                                            "done": True
+                                        }
                             except json.JSONDecodeError:
                                 continue
+
+                    if not saw_content and not saw_tool_calls and not saw_finish_reason:
+                        raise GeminiResponseError("Gemini 流式响应没有返回正文或结束原因")
                 except GeneratorExit:
                     # 生成器被关闭，这是正常的清理过程
                     logger.debug("Gemini 流式响应生成器被关闭(GeneratorExit)")

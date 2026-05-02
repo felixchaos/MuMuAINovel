@@ -58,7 +58,13 @@ from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
-from app.utils.sse_response import SSEResponse, create_sse_response
+from app.utils.sse_response import (
+    HEARTBEAT,
+    SSEResponse,
+    WizardProgressTracker,
+    create_sse_response,
+    wrap_stream_with_heartbeat,
+)
 
 router = APIRouter(prefix="/chapters", tags=["章节管理"])
 logger = get_logger(__name__)
@@ -73,6 +79,23 @@ async def get_db_write_lock(user_id: str) -> Lock:
         db_write_locks[user_id] = Lock()
         logger.debug(f"🔒 为用户 {user_id} 创建数据库写入锁")
     return db_write_locks[user_id]
+
+
+def _is_gemini_prompt_blocked_error(error: Optional[str]) -> bool:
+    if not error:
+        return False
+    markers = (
+        "promptFeedback.blockReason=PROHIBITED_CONTENT",
+        "Gemini 请求被拦截",
+    )
+    return any(marker in error for marker in markers)
+
+
+def _is_same_ai_service(left: AIService, right: AIService) -> bool:
+    return (
+        left.api_provider == right.api_provider
+        and left.default_model == right.default_model
+    )
 
 
 @router.post("", response_model=ChapterResponse, summary="创建章节")
@@ -969,11 +992,56 @@ async def analyze_chapter_background(
             on_retry=on_retry_callback,
             characters_info=characters_info
         )
+
+        analysis_error = getattr(analyzer, "last_error", None)
+
+        if not analysis_result and _is_gemini_prompt_blocked_error(analysis_error):
+            fallback_ai_service = await get_user_ai_service_from_db_by_usage(
+                user_id=user_id,
+                db=db_session,
+                usage="default"
+            )
+
+            if not _is_same_ai_service(ai_service, fallback_ai_service):
+                logger.warning(
+                    "⚠️ 章节分析专用 Gemini 模型被内容策略拦截，"
+                    f"改用默认模型兜底: {fallback_ai_service.api_provider}/{fallback_ai_service.default_model}"
+                )
+                async with write_lock:
+                    task.status = 'running'
+                    task.progress = max(task.progress or 0, 40)
+                    task.error_message = f"专用 Gemini 模型被拦截，正在使用默认模型兜底：{analysis_error[:150]}"
+                    await db_session.commit()
+
+                fallback_analyzer = PlotAnalyzer(fallback_ai_service)
+                analysis_result = await fallback_analyzer.analyze_chapter(
+                    chapter_number=chapter.chapter_number,
+                    title=chapter.title,
+                    content=chapter.content,
+                    word_count=chapter.word_count or len(chapter.content),
+                    user_id=user_id,
+                    db=db_session,
+                    max_retries=2,
+                    existing_foreshadows=existing_foreshadows,
+                    on_retry=on_retry_callback,
+                    characters_info=characters_info
+                )
+
+                if not analysis_result:
+                    fallback_error = getattr(fallback_analyzer, "last_error", None)
+                    analysis_error = (
+                        f"{analysis_error}；默认模型兜底失败: "
+                        f"{fallback_error or '未知错误'}"
+                    )
+                else:
+                    analysis_error = None
+            else:
+                logger.warning("⚠️ 默认模型与章节分析模型相同，跳过兜底重试")
         
         if not analysis_result:
             async with write_lock:
                 task.status = 'failed'
-                task.error_message = 'AI分析失败，请检查日志'
+                task.error_message = (analysis_error or 'AI分析失败，请检查日志')[:500]
                 task.completed_at = datetime.now()
                 await db_session.commit()
             logger.error(f"❌ AI分析失败: {chapter_id}")
@@ -1266,6 +1334,7 @@ async def analyze_chapter_background(
                 async with write_lock:
                     task.progress = 100
                     task.status = 'completed'
+                    task.error_message = None
                     task.completed_at = datetime.now()
                     await db_session.commit()
                     update_success = True
@@ -3281,9 +3350,14 @@ async def execute_batch_generation_in_order(
                                 
                                 # 直接根据返回值判断
                                 if not analysis_result:
-                                    last_analysis_error = "分析函数返回失败"
+                                    try:
+                                        await db_session.refresh(analysis_task)
+                                        last_analysis_error = analysis_task.error_message or "分析函数返回失败"
+                                    except Exception as refresh_error:
+                                        logger.warning(f"⚠️ 刷新分析任务错误信息失败: {refresh_error}")
+                                        last_analysis_error = "分析函数返回失败"
                                     logger.error(f"❌ 章节分析失败: 第{chapter.chapter_number}章")
-                                    raise Exception(f"章节分析失败")
+                                    raise Exception(last_analysis_error)
                                 
                                 # 分析成功
                                 analysis_success = True
@@ -4261,7 +4335,6 @@ async def partial_regenerate_stream(
     
     async def event_generator():
         """流式生成事件生成器"""
-        from app.utils.sse_response import WizardProgressTracker
         tracker = WizardProgressTracker("局部重写")
         
         try:
@@ -4326,7 +4399,36 @@ async def partial_regenerate_stream(
             )
             
             yield await tracker.preparing("开始生成...")
-            
+
+            def clean_rewrite_output(raw_text: str) -> str:
+                """Normalize model output without turning an empty response into success."""
+                cleaned = (raw_text or "").strip()
+                if cleaned.startswith("```"):
+                    lines = cleaned.splitlines()
+                    if lines and lines[0].strip().startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    cleaned = "\n".join(lines).strip()
+
+                prefixes_to_remove = [
+                    "重写后：", "重写后:", "改写后：", "改写后:",
+                    "以下是重写后的内容：", "以下是重写后的内容:",
+                    "重写内容：", "重写内容:"
+                ]
+                for prefix in prefixes_to_remove:
+                    if cleaned.startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                        break
+
+                if (cleaned.startswith('"') and cleaned.endswith('"')) or \
+                   (cleaned.startswith("'") and cleaned.endswith("'")):
+                    cleaned = cleaned[1:-1].strip()
+                if (cleaned.startswith('「') and cleaned.endswith('」')) or \
+                   (cleaned.startswith('『') and cleaned.endswith('』')):
+                    cleaned = cleaned[1:-1].strip()
+                return cleaned
+
             # 计算 max_tokens
             if partial_request.length_mode == "expand":
                 target_words = int(original_word_count * 2.0)
@@ -4334,60 +4436,92 @@ async def partial_regenerate_stream(
                 target_words = partial_request.target_word_count
             else:
                 target_words = int(original_word_count * 1.5)
-            
+
             calculated_max_tokens = max(500, min(int(target_words * 3), 8000))
-            
-            # 流式生成
+            max_attempts = 2
             full_content = ""
-            chunk_count = 0
-            
-            yield await tracker.generating(
-                current_chars=0,
-                estimated_total=target_words
-            )
-            
-            async for chunk in user_ai_service.generate_text_stream(
-                prompt=prompt,
-                max_tokens=calculated_max_tokens
-            ):
-                full_content += chunk
-                chunk_count += 1
-                
-                # 发送内容块
-                yield await tracker.generating_chunk(chunk)
-                
-                # 每5个chunk发送一次进度更新
-                if chunk_count % 5 == 0:
-                    yield await tracker.generating(
-                        current_chars=len(full_content),
-                        estimated_total=target_words,
-                        message=f'正在重写中... 已生成 {len(full_content)} 字'
+
+            for attempt in range(1, max_attempts + 1):
+                if await request.is_disconnected():
+                    logger.info("局部重写请求已由客户端断开")
+                    return
+
+                if attempt > 1:
+                    yield await tracker.retry(
+                        attempt - 1,
+                        max_attempts - 1,
+                        "AI返回空内容，正在重新生成"
                     )
-                
-                await asyncio.sleep(0)
-            
-            # 清理输出（移除可能的前后缀）
-            full_content = full_content.strip()
-            
-            # 移除常见的AI输出前缀
-            prefixes_to_remove = [
-                "重写后：", "重写后:", "改写后：", "改写后:",
-                "以下是重写后的内容：", "以下是重写后的内容:",
-                "重写内容：", "重写内容:"
-            ]
-            for prefix in prefixes_to_remove:
-                if full_content.startswith(prefix):
-                    full_content = full_content[len(prefix):].strip()
+
+                effective_prompt = prompt
+                if attempt > 1:
+                    effective_prompt = f"""{prompt}
+
+【重试修正】
+上一次模型没有返回可用正文。请务必直接输出可以替换原文的小说正文。
+禁止输出空白、解释、标题、Markdown、列表或任何前后缀。"""
+
+                raw_content = ""
+                chunk_count = 0
+
+                yield await tracker.generating(
+                    current_chars=0,
+                    estimated_total=target_words,
+                    retry_count=attempt - 1,
+                    max_retries=max_attempts - 1
+                )
+
+                async for chunk in wrap_stream_with_heartbeat(
+                    user_ai_service.generate_text_stream(
+                        prompt=effective_prompt,
+                        max_tokens=calculated_max_tokens
+                    ),
+                    heartbeat_interval=15.0
+                ):
+                    if chunk is HEARTBEAT:
+                        yield await tracker.heartbeat()
+                        continue
+
+                    if await request.is_disconnected():
+                        logger.info("局部重写请求已由客户端断开")
+                        return
+
+                    if not chunk:
+                        continue
+
+                    raw_content += chunk
+                    chunk_count += 1
+
+                    # 发送内容块
+                    yield await tracker.generating_chunk(chunk)
+
+                    # 每5个chunk发送一次进度更新
+                    if chunk_count % 5 == 0:
+                        yield await tracker.generating(
+                            current_chars=len(raw_content),
+                            estimated_total=target_words,
+                            message=f'正在重写中... 已生成 {len(raw_content)} 字',
+                            retry_count=attempt - 1,
+                            max_retries=max_attempts - 1
+                        )
+
+                    await asyncio.sleep(0)
+
+                full_content = clean_rewrite_output(raw_content)
+                if full_content:
                     break
-            
-            # 移除首尾可能的引号
-            if (full_content.startswith('"') and full_content.endswith('"')) or \
-               (full_content.startswith("'") and full_content.endswith("'")):
-                full_content = full_content[1:-1]
-            if (full_content.startswith('「') and full_content.endswith('」')) or \
-               (full_content.startswith('『') and full_content.endswith('』')):
-                full_content = full_content[1:-1]
-            
+
+                logger.warning(
+                    "局部重写返回空内容: chapter_id=%s attempt=%s raw_length=%s",
+                    chapter_id,
+                    attempt,
+                    len(raw_content or "")
+                )
+
+            if not full_content:
+                yield await tracker.error("AI未返回可用重写内容，请调整重写要求或更换模型后重试", 502)
+                return
+
             new_word_count = len(full_content)
             
             logger.info(f"✅ 局部重写完成: 原文{original_word_count}字 -> 新文{new_word_count}字")
@@ -4448,6 +4582,7 @@ async def apply_partial_regenerate(
     new_text = apply_request.get('new_text', '')
     start_position = apply_request.get('start_position', 0)
     end_position = apply_request.get('end_position', 0)
+    original_text = str(apply_request.get('original_text') or '')
     
     if not new_text:
         raise HTTPException(status_code=400, detail="新内容不能为空")
@@ -4456,6 +4591,38 @@ async def apply_partial_regenerate(
     content_length = len(chapter.content)
     if start_position < 0 or end_position > content_length or start_position >= end_position:
         raise HTTPException(status_code=400, detail="位置参数无效")
+
+    if original_text:
+        current_selected = chapter.content[start_position:end_position]
+        if current_selected != original_text:
+            search_start = max(0, start_position - 100)
+            search_end = min(content_length, end_position + 100)
+            search_area = chapter.content[search_start:search_end]
+            nearby_offset = search_area.find(original_text)
+
+            if nearby_offset >= 0:
+                start_position = search_start + nearby_offset
+                end_position = start_position + len(original_text)
+                logger.info(
+                    "局部重写应用位置校正: chapter_id=%s %s-%s",
+                    chapter_id,
+                    start_position,
+                    end_position
+                )
+            elif chapter.content.count(original_text) == 1:
+                start_position = chapter.content.find(original_text)
+                end_position = start_position + len(original_text)
+                logger.info(
+                    "局部重写应用位置全局校正: chapter_id=%s %s-%s",
+                    chapter_id,
+                    start_position,
+                    end_position
+                )
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail="章节内容已变化，无法确认要替换的原文，请重新选择段落后再重写"
+                )
     
     # 构建新内容
     old_word_count = chapter.word_count or 0
@@ -4486,4 +4653,3 @@ async def apply_partial_regenerate(
         "old_word_count": old_word_count,
         "message": "局部重写已应用"
     }
-

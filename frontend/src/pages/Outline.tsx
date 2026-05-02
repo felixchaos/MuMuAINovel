@@ -1,13 +1,15 @@
-﻿import { useState, useEffect, useMemo } from 'react';
+﻿import { useState, useEffect, useMemo, useRef } from 'react';
+import type { ChangeEvent, CSSProperties } from 'react';
 import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme } from 'antd';
-import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined } from '@ant-design/icons';
+import type { FormInstance } from 'antd';
+import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined, HighlightOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
-import { getProjectTasks, type TaskStatus } from '../services/backgroundTaskService';
+import { getProjectTasks, pollTaskUntilComplete, type TaskStatus } from '../services/backgroundTaskService';
 import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
-import { outlineApi, chapterApi, projectApi, characterApi } from '../services/api';
-import type { ApiError, Character } from '../types';
+import { outlineApi, chapterApi, projectApi, characterApi, polishApi } from '../services/api';
+import type { ApiError, Character, Outline as OutlineItem } from '../types';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -23,6 +25,25 @@ interface OutlineGenerateRequestData {
   plot_stage: 'development' | 'climax' | 'ending';
   model?: string;
   provider?: string;
+}
+
+interface GenerateFormValues {
+  theme?: string;
+  chapter_count?: number;
+  narrative_perspective?: string;
+  requirements?: string;
+  provider?: string;
+  model?: string;
+  mode?: 'auto' | 'new' | 'continue';
+  story_direction?: string;
+  plot_stage?: 'development' | 'climax' | 'ending';
+  keep_existing?: boolean;
+}
+
+type PolishableOutlineField = 'story_direction' | 'requirements';
+
+interface OutlineOptimizeFormValues {
+  scope: 'all' | 'filtered' | 'page';
 }
 
 // 角色/组织条目类型（新格式）
@@ -105,6 +126,108 @@ function getOutlinePreview(content: string, maxLength = 120): { text: string; tr
 
 const { TextArea } = Input;
 
+interface PolishableTextAreaProps {
+  form: FormInstance<GenerateFormValues>;
+  name: PolishableOutlineField;
+  label: string;
+  rows: number;
+  placeholder: string;
+  value?: string;
+  id?: string;
+  onChange?: (event: ChangeEvent<HTMLTextAreaElement>) => void;
+}
+
+function PolishableTextArea({
+  form,
+  name,
+  label,
+  rows,
+  placeholder,
+  value,
+  id,
+  onChange,
+}: PolishableTextAreaProps) {
+  const [isPolishing, setIsPolishing] = useState(false);
+  const { token } = theme.useToken();
+
+  const handlePolish = async () => {
+    const currentValue = String(form.getFieldValue(name) || '').trim();
+    if (!currentValue) {
+      message.warning(`请先填写${label}`);
+      return;
+    }
+
+    const closeLoading = message.loading(`正在润色${label}...`, 0);
+    try {
+      setIsPolishing(true);
+      const selectedModel = form.getFieldValue('model');
+      const selectedProvider = form.getFieldValue('provider');
+      const result = await polishApi.polishText({
+        original_text: currentValue,
+        model: selectedModel || undefined,
+        provider: selectedProvider || undefined,
+        temperature: 0.7,
+      });
+
+      const polishedText = result.polished_text?.trim();
+      if (!polishedText) {
+        message.warning('润色结果为空，请稍后重试');
+        return;
+      }
+
+      form.setFieldsValue({ [name]: polishedText });
+      message.success(`${label}已润色`);
+    } catch (error) {
+      console.error(`${label}润色失败:`, error);
+      message.error(`${label}润色失败`);
+    } finally {
+      closeLoading();
+      setIsPolishing(false);
+    }
+  };
+
+  const textAreaStyle: CSSProperties = {
+    paddingRight: 44,
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <TextArea
+        id={id}
+        rows={rows}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        style={textAreaStyle}
+      />
+      <Button
+        type="text"
+        shape="circle"
+        size="small"
+        icon={<HighlightOutlined />}
+        loading={isPolishing}
+        aria-label={`润色${label}`}
+        title={`润色${label}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handlePolish();
+        }}
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 1,
+          color: token.colorPrimary,
+          background: token.colorBgElevated,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          boxShadow: token.boxShadowTertiary,
+        }}
+      />
+    </div>
+  );
+}
+
 export default function Outline() {
   const { currentProject, outlines, setCurrentProject } = useStore();
   const [isGenerating, setIsGenerating] = useState(false);
@@ -113,10 +236,14 @@ export default function Outline() {
   const [expansionForm] = Form.useForm();
   const [modalApi, contextHolder] = Modal.useModal();
   const [batchExpansionForm] = Form.useForm();
+  const [outlineOptimizeForm] = Form.useForm<OutlineOptimizeFormValues>();
   const [manualCreateForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [isExpanding, setIsExpanding] = useState(false);
+  const [isOptimizingOutlines, setIsOptimizingOutlines] = useState(false);
+  const [optimizingOutlineId, setOptimizingOutlineId] = useState<string | null>(null);
   const [projectCharacters, setProjectCharacters] = useState<Array<{ label: string; value: string }>>([]);
+  const outlineOptimizePollCancelRef = useRef<ReturnType<typeof pollTaskUntilComplete> | null>(null);
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) =>
     `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
@@ -134,6 +261,13 @@ export default function Outline() {
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      outlineOptimizePollCancelRef.current?.();
+      outlineOptimizePollCancelRef.current = null;
+    };
   }, []);
 
   // 大纲查询与分页状态
@@ -500,19 +634,6 @@ export default function Outline() {
     }
   };
 
-  interface GenerateFormValues {
-    theme?: string;
-    chapter_count?: number;
-    narrative_perspective?: string;
-    requirements?: string;
-    provider?: string;
-    model?: string;
-    mode?: 'auto' | 'new' | 'continue';
-    story_direction?: string;
-    plot_stage?: 'development' | 'climax' | 'ending';
-    keep_existing?: boolean;
-  }
-
   const handleGenerate = async (values: GenerateFormValues) => {
     try {
       setIsGenerating(true);
@@ -696,7 +817,10 @@ export default function Outline() {
                         name="story_direction"
                         tooltip="告诉AI你希望故事接下来如何发展"
                       >
-                        <TextArea
+                        <PolishableTextArea
+                          form={generateForm}
+                          name="story_direction"
+                          label="故事发展方向"
                           rows={3}
                           placeholder="例如：主角遇到新的挑战、引入新角色、揭示关键秘密等..."
                         />
@@ -742,7 +866,13 @@ export default function Outline() {
                   </Form.Item>
 
                   <Form.Item label="其他要求" name="requirements">
-                    <TextArea rows={2} placeholder="其他特殊要求（可选）" />
+                    <PolishableTextArea
+                      form={generateForm}
+                      name="requirements"
+                      label="其他要求"
+                      rows={2}
+                      placeholder="其他特殊要求（可选）"
+                    />
                   </Form.Item>
 
                 </>
@@ -1446,6 +1576,170 @@ export default function Outline() {
     });
   };
 
+  const submitOutlineOptimizeTask = async (targets: OutlineItem[], singleOutline?: OutlineItem) => {
+    if (!currentProject?.id) {
+      message.warning('请先选择项目');
+      return;
+    }
+
+    if (targets.length === 0) {
+      message.warning('没有可优化的大纲');
+      return;
+    }
+
+    const messageKey = singleOutline ? `outline-optimize-${singleOutline.id}` : 'batch-outline-optimize';
+    const resetLoadingState = () => {
+      if (singleOutline) {
+        setOptimizingOutlineId(null);
+      } else {
+        setIsOptimizingOutlines(false);
+      }
+    };
+
+    if (singleOutline) {
+      setOptimizingOutlineId(singleOutline.id);
+    } else {
+      setIsOptimizingOutlines(true);
+    }
+    outlineOptimizePollCancelRef.current?.();
+    outlineOptimizePollCancelRef.current = null;
+
+    try {
+      message.loading({
+        key: messageKey,
+        content: singleOutline
+          ? `正在提交《${singleOutline.title}》优化任务...`
+          : `正在提交 ${targets.length} 条大纲优化任务...`,
+        duration: 0
+      });
+
+      const response = await polishApi.optimizeOutlinesBackground({
+        project_id: currentProject.id,
+        outline_ids: targets.map(outline => outline.id),
+        temperature: 0.6,
+      });
+
+      message.success({
+        key: messageKey,
+        content: '大纲优化任务已提交，可在右下角后台任务中查看或取消',
+        duration: 3
+      });
+      eventBus.emit('background-task-created');
+
+      outlineOptimizePollCancelRef.current = pollTaskUntilComplete(
+        response.task_id,
+        (status: TaskStatus) => {
+          if (status.status === 'pending' || status.status === 'running') {
+            message.loading({
+              key: messageKey,
+              content: status.status_message || `大纲优化中 ${Math.round(status.progress)}%`,
+              duration: 0
+            });
+          }
+        },
+        (status: TaskStatus) => {
+          outlineOptimizePollCancelRef.current = null;
+          void (async () => {
+            await refreshOutlines();
+            message.success({
+              key: messageKey,
+              content: status.status_message || '大纲优化完成',
+              duration: 3
+            });
+            resetLoadingState();
+            eventBus.emit('background-task-created');
+          })();
+        },
+        (error: string) => {
+          outlineOptimizePollCancelRef.current = null;
+          message.error({
+            key: messageKey,
+            content: error || '大纲优化任务失败',
+            duration: 4
+          });
+          resetLoadingState();
+          eventBus.emit('background-task-created');
+        }
+      );
+    } catch (error) {
+      console.error('提交大纲优化任务失败:', error);
+      message.error({
+        key: messageKey,
+        content: error instanceof Error ? error.message : '提交大纲优化任务失败',
+        duration: 4
+      });
+      resetLoadingState();
+    }
+  };
+
+  const handleOptimizeSingleOutline = async (outline: OutlineItem) => {
+    await submitOutlineOptimizeTask([outline], outline);
+  };
+
+  const runBatchOptimizeOutlines = async (targets: OutlineItem[]) => {
+    await submitOutlineOptimizeTask(targets);
+  };
+
+  const showOptimizeOutlinesModal = () => {
+    if (outlines.length === 0) {
+      message.warning('没有可优化的大纲');
+      return;
+    }
+
+    outlineOptimizeForm.setFieldsValue({
+      scope: outlineSearchKeyword.trim() ? 'filtered' : 'all'
+    });
+
+    modalApi.confirm({
+      title: 'AI优化已有大纲',
+      width: 560,
+      centered: true,
+      content: (
+        <Form
+          form={outlineOptimizeForm}
+          layout="vertical"
+          style={{ marginTop: 16 }}
+        >
+          <Form.Item
+            label="优化范围"
+            name="scope"
+            rules={[{ required: true, message: '请选择优化范围' }]}
+          >
+            <Radio.Group>
+              <Space direction="vertical">
+                <Radio value="all">全部大纲（{outlines.length} 条）</Radio>
+                <Radio value="filtered" disabled={filteredOutlines.length === 0}>
+                  当前筛选结果（{filteredOutlines.length} 条）
+                </Radio>
+                <Radio value="page">当前页（{pagedOutlines.length} 条）</Radio>
+              </Space>
+            </Radio.Group>
+          </Form.Item>
+          <div style={{ color: token.colorTextSecondary, fontSize: 13 }}>
+            使用现有后台任务流程优化表达与可执行性，不改变章节编号、标题和核心设定；提交后可在右下角后台任务中查看或取消。
+          </div>
+        </Form>
+      ),
+      okText: '开始优化',
+      cancelText: '取消',
+      onOk: async () => {
+        const values = await outlineOptimizeForm.validateFields();
+        const targets = values.scope === 'page'
+          ? pagedOutlines
+          : values.scope === 'filtered'
+            ? filteredOutlines
+            : sortedOutlines;
+
+        if (targets.length === 0) {
+          message.warning('当前范围内没有可优化的大纲');
+          return;
+        }
+
+        await runBatchOptimizeOutlines(targets);
+      }
+    });
+  };
+
   return (
     <>
       {contextHolder}
@@ -1501,6 +1795,17 @@ export default function Outline() {
             >
               {isMobile ? 'AI生成/续写' : 'AI生成/续写大纲'}
             </Button>
+            {outlines.length > 0 && (
+              <Button
+                icon={<HighlightOutlined />}
+                onClick={showOptimizeOutlinesModal}
+                loading={isOptimizingOutlines}
+                disabled={isGenerating}
+                block={isMobile}
+              >
+                {isMobile ? '优化大纲' : 'AI优化已有大纲'}
+              </Button>
+            )}
             {outlines.length > 0 && currentProject?.outline_mode === 'one-to-many' && (
               <Button
                 icon={<AppstoreAddOutlined />}
@@ -2271,6 +2576,15 @@ export default function Outline() {
                               展开
                             </Button>
                           )}
+                          <Button
+                            icon={<HighlightOutlined />}
+                            onClick={() => handleOptimizeSingleOutline(item)}
+                            loading={optimizingOutlineId === item.id}
+                            disabled={isOptimizingOutlines}
+                            size={isMobile ? 'middle' : 'small'}
+                          >
+                            AI优化
+                          </Button>
                           <Button
                             icon={<EditOutlined />}
                             onClick={() => handleOpenEditModal(item.id)}

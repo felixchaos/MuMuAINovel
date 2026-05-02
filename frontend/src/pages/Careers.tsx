@@ -340,7 +340,7 @@ export default function Careers() {
                                 setIsAIModalOpen(true);
                             }}
                         >
-                            AI生成新职业
+                            AI分析生成职业
                         </Button>
                         <Button
                             type="primary"
@@ -430,14 +430,14 @@ export default function Careers() {
 
             {/* AI生成对话框 */}
             <Modal
-                title="AI生成新职业（增量式）"
+                title="AI分析大纲/章节生成职业（增量式）"
                 open={isAIModalOpen}
                 onCancel={() => setIsAIModalOpen(false)}
                 footer={null}
             >
                 <Form form={aiForm} layout="vertical" onFinish={handleAIGenerate}>
                     <Paragraph type="secondary">
-                        AI将分析当前世界观和已有职业，智能生成新的补充职业。
+                        AI将分析当前世界观、已有职业、大纲和章节，智能生成新的补充职业。
                         <br />
                         💡 可以多次生成，逐步完善职业体系，不会替换已有职业。
                     </Paragraph>

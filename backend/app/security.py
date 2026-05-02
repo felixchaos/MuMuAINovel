@@ -15,6 +15,11 @@ from fastapi import HTTPException
 from app.config import settings
 
 
+DNS_PROXY_FAKE_IP_NETWORKS = (
+    ipaddress.ip_network("198.18.0.0/15"),
+)
+
+
 def _session_secret() -> bytes:
     secret = (
         getattr(settings, "SESSION_SECRET_KEY", None)
@@ -74,6 +79,11 @@ def _is_forbidden_ip(ip: ipaddress._BaseAddress) -> bool:
     ])
 
 
+def _is_dns_proxy_fake_ip(ip: ipaddress._BaseAddress) -> bool:
+    """Recognize Clash-style fake-ip DNS answers."""
+    return any(ip in network for network in DNS_PROXY_FAKE_IP_NETWORKS)
+
+
 def validate_public_http_url(raw_url: str, *, allowed_schemes: Iterable[str] = ("https", "http")) -> str:
     """Validate an outbound URL to reduce SSRF risk."""
     if not raw_url or not isinstance(raw_url, str):
@@ -103,6 +113,12 @@ def validate_public_http_url(raw_url: str, *, allowed_schemes: Iterable[str] = (
         for info in infos:
             resolved_ip = ipaddress.ip_address(info[4][0])
             if _is_forbidden_ip(resolved_ip):
+                allow_fake_ip = (
+                    settings.allow_dns_proxy_fake_ip
+                    and _is_dns_proxy_fake_ip(resolved_ip)
+                )
+                if allow_fake_ip:
+                    continue
                 raise HTTPException(status_code=400, detail="URL解析到内网或保留地址")
 
     return raw_url.strip().rstrip("/")

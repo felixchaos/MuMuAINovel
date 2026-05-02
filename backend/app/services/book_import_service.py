@@ -216,7 +216,8 @@ class BookImportService:
                 db=db,
                 user_id=user_id,
                 project=project,
-                character_count=max(project.character_count or 0, 8),
+                character_count=max(project.character_count or 0, 5),
+                chapters=chapters_to_import,
             )
             statistics["generated_world_building"] = generated_world
             statistics["generated_careers"] = generated_careers
@@ -380,6 +381,7 @@ class BookImportService:
                     count=character_count_target,
                     progress_callback=progress_callback,
                     progress_range=(67, 92),
+                    source_chapters=chapters_to_import,
                 )
                 statistics["generated_entities"] = generated_entities
                 await _notify(f"👥 角色/组织生成完成（{generated_entities}个）", 92)
@@ -542,6 +544,7 @@ class BookImportService:
                             count=character_count_target,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
+                            source_chapters=task.preview.chapters if task.preview else None,
                         )
                         retry_results["generated_entities"] = result
                         await _notify(f"✅ 角色/组织重试成功（{result}个）", step_end_pct)
@@ -1262,7 +1265,7 @@ class BookImportService:
         fallback_outlines = [
             BookImportOutline(
                 title=chapter.title,
-                content=(chapter.summary or self._build_summary(chapter.content or "")),
+                content=self._build_fallback_outline_summary(chapter),
                 order_index=chapter.chapter_number,
                 structure=self._build_fallback_outline_structure(chapter),
             )
@@ -1435,9 +1438,7 @@ class BookImportService:
         }
 
     def _build_fallback_outline_structure(self, chapter: BookImportChapter) -> dict[str, Any]:
-        summary = (chapter.summary or self._build_summary(chapter.content or "")).strip()
-        if not summary:
-            summary = "本章围绕主要人物与核心冲突推进剧情。"
+        summary = self._build_fallback_outline_summary(chapter)
 
         return {
             "chapter_number": chapter.chapter_number,
@@ -1455,6 +1456,11 @@ class BookImportService:
             "emotion": "紧张递进",
             "goal": "承接前章并推动后续剧情发展",
         }
+
+    def _build_fallback_outline_summary(self, chapter: BookImportChapter) -> str:
+        summary = chapter.summary or self._build_summary(chapter.content or "")
+        normalized = str(summary or "").strip()
+        return normalized or "本章围绕主要人物与核心冲突推进剧情。"
 
     def _build_fallback_project_suggestion(
         self,
@@ -1634,6 +1640,7 @@ class BookImportService:
         user_id: str,
         project: Project,
         character_count: int,
+        chapters: Optional[list[BookImportChapter]] = None,
     ) -> tuple[int, int, int]:
         """
         走“向导前3步”的核心链路：
@@ -1659,6 +1666,7 @@ class BookImportService:
             user_id=user_id,
             project=project,
             count=character_count,
+            source_chapters=chapters,
         )
 
         # 拆书导入场景不需要继续到大纲，直接标记流程完成，避免项目列表再次跳向导生成大纲
@@ -1834,6 +1842,253 @@ class BookImportService:
         await db.flush()
         return created
 
+    def _build_import_source_text(
+        self,
+        chapters: Optional[list[BookImportChapter]],
+        *,
+        max_chars: int = 80000,
+    ) -> str:
+        if not chapters:
+            return ""
+
+        parts: list[str] = []
+        remaining = max_chars
+        for chapter in chapters:
+            if remaining <= 0:
+                break
+
+            title = str(chapter.title or "").strip()
+            content = str(chapter.content or "").strip()
+            if title:
+                title_part = title[:remaining]
+                parts.append(title_part)
+                remaining -= len(title_part)
+            if content:
+                if remaining <= 0:
+                    break
+                content_part = content[:remaining]
+                parts.append(content_part)
+                remaining -= len(content_part)
+        return "\n".join(parts)
+
+    def _build_import_source_prompt_context(
+        self,
+        chapters: Optional[list[BookImportChapter]],
+        *,
+        max_chars: int = 10000,
+    ) -> str:
+        if not chapters:
+            return ""
+
+        parts: list[str] = []
+        for chapter in chapters[:30]:
+            title = str(chapter.title or "").strip() or f"第{chapter.chapter_number}章"
+            content = str(chapter.content or "").strip()
+            excerpt = content[:500]
+            parts.append(f"第{chapter.chapter_number}章《{title}》\n{excerpt}")
+
+        context = "\n\n".join(parts).strip()
+        return context[:max_chars]
+
+    def _extract_import_source_name_candidates(
+        self,
+        *,
+        source_text: str,
+        title: str,
+        limit: int = 30,
+    ) -> list[str]:
+        if not source_text:
+            return []
+
+        stopwords = {
+            "放学", "教室", "数学", "老师", "粉笔", "黑板", "学校", "今天", "时候", "朋友",
+            "什么", "身体", "眼睛", "世界", "魔物", "情绪", "心灵", "魔法", "少女", "不是",
+            "这个", "那个", "一下", "一声", "一个", "一只", "一层", "一步", "一点", "一样",
+            "里面", "第一", "第二", "第三", "第四", "第五", "体育", "男生", "女生", "同学",
+            "书包", "课桌", "手机", "图书", "图书馆", "舞台", "后台", "体育馆", "城市", "空气",
+            "然后", "只是", "他们", "可以", "低头", "右手", "自己", "声音", "看了", "她能",
+            "事情", "对方", "以后", "原本", "现在", "这里", "那里", "心里", "手里", "身边",
+        }
+        counter: Counter[str] = Counter()
+
+        title_candidate = re.sub(
+            r"(魔法|少女|少年|传说|传|录|记|篇|小说|测试文|\s+)",
+            "",
+            title or "",
+        )
+        if 2 <= len(title_candidate) <= 4 and title_candidate in source_text:
+            counter[title_candidate] += source_text.count(title_candidate) + 1000
+
+        verbs = (
+            "说|问|喊|叫|笑|看|站|走|跑|盯|抬|低|拿|想|听|点|摇|伸|皱|咬|推|坐|转|愣|"
+            "开口|回答|眨|叹|冲|抓|握|扶|闭|睁|发现|感觉|知道|觉得|意识|沉默"
+        )
+        patterns = [
+            rf"([\u4e00-\u9fff]{{2,4}})(?=(?:{verbs}))",
+            rf"(?:叫|喊|问|对|看向|拉住|推了推)([\u4e00-\u9fff]{{2,4}})",
+        ]
+
+        match_counter: Counter[str] = Counter()
+        for pattern in patterns:
+            for match in re.finditer(pattern, source_text):
+                name = self._normalize_import_source_name_candidate(match.group(1))
+                if not name or name in stopwords:
+                    continue
+                match_counter[name] += 1
+
+        for name, occurrences in match_counter.items():
+            if occurrences >= 3:
+                counter[name] += occurrences
+
+        return [name for name, _ in counter.most_common(limit)]
+
+    def _normalize_import_source_name_candidate(self, value: Any) -> str:
+        name = str(value or "").strip()
+        name = re.sub(r"^(但|而|可|又|便|于是|然后|如果|因为|只是|只有|那个|这个|她|他|它|你|我)+", "", name)
+        name = re.sub(r"(轻声|猛地|慢慢|突然|尖|下|没|不|能|想|在)$", "", name)
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", name):
+            return ""
+        return name
+
+    def _resolve_import_source_entity_name(
+        self,
+        name: Any,
+        *,
+        source_text: str,
+        source_names: list[str],
+    ) -> Optional[str]:
+        raw_name = str(name or "").strip()
+        if not raw_name:
+            return None
+        if raw_name in source_text:
+            return raw_name
+
+        for candidate in source_names:
+            if raw_name.endswith(candidate) or candidate.endswith(raw_name):
+                return candidate
+
+        for size in range(min(4, len(raw_name) - 1), 1, -1):
+            suffix = raw_name[-size:]
+            if suffix in source_text and source_text.count(suffix) >= 3:
+                return suffix
+
+        return None
+
+    def _build_import_fallback_entity(self, name: str, index: int) -> dict[str, Any]:
+        return {
+            "name": name,
+            "age": None,
+            "gender": "未知",
+            "is_organization": False,
+            "role_type": "protagonist" if index == 0 else "supporting",
+            "personality": "由拆书导入根据原文出现频率自动建立，具体性格可在角色卡中继续补充。",
+            "background": "该角色明确出现在导入原文中，系统未额外补写原文之外的人物经历。",
+            "appearance": "原文未在当前抽取阶段形成稳定外貌描述，可后续手动完善。",
+            "traits": [],
+            "relationships_array": [],
+            "organization_memberships": [],
+        }
+
+    def _ground_generated_entities_to_source(
+        self,
+        generated_entities: list[Any],
+        *,
+        source_text: str,
+        source_names: list[str],
+        target_count: int,
+    ) -> list[dict[str, Any]]:
+        normalized_items: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        dropped_names: list[str] = []
+
+        for item in generated_entities:
+            if not isinstance(item, dict):
+                continue
+
+            raw_name = str(item.get("name") or "").strip()
+            if not raw_name:
+                continue
+
+            is_organization = bool(item.get("is_organization", False))
+            if is_organization:
+                normalized_name = raw_name if raw_name in source_text else None
+            else:
+                normalized_name = self._resolve_import_source_entity_name(
+                    raw_name,
+                    source_text=source_text,
+                    source_names=source_names,
+                )
+
+            if not normalized_name:
+                dropped_names.append(raw_name)
+                continue
+            if normalized_name in seen_names:
+                continue
+
+            normalized = dict(item)
+            normalized["name"] = normalized_name
+            normalized_items.append(normalized)
+            seen_names.add(normalized_name)
+
+        fallback_limit = min(target_count, 5)
+        for name in source_names:
+            if len(normalized_items) >= fallback_limit:
+                break
+            if name in seen_names:
+                continue
+            normalized_items.append(self._build_import_fallback_entity(name, len(normalized_items)))
+            seen_names.add(name)
+
+        kept_names = {str(item.get("name") or "") for item in normalized_items}
+        organization_names = {
+            str(item.get("name") or "")
+            for item in normalized_items
+            if bool(item.get("is_organization", False))
+        }
+
+        for item in normalized_items:
+            relationships = item.get("relationships_array")
+            if isinstance(relationships, list):
+                filtered_relationships: list[dict[str, Any]] = []
+                for rel in relationships:
+                    if not isinstance(rel, dict):
+                        continue
+                    target_name = self._resolve_import_source_entity_name(
+                        rel.get("target_character_name"),
+                        source_text=source_text,
+                        source_names=source_names,
+                    )
+                    if not target_name or target_name not in kept_names or target_name == item.get("name"):
+                        continue
+                    normalized_rel = dict(rel)
+                    normalized_rel["target_character_name"] = target_name
+                    filtered_relationships.append(normalized_rel)
+                item["relationships_array"] = filtered_relationships
+
+            memberships = item.get("organization_memberships")
+            if isinstance(memberships, list):
+                item["organization_memberships"] = [
+                    membership
+                    for membership in memberships
+                    if isinstance(membership, dict)
+                    and str(membership.get("organization_name") or "").strip() in organization_names
+                ]
+
+            org_members = item.get("organization_members")
+            if isinstance(org_members, list):
+                item["organization_members"] = [
+                    name for name in org_members
+                    if str(name or "").strip() in kept_names
+                ]
+
+        if dropped_names:
+            logger.info(
+                "拆书导入过滤原文未出现的角色/组织: %s",
+                "、".join(dropped_names[:20]),
+            )
+
+        return normalized_items[:target_count]
+
     async def _generate_characters_and_organizations_from_project(
         self,
         *,
@@ -1843,6 +2098,7 @@ class BookImportService:
         count: int,
         progress_callback: Any = None,
         progress_range: tuple[int, int] = (0, 100),
+        source_chapters: Optional[list[BookImportChapter]] = None,
     ) -> int:
         """根据世界观+职业体系生成角色/组织，并补全职业和组织成员关系。"""
 
@@ -1873,12 +2129,28 @@ class BookImportService:
 
         await _notify("👥 正在准备角色生成提示词...", 0.15)
         template = await PromptService.get_template("CHARACTERS_BATCH_GENERATION", user_id, db)
+        source_text = self._build_import_source_text(source_chapters)
+        source_names = self._extract_import_source_name_candidates(
+            source_text=source_text,
+            title=project.title or "",
+        )
         requirements = (
             "请生成能够支撑前期剧情推进的关键角色与组织，"
             "角色和组织都要与世界观、职业体系一致。"
             "如果包含组织，数量不超过2个。"
             "请尽量为非组织角色补充 organization_memberships。"
         )
+        if source_text:
+            source_context = self._build_import_source_prompt_context(source_chapters)
+            requirements = (
+                "这是拆书导入项目，角色卡必须从原文抽取，不是重新创作。"
+                "只能使用原文中明确出现的角色名或组织名，禁止推断姓氏、禁止补充原文不存在的新角色。"
+                "主角姓名必须与原文保持一致；如果原文只写“晓卡”，就必须输出“晓卡”，不能改成“苏晓卡”等全名。"
+                "原文未出现的组织不要生成；如果组织名不明确，可以只生成角色。"
+                f"原文高频候选名：{'、'.join(source_names[:5]) or '未识别'}。\n"
+                f"【原文节选】\n{source_context}\n\n"
+                + requirements
+            )
 
         if main_careers or sub_careers:
             careers_context = "\n\n【职业分配要求】\n"
@@ -1916,6 +2188,13 @@ class BookImportService:
             generated_entities = generated_data
         else:
             generated_entities = []
+        if source_text:
+            generated_entities = self._ground_generated_entities_to_source(
+                generated_entities,
+                source_text=source_text,
+                source_names=source_names,
+                target_count=target_count,
+            )
 
         # 预加载角色/组织，便于去重和兼容 append 场景的名称引用
         existing_chars_result = await db.execute(select(Character).where(Character.project_id == project.id))

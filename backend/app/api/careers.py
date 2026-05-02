@@ -26,6 +26,7 @@ from app.schemas.career import (
 )
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.project_story_context import build_project_story_context
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
 from app.api.common import verify_project_access
@@ -214,6 +215,7 @@ async def generate_career_system(
             # 构建项目上下文
             yield await tracker.loading("分析项目世界观...", 0.6)
             
+            story_context = await build_project_story_context(db, project_id)
             project_context = f"""
 项目信息：
 - 书名：{project.title}
@@ -223,6 +225,8 @@ async def generate_career_system(
 - 地理位置：{project.world_location or '未设定'}
 - 氛围基调：{project.world_atmosphere or '未设定'}
 - 世界规则：{project.world_rules or '未设定'}
+
+{story_context}
 """
             
             sanitized_user_requirements = user_requirements.strip()
@@ -245,6 +249,8 @@ async def generate_career_system(
 - 本次新增主职业：{main_career_count}个
 - 本次新增副职业：{sub_career_count}个
 - ⚠️ 重要：请生成与已有职业**不重复**的新职业，形成互补体系
+- 必须结合已有大纲和章节中实际出现的时代、身份、阵营、技术/能力限制来设计职业
+- 优先补足已有剧情已经暗示但尚未入库的职业或能力路径
 - 新职业应填补已有职业体系的空缺，丰富职业多样性
 - 主职业必须严格符合世界观规则，体现核心能力体系
 - 副职业可以更加自由灵活，包含生产、辅助、特殊类型

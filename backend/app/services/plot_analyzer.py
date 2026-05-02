@@ -27,7 +27,18 @@ class PlotAnalyzer:
             ai_service: AI服务实例
         """
         self.ai_service = ai_service
+        self.last_error: Optional[str] = None
         logger.info("✅ PlotAnalyzer初始化成功")
+
+    @staticmethod
+    def _is_non_retryable_ai_error(error: Optional[str]) -> bool:
+        if not error:
+            return False
+        non_retryable_markers = (
+            "promptFeedback.blockReason=PROHIBITED_CONTENT",
+            "Gemini 请求被拦截",
+        )
+        return any(marker in error for marker in non_retryable_markers)
     
     async def analyze_chapter(
         self,
@@ -61,6 +72,7 @@ class PlotAnalyzer:
             分析结果字典,失败返回None
         """
         logger.info(f"🔍 开始分析第{chapter_number}章: {title}")
+        self.last_error = None
         
         # 如果内容过长,截取前8000字(避免超token)
         analysis_content = content[:8000] if len(content) > 8000 else content
@@ -89,6 +101,14 @@ class PlotAnalyzer:
             existing_foreshadows=foreshadows_text,
             characters_info=characters_info if characters_info else "（暂无角色信息）"
         )
+
+        if self.ai_service.api_provider == "gemini":
+            prompt = (
+                "以下任务是虚构中文网络小说的文学结构分析。"
+                "请只分析剧情、角色状态、伏笔和叙事结构；"
+                "不要扩展、模仿或生成现实伤害内容。\n\n"
+                f"{prompt}"
+            )
         
         last_error = None
         logger.debug(f"章节分析提示词{prompt}")
@@ -118,6 +138,7 @@ class PlotAnalyzer:
                 if not accumulated_text or len(accumulated_text.strip()) < 10:
                     logger.warning(f"⚠️ AI响应为空或过短(长度: {len(accumulated_text)}), 尝试 {attempt}/{max_retries}")
                     last_error = "AI响应为空或过短"
+                    self.last_error = last_error
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 10)
                         logger.info(f"  ⏳ 等待 {wait_time} 秒后重试...")
@@ -151,6 +172,7 @@ class PlotAnalyzer:
                     # JSON解析失败，重试
                     logger.warning(f"⚠️ JSON解析失败, 尝试 {attempt}/{max_retries}")
                     last_error = "JSON解析失败"
+                    self.last_error = last_error
                     if attempt < max_retries:
                         wait_time = min(2 ** attempt, 10)
                         logger.info(f"  ⏳ 等待 {wait_time} 秒后重试...")
@@ -168,7 +190,12 @@ class PlotAnalyzer:
                     
             except Exception as e:
                 last_error = str(e)
+                self.last_error = last_error
                 logger.error(f"❌ 章节分析异常(尝试 {attempt}/{max_retries}): {last_error}")
+
+                if self._is_non_retryable_ai_error(last_error):
+                    logger.error(f"❌ 第{chapter_number}章分析失败: {last_error}，该错误不可通过重试恢复")
+                    return None
                 
                 if attempt < max_retries:
                     wait_time = min(2 ** attempt, 10)
@@ -187,6 +214,7 @@ class PlotAnalyzer:
         
         # 不应该到达这里，但作为安全措施
         logger.error(f"❌ 第{chapter_number}章分析失败: {last_error}")
+        self.last_error = last_error
         return None
     
     def _format_existing_foreshadows(self, foreshadows: Optional[List[Dict[str, Any]]]) -> str:

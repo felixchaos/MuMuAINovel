@@ -384,8 +384,37 @@ export const projectApi = {
     window.URL.revokeObjectURL(url);
   },
 
-  exportProject: (id: string) => {
-    window.open(`/api/projects/${id}/export`, '_blank');
+  exportProject: async (id: string, options?: {
+    start_chapter?: number;
+    end_chapter?: number;
+    split?: boolean;
+  }) => {
+    const response = await axios.get(`/api/projects/${id}/export`, {
+      params: options,
+      responseType: 'blob',
+      withCredentials: true,
+    });
+
+    const contentDisposition = response.headers['content-disposition'];
+    let filename = options?.split ? 'chapters.zip' : 'chapters.txt';
+    if (contentDisposition) {
+      const utf8Match = /filename\*=UTF-8''(.+)/.exec(contentDisposition);
+      const basicMatch = /filename="?([^";]+)"?/.exec(contentDisposition);
+      if (utf8Match?.[1]) {
+        filename = decodeURIComponent(utf8Match[1]);
+      } else if (basicMatch?.[1]) {
+        filename = basicMatch[1];
+      }
+    }
+
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
   },
 
   // 导出项目数据为JSON
@@ -772,6 +801,7 @@ export const chapterApi = {
     new_text: string;
     start_position: number;
     end_position: number;
+    original_text?: string;
   }) =>
     api.post<unknown, {
       success: boolean;
@@ -923,6 +953,30 @@ export const polishApi = {
 
   polishBatch: (texts: string[]) =>
     api.post<unknown, { polished_texts: string[] }>('/polish/batch', { texts }),
+
+  optimizeOutlinesBackground: (data: {
+    project_id: string;
+    outline_ids?: string[];
+    provider?: string;
+    model?: string;
+    temperature?: number;
+  }) =>
+    api.post<unknown, { task_id: string; task_type: string; status: string; message: string }>(
+      '/polish/outlines/background',
+      data,
+    ),
+
+  optimizeCharactersBackground: (data: {
+    project_id: string;
+    character_ids: string[];
+    provider?: string;
+    model?: string;
+    temperature?: number;
+  }) =>
+    api.post<unknown, { task_id: string; task_type: string; status: string; message: string }>(
+      '/polish/characters/background',
+      data,
+    ),
 };
 export const inspirationApi = {
   // 生成选项建议

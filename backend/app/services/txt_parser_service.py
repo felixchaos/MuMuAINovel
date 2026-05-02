@@ -13,7 +13,10 @@ class TxtParserService:
     """TXT 解析服务（规则优先）"""
 
     STRONG_CHAPTER_PATTERNS = [
-        re.compile(r"^第[一二三四五六七八九十百千万零〇两\d]+[章节回卷集部篇].*$"),
+        re.compile(
+            r"^第[一二三四五六七八九十百千万零〇两\d]+"
+            r"(?:[章回卷集部篇].*|节(?:$|[\s　:：、.．\-—]).*)$"
+        ),
         re.compile(r"^chapter\s*\d+.*$", re.IGNORECASE),
         re.compile(r"^chap\.\s*\d+.*$", re.IGNORECASE),
     ]
@@ -55,16 +58,22 @@ class TxtParserService:
             return []
 
         lines = text.split("\n")
-        heading_indexes: list[int] = []
+        strong_heading_indexes: list[int] = []
+        weak_heading_indexes: list[int] = []
 
         for idx, line in enumerate(lines):
             stripped = line.strip()
             if not stripped:
                 continue
-            if self._is_strong_heading(stripped) or self._is_weak_heading(lines, idx):
-                heading_indexes.append(idx)
+            if self._is_strong_heading(stripped):
+                strong_heading_indexes.append(idx)
+            elif self._is_weak_heading(lines, idx):
+                weak_heading_indexes.append(idx)
 
-        # 去重并排序
+        # 标准章节标题足够多时，弱标题只会增加对白/短句误判。
+        heading_indexes = strong_heading_indexes if len(strong_heading_indexes) >= 2 else (
+            strong_heading_indexes + weak_heading_indexes
+        )
         heading_indexes = sorted(set(heading_indexes))
 
         # 如果一个标题都识别不到，走固定窗口兜底
@@ -126,6 +135,10 @@ class TxtParserService:
         if len(line) > 25:
             return False
         if re.search(r"[，。！？；：,.!?;:]", line):
+            return False
+        if line.startswith(("“", "‘", "\"", "'", "「", "『", "（", "(", "《")):
+            return False
+        if line.endswith(("”", "’", "\"", "'", "」", "』", "）", ")", "》")):
             return False
 
         prev_blank = idx == 0 or not lines[idx - 1].strip()

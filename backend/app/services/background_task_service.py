@@ -188,6 +188,9 @@ class BackgroundTaskService:
                     logger.info(f"🔄 [用户{user_id[:8]}] 队列开始执行任务: {task_id[:8]} (队列剩余: {queue.qsize()})")
 
                     try:
+                        if await self._is_task_cancelled_before_start(task_id, user_id):
+                            logger.info(f"🚫 [用户{user_id[:8]}] 任务已在排队时取消，跳过执行: {task_id[:8]}")
+                            continue
                         await task_func(task_id, args["user_id"], *args["extra_args"], **kwargs)
                     except Exception as e:
                         logger.error(f"❌ 后台任务 {task_id[:8]} 异常: {e}", exc_info=True)
@@ -381,6 +384,28 @@ class BackgroundTaskService:
         return {
             uid: q.qsize() for uid, q in self._user_queues.items() if q.qsize() > 0
         }
+
+    @staticmethod
+    async def _is_task_cancelled_before_start(task_id: str, user_id: str) -> bool:
+        """避免排队中已取消的任务被 worker 重新拉起。"""
+        try:
+            engine = await get_engine(user_id)
+            AsyncSessionLocal = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(BackgroundTask.status, BackgroundTask.cancel_requested)
+                    .where(BackgroundTask.id == task_id)
+                )
+                row = result.one_or_none()
+                if not row:
+                    return True
+                status, cancel_requested = row
+                return status == "cancelled" or bool(cancel_requested)
+        except Exception as e:
+            logger.error(f"检查任务取消状态失败: {e}")
+            return False
 
 
 # 全局单例

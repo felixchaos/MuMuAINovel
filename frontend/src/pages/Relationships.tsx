@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, Slider, Input, Tabs, AutoComplete, theme } from 'antd';
-import { PlusOutlined, ApartmentOutlined, UserOutlined, EditOutlined } from '@ant-design/icons';
+import { Card, Table, Tag, Button, Space, message, Modal, Form, Select, Slider, Input, Tabs, AutoComplete, theme, InputNumber, Typography } from 'antd';
+import { PlusOutlined, ApartmentOutlined, UserOutlined, EditOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import axios from 'axios';
+import SSEProgressModal from '../components/SSEProgressModal';
 
 const { TextArea } = Input;
+const { Paragraph } = Typography;
 
 interface Relationship {
   id: string;
@@ -41,14 +43,20 @@ export default function Relationships() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingRelationship, setEditingRelationship] = useState<Relationship | null>(null);
   const [form] = Form.useForm();
+  const [aiForm] = Form.useForm();
   const [modal, contextHolder] = Modal.useModal();
   const { token } = theme.useToken();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiProgress, setAiProgress] = useState(0);
+  const [aiMessage, setAiMessage] = useState('');
+  const relationshipGenerateAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -65,6 +73,13 @@ export default function Relationships() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  useEffect(() => {
+    return () => {
+      relationshipGenerateAbortRef.current?.abort();
+      relationshipGenerateAbortRef.current = null;
+    };
+  }, []);
 
   const loadData = async () => {
     setLoading(true);
@@ -171,6 +186,93 @@ export default function Relationships() {
         }
       }
     });
+  };
+
+  const handleAIGenerateRelationships = async (values: {
+    relationship_count: number;
+    requirements?: string;
+  }) => {
+    setIsAIModalOpen(false);
+    setAiGenerating(true);
+    setAiProgress(0);
+    setAiMessage('开始分析大纲和章节...');
+    relationshipGenerateAbortRef.current?.abort();
+    const abortController = new AbortController();
+    relationshipGenerateAbortRef.current = abortController;
+
+    try {
+      const response = await fetch('/api/relationships/generate-stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          project_id: projectId || '',
+          relationship_count: values.relationship_count,
+          requirements: values.requirements?.trim() || '',
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok || !response.body) {
+        message.error(`请求失败: ${response.status}`);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'progress') {
+              setAiProgress(data.progress || 0);
+              setAiMessage(data.message || '');
+            } else if (data.type === 'done') {
+              message.success('AI关系生成完成');
+              loadData();
+            } else if (data.type === 'error') {
+              message.error(data.error || data.message || '生成失败');
+              return;
+            }
+          } catch {
+            // Ignore raw generation chunks.
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        message.info('已取消关系生成');
+      } else {
+        message.error(error instanceof Error ? error.message : '启动生成失败');
+      }
+    } finally {
+      if (relationshipGenerateAbortRef.current === abortController) {
+        relationshipGenerateAbortRef.current = null;
+      }
+      setAiGenerating(false);
+      setAiProgress(0);
+      setAiMessage('');
+    }
+  };
+
+  const handleCancelAIGeneration = () => {
+    relationshipGenerateAbortRef.current?.abort();
+    relationshipGenerateAbortRef.current = null;
+    setAiGenerating(false);
+    setAiProgress(0);
+    setAiMessage('');
   };
 
   const getCharacterName = (id: string) => {
@@ -320,7 +422,20 @@ export default function Relationships() {
           </Space>
         }
         extra={
-          <Space>
+          <Space wrap>
+            <Button
+              icon={<ThunderboltOutlined />}
+              onClick={() => {
+                aiForm.resetFields();
+                aiForm.setFieldsValue({ relationship_count: 8 });
+                setIsAIModalOpen(true);
+              }}
+              disabled={characters.filter(c => !c.is_organization).length < 2}
+              loading={aiGenerating}
+              size={isMobile ? 'small' : 'middle'}
+            >
+              {isMobile ? 'AI分析' : 'AI分析生成关系'}
+            </Button>
             <Button
               onClick={() => projectId && navigate(`/project/${projectId}/relationships-graph`)}
               size={isMobile ? 'small' : 'middle'}
@@ -412,6 +527,38 @@ export default function Relationships() {
           ]}
         />
       </Card>
+
+      <Modal
+        title="AI分析大纲/章节生成关系"
+        open={isAIModalOpen}
+        onCancel={() => setIsAIModalOpen(false)}
+        footer={null}
+        centered={!isMobile}
+        width={isMobile ? '100%' : 560}
+      >
+        <Form form={aiForm} layout="vertical" onFinish={handleAIGenerateRelationships}>
+          <Paragraph type="secondary">
+            AI会读取当前项目已有角色、大纲和章节，提取尚未入库的角色关系，不会覆盖已有关系。
+          </Paragraph>
+          <Form.Item label="本次生成关系数量" name="relationship_count" initialValue={8}>
+            <InputNumber min={1} max={50} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="额外要求" name="requirements">
+            <TextArea
+              rows={3}
+              placeholder="可选，例如：优先补全敌对关系、上下级关系，忽略只出现一次的路人关系。"
+            />
+          </Form.Item>
+          <Form.Item>
+            <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+              <Button onClick={() => setIsAIModalOpen(false)}>取消</Button>
+              <Button type="primary" icon={<ThunderboltOutlined />} htmlType="submit">
+                开始分析
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title={isEditMode ? '编辑关系' : '添加关系'}
@@ -536,6 +683,13 @@ export default function Relationships() {
           </Form.Item>
         </Form>
       </Modal>
+      <SSEProgressModal
+        visible={aiGenerating}
+        progress={aiProgress}
+        message={aiMessage}
+        title="AI分析生成关系中..."
+        onCancel={handleCancelAIGeneration}
+      />
       </div>
     </>
   );

@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     
     # MCP配置
     mcp_max_rounds: int = 3  # MCP工具调用最大轮数（全局统一控制）
+
+    # 出站 URL 安全配置
+    allow_dns_proxy_fake_ip: bool = False  # 仅本地代理 fake-ip DNS 场景需要开启，生产环境建议保持关闭
     
     # LinuxDO OAuth2 配置
     LINUXDO_CLIENT_ID: Optional[str] = None

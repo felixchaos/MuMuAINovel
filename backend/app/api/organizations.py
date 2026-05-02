@@ -26,6 +26,7 @@ from app.schemas.character import CharacterResponse
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
+from app.services.project_story_context import build_project_story_context
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
 from app.api.common import verify_project_access
@@ -460,6 +461,7 @@ async def generate_organization_stream(
                     existing_info += "\n\n已有组织：\n" + "\n".join(organization_list)
             
             # 构建项目上下文
+            story_context = await build_project_story_context(db, gen_request.project_id)
             project_context = f"""
 项目信息：
 - 书名：{project.title}
@@ -470,6 +472,8 @@ async def generate_organization_stream(
 - 氛围基调：{project.world_atmosphere or '未设定'}
 - 世界规则：{project.world_rules or '未设定'}
 {existing_info}
+
+{story_context}
 """
             
             user_input = f"""

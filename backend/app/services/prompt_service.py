@@ -28,6 +28,21 @@ class WritingStyleManager:
 class PromptService:
     """提示词模板管理"""
 
+    AI_DENOISING = """你是专业的中文小说文本编辑，请对下面文本进行润色和去 AI 味。
+
+处理目标：
+- 保留原意、事实、人物关系、设定和叙事视角。
+- 优化语句节奏，让表达更自然、更像人类作者写作。
+- 减少机械总结、工整排比、重复修辞和模板化表达。
+- 可以微调词序、断句、细节衔接，但不要扩写成新剧情。
+
+输出要求：
+- 只输出润色后的正文。
+- 不要解释，不要列清单，不要使用 Markdown。
+
+原文：
+{original_text}"""
+
     NOVEL_COVER_PROMPT_TEMPLATE = """创作一幅高质量小说封面插图，适用于竖版书籍封面。
 
 小说标题是：“{title}”。
@@ -2612,6 +2627,8 @@ class PromptService:
         Returns:
             格式化后的提示词
         """
+        if not template:
+            raise ValueError("提示词模板为空")
         try:
             return template.format(**kwargs)
         except KeyError as e:

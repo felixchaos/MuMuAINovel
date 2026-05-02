@@ -1,10 +1,12 @@
 """项目管理API"""
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
-from typing import List
+from typing import List, Optional
 import json
+import io
+import zipfile
 from urllib.parse import quote
 from app.database import get_db
 from app.models.project import Project
@@ -346,11 +348,14 @@ async def delete_project(
 @router.get("/{project_id}/export", summary="导出项目章节为TXT")
 async def export_project_chapters(
     project_id: str,
+    start_chapter: Optional[int] = Query(None, ge=1, description="起始章节号"),
+    end_chapter: Optional[int] = Query(None, ge=1, description="结束章节号"),
+    split: bool = Query(False, description="是否按章节拆分为ZIP"),
     db: AsyncSession = Depends(get_db),
     request: Request = None
 ):
     """
-    导出项目的所有章节内容为TXT文本文件
+    导出项目章节内容为TXT文本文件
     按章节顺序组织，使用便于再次拆书导入的纯章节格式
     """
     try:
@@ -360,7 +365,14 @@ async def export_project_chapters(
             logger.warning("未登录用户尝试导出项目")
             raise HTTPException(status_code=401, detail="未登录")
         
-        logger.info(f"开始导出项目: project_id={project_id}, user_id={user_id}")
+        if start_chapter is not None and end_chapter is not None and start_chapter > end_chapter:
+            raise HTTPException(status_code=400, detail="起始章节不能大于结束章节")
+
+        logger.info(
+            "开始导出项目: "
+            f"project_id={project_id}, user_id={user_id}, "
+            f"start={start_chapter}, end={end_chapter}, split={split}"
+        )
         
         # 只查询当前用户的项目
         result = await db.execute(
@@ -375,48 +387,86 @@ async def export_project_chapters(
             logger.warning(f"项目不存在或无权访问: project_id={project_id}, user_id={user_id}")
             raise HTTPException(status_code=404, detail="项目不存在")
         
-        chapters_result = await db.execute(
-            select(Chapter)
-            .where(Chapter.project_id == project_id)
-            .order_by(Chapter.chapter_number)
-        )
+        chapters_query = select(Chapter).where(Chapter.project_id == project_id)
+        if start_chapter is not None:
+            chapters_query = chapters_query.where(Chapter.chapter_number >= start_chapter)
+        if end_chapter is not None:
+            chapters_query = chapters_query.where(Chapter.chapter_number <= end_chapter)
+
+        chapters_result = await db.execute(chapters_query.order_by(Chapter.chapter_number))
         chapters = chapters_result.scalars().all()
         
         if not chapters:
             logger.warning(f"项目没有章节: {project_id}")
-            raise HTTPException(status_code=404, detail="项目没有任何章节")
+            raise HTTPException(status_code=404, detail="指定范围内没有任何章节")
         
-        txt_content = []
-        
-        for idx, chapter in enumerate(chapters):
+        def format_chapter_text(chapter: Chapter) -> str:
             chapter_title = (chapter.title or "").strip() or f"未命名章节{chapter.chapter_number}"
             raw_content = (chapter.content or "").strip()
+            formatted_lines = []
             if raw_content:
-                formatted_lines = []
                 for line in raw_content.splitlines():
                     stripped_line = line.strip()
                     if stripped_line:
                         formatted_lines.append(f"　　{stripped_line}")
                     else:
                         formatted_lines.append("")
-                chapter_content = "\n".join(formatted_lines)
             else:
-                chapter_content = "　　（本章暂无内容）"
-            
-            # 使用拆书强匹配可稳定识别的章节标题格式：第X章 标题
-            txt_content.append(f"第{chapter.chapter_number}章 {chapter_title}")
-            txt_content.append(chapter_content)
-            
+                formatted_lines.append("　　（本章暂无内容）")
+
+            return "\n".join([
+                f"第{chapter.chapter_number}章 {chapter_title}",
+                "\n".join(formatted_lines)
+            ])
+
+        def safe_filename_part(value: str) -> str:
+            cleaned = "".join(c for c in value if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
+            return cleaned.strip() or "未命名项目"
+
+        safe_title = safe_filename_part(project.title or "未命名项目")
+        if start_chapter is not None or end_chapter is not None:
+            actual_start = chapters[0].chapter_number
+            actual_end = chapters[-1].chapter_number
+            range_suffix = f"_第{actual_start}-{actual_end}章"
+        else:
+            range_suffix = ""
+
+        if split:
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+                for chapter in chapters:
+                    chapter_title = safe_filename_part(chapter.title or f"未命名章节{chapter.chapter_number}")
+                    chapter_filename = f"第{chapter.chapter_number:03d}章_{chapter_title}.txt"
+                    zip_file.writestr(chapter_filename, format_chapter_text(chapter).encode('utf-8'))
+
+            zip_buffer.seek(0)
+            filename = f"{safe_title}{range_suffix}_分章.zip"
+            encoded_filename = quote(filename)
+
+            logger.info(f"分章导出成功: {filename}, 共{len(chapters)}章")
+
+            return Response(
+                content=zip_buffer.getvalue(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+                    "Content-Type": "application/zip"
+                }
+            )
+
+        txt_content = []
+
+        for idx, chapter in enumerate(chapters):
+            txt_content.append(format_chapter_text(chapter))
+
             # 章节之间只保留一个空行，避免装饰性分割线干扰拆书识别
             if idx < len(chapters) - 1:
                 txt_content.append("")
         
         final_content = "\n".join(txt_content)
         
-        safe_title = "".join(c for c in (project.title or "未命名项目") if c.isalnum() or c in (' ', '-', '_', '，', '。', '、'))
-        filename = f"{safe_title}.txt"
+        filename = f"{safe_title}{range_suffix}.txt"
         
-        from urllib.parse import quote
         encoded_filename = quote(filename)
         
         logger.info(f"导出成功: {filename}, 共{len(chapters)}章, {len(final_content)}字符")

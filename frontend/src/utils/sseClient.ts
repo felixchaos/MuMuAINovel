@@ -18,6 +18,7 @@ export interface SSEClientOptions {
   onError?: (error: string, code?: number) => void;
   onComplete?: () => void;
   onConnectionError?: (error: Event) => void;
+  signal?: AbortSignal;
 }
 
 export class SSEClient {
@@ -129,6 +130,7 @@ export class SSEPostClient {
   private abortController: AbortController | null = null;
   private accumulatedContent: string = '';
   private resultData: any = null;
+  private settled = false;
 
   constructor(url: string, data: any, options: SSEClientOptions = {}) {
     this.url = url;
@@ -143,8 +145,18 @@ export class SSEPostClient {
   }
 
   private async connectInternal(resolve: (value: any) => void, reject: (reason?: any) => void) {
+      let externalSignal: AbortSignal | undefined;
+      let abortFromExternalSignal: (() => void) | undefined;
       try {
         this.abortController = new AbortController();
+        externalSignal = this.options.signal;
+        abortFromExternalSignal = () => this.abort();
+
+        if (externalSignal?.aborted) {
+          this.abortController.abort();
+        } else {
+          externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+        }
 
         const response = await fetch(this.url, {
           method: 'POST',
@@ -186,14 +198,20 @@ export class SSEPostClient {
             }
 
             try {
-              // 解析数据
-              const dataMatch = line.match(/^data: (.+)$/m);
-              if (dataMatch) {
-                const data = JSON.parse(dataMatch[1]);
+              const dataLines = line
+                .split('\n')
+                .filter((item) => item.startsWith('data:'))
+                .map((item) => item.replace(/^data:\s?/, ''));
+              const rawData = dataLines.join('\n');
+              if (rawData) {
+                const data = JSON.parse(rawData);
 
                 // 标准消息处理
                 const message: SSEMessage = data;
-                await this.handleMessage(message, resolve, reject);
+                const shouldStop = await this.handleMessage(message, resolve, reject);
+                if (shouldStop) {
+                  return;
+                }
               }
             } catch (error) {
               console.error('解析SSE消息失败:', error, line);
@@ -202,19 +220,37 @@ export class SSEPostClient {
         }
 
       } catch (error: any) {
+        if (this.settled) {
+          return;
+        }
         if (error.name === 'AbortError') {
           console.log('请求已取消');
+          this.settled = true;
+          reject(error);
         } else {
           console.error('SSE POST请求失败:', error);
           if (this.options.onError) {
             this.options.onError(error.message || '请求失败');
           }
+          this.settled = true;
           reject(error);
+        }
+      } finally {
+        if (externalSignal && abortFromExternalSignal) {
+          externalSignal.removeEventListener('abort', abortFromExternalSignal);
         }
       }
   }
 
-  private async handleMessage(message: SSEMessage, resolve: (value: any) => void, reject: (reason?: any) => void) {
+  private async handleMessage(
+    message: SSEMessage,
+    resolve: (value: any) => void,
+    reject: (reason?: any) => void
+  ): Promise<boolean> {
+    if (this.settled) {
+      return true;
+    }
+
     switch (message.type) {
       case 'progress':
         if (this.options.onProgress && message.progress !== undefined) {
@@ -225,7 +261,7 @@ export class SSEPostClient {
             message.word_count
           );
         }
-        break;
+        return false;
 
       case 'chunk':
         if (message.content) {
@@ -234,26 +270,29 @@ export class SSEPostClient {
             this.options.onChunk(message.content);
           }
         }
-        break;
+        return false;
 
       case 'result':
         if (this.options.onResult && message.data) {
           this.options.onResult(message.data);
         }
         this.resultData = message.data;
-        break;
+        return false;
 
       case 'error':
         if (this.options.onError) {
           this.options.onError(message.error || '未知错误', message.code);
         }
+        this.settled = true;
+        this.abort();
         reject(new Error(message.error || '未知错误'));
-        break;
+        return true;
 
       case 'done':
         if (this.options.onComplete) {
           this.options.onComplete();
         }
+        this.settled = true;
         if (this.resultData) {
           resolve(this.resultData);
         } else if (this.accumulatedContent) {
@@ -261,7 +300,10 @@ export class SSEPostClient {
         } else {
           resolve(true);
         }
-        break;
+        return true;
+
+      default:
+        return false;
     }
   }
 

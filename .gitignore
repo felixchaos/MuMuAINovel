@@ -37,6 +37,7 @@ env/
 *~
 .DS_Store
 .kilocode/
+.playwright-cli/
 
 # Environment variables
 .env

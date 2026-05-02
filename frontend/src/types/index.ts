@@ -511,8 +511,12 @@ export interface GenerateCharacterRequest {
 }
 
 export interface PolishTextRequest {
-  text: string;
-  style?: string;
+  original_text: string;
+  project_id?: string;
+  provider?: string;
+  model?: string;
+  temperature?: number;
+  instruction?: string;
 }
 
 // 向导API响应类型
