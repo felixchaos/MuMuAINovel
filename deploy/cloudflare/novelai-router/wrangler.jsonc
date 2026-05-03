@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/wrangler@latest/config-schema.json",
+  "name": "novelai-smart-router",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-03",
+  "keep_vars": true,
+  "routes": [
+    {
+      "pattern": "novelai.example.com/*",
+      "zone_name": "example.com"
+    }
+  ],
+  "vars": {
+    "ENTRY_HOST": "novelai.example.com",
+    "CN_ORIGIN_HOST": "novelai-cn.example.com",
+    "US_ORIGIN_HOST": "novelai-us.example.com"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

@@ -831,6 +831,16 @@ class JSONParseError(Exception):
         self.original_content = original_content
 
 
+OUTLINE_JSON_MAX_TOKENS_CEILING = 32000
+
+
+def _outline_json_max_tokens(chapter_count: int, *, retry: bool = False) -> int:
+    per_chapter_tokens = 2200 if not retry else 3600
+    minimum = 10000 if not retry else 18000
+    requested = max(int(chapter_count or 1) * per_chapter_tokens, minimum)
+    return min(requested, OUTLINE_JSON_MAX_TOKENS_CEILING)
+
+
 def _parse_ai_response(ai_response: str, raise_on_error: bool = False) -> list:
     """
     解析AI响应为章节数据列表（使用统一的JSON清洗方法）
@@ -1061,7 +1071,8 @@ async def new_outline_generator(
         async for chunk in user_ai_service.generate_text_stream(
             prompt=prompt,
             provider=provider_param,
-            model=model_param
+            model=model_param,
+            max_tokens=_outline_json_max_tokens(chapter_count),
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -1099,11 +1110,9 @@ async def new_outline_generator(
             except JSONParseError as e:
                 retry_count += 1
                 if retry_count > max_retries:
-                    # 超过最大重试次数，使用fallback数据
-                    logger.error(f"❌ 大纲解析失败，已达最大重试次数({max_retries})，使用fallback数据")
-                    yield await tracker.warning("解析失败，使用备用数据")
-                    outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                    break
+                    logger.error(f"❌ 大纲解析失败，已达最大重试次数({max_retries})，停止保存")
+                    yield await tracker.error("JSON解析失败：AI未返回完整大纲，已停止保存，未写入数据库")
+                    raise JSONParseError("JSON解析失败：AI未返回完整大纲", ai_content)
                 
                 logger.warning(f"⚠️ JSON解析失败（第{retry_count}次），正在重试...")
                 yield await tracker.retry(retry_count, max_retries, "JSON解析失败")
@@ -1116,12 +1125,13 @@ async def new_outline_generator(
                 chunk_count = 0
                 
                 # 在prompt中添加格式强调
-                retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组，不要截断。每个章节对象必须包含完整的title、summary等字段。"
+                retry_prompt = prompt + "\n\n【重要提醒】上一次输出不是可解析JSON。请只返回完整JSON数组，从第一个字符[`[`]开始，到最后一个字符[`]`]结束，不要解释，不要省略，不要截断。"
                 
                 async for chunk in user_ai_service.generate_text_stream(
                     prompt=retry_prompt,
                     provider=provider_param,
-                    model=model_param
+                    model=model_param,
+                    max_tokens=_outline_json_max_tokens(chapter_count, retry=True),
                 ):
                     chunk_count += 1
                     accumulated_text += chunk
@@ -1516,7 +1526,8 @@ async def continue_outline_generator(
             async for chunk in user_ai_service.generate_text_stream(
                 prompt=prompt,
                 provider=provider_param,
-                model=model_param
+                model=model_param,
+                max_tokens=_outline_json_max_tokens(current_batch_size),
             ):
                 chunk_count += 1
                 accumulated_text += chunk
@@ -1556,11 +1567,9 @@ async def continue_outline_generator(
                 except JSONParseError as e:
                     retry_count += 1
                     if retry_count > max_retries:
-                        # 超过最大重试次数，使用fallback数据
-                        logger.error(f"❌ 第{batch_num + 1}批解析失败，已达最大重试次数({max_retries})，使用fallback数据")
-                        yield await tracker.warning(f"第{str(batch_num + 1)}批解析失败，使用备用数据")
-                        outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                        break
+                        logger.error(f"❌ 第{batch_num + 1}批解析失败，已达最大重试次数({max_retries})，停止保存")
+                        yield await tracker.error("JSON解析失败：AI未返回完整大纲，已停止保存，未写入数据库")
+                        raise JSONParseError("JSON解析失败：AI未返回完整大纲", ai_content)
                     
                     logger.warning(f"⚠️ 第{batch_num + 1}批JSON解析失败（第{retry_count}次），正在重试...")
                     yield await tracker.retry(retry_count, max_retries, f"第{str(batch_num + 1)}批解析失败")
@@ -1573,12 +1582,13 @@ async def continue_outline_generator(
                     chunk_count = 0
                     
                     # 在prompt中添加格式强调
-                    retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组，不要截断。每个章节对象必须包含完整的title、summary等字段。"
+                    retry_prompt = prompt + "\n\n【重要提醒】上一次输出不是可解析JSON。请只返回完整JSON数组，从第一个字符[`[`]开始，到最后一个字符[`]`]结束，不要解释，不要省略，不要截断。"
                     
                     async for chunk in user_ai_service.generate_text_stream(
                         prompt=retry_prompt,
                         provider=provider_param,
-                        model=model_param
+                        model=model_param,
+                        max_tokens=_outline_json_max_tokens(current_batch_size, retry=True),
                     ):
                         chunk_count += 1
                         accumulated_text += chunk
@@ -1860,7 +1870,10 @@ async def _run_new_outline_bg(
     await tracker.generating(current_chars=0, estimated_total=estimated_total)
 
     async for chunk in user_ai_service.generate_text_stream(
-        prompt=prompt, provider=provider_param, model=model_param
+        prompt=prompt,
+        provider=provider_param,
+        model=model_param,
+        max_tokens=_outline_json_max_tokens(chapter_count),
     ):
         chunk_count += 1
         accumulated_text += chunk
@@ -1888,14 +1901,17 @@ async def _run_new_outline_bg(
         except JSONParseError:
             retry_count += 1
             if retry_count > max_retries:
-                outline_data = _parse_ai_response(ai_content, raise_on_error=False)
-                break
+                await tracker.error("JSON解析失败：AI未返回完整大纲，已停止保存，未写入数据库")
+                raise JSONParseError("JSON解析失败：AI未返回完整大纲", ai_content)
             await tracker.retry(retry_count, max_retries, "JSON解析失败")
             tracker.reset_generating_progress()
             accumulated_text = ""
-            retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
+            retry_prompt = prompt + "\n\n【重要提醒】上一次输出不是可解析JSON。请只返回完整JSON数组，从第一个字符[`[`]开始，到最后一个字符[`]`]结束，不要解释，不要省略，不要截断。"
             async for chunk in user_ai_service.generate_text_stream(
-                prompt=retry_prompt, provider=provider_param, model=model_param
+                prompt=retry_prompt,
+                provider=provider_param,
+                model=model_param,
+                max_tokens=_outline_json_max_tokens(chapter_count, retry=True),
             ):
                 accumulated_text += chunk
             ai_content = accumulated_text
@@ -2163,7 +2179,10 @@ async def _run_continue_outline_bg(
         estimated_chars = current_batch_size * 1000
 
         async for chunk in user_ai_service.generate_text_stream(
-            prompt=prompt, provider=data.get("provider"), model=data.get("model")
+            prompt=prompt,
+            provider=data.get("provider"),
+            model=data.get("model"),
+            max_tokens=_outline_json_max_tokens(current_batch_size),
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -2186,14 +2205,17 @@ async def _run_continue_outline_bg(
             except JSONParseError:
                 retry_count += 1
                 if retry_count > max_retries:
-                    outline_data = _parse_ai_response(accumulated_text, raise_on_error=False)
-                    break
+                    await tracker.error("JSON解析失败：AI未返回完整大纲，已停止保存，未写入数据库")
+                    raise JSONParseError("JSON解析失败：AI未返回完整大纲", accumulated_text)
                 await tracker.retry(retry_count, max_retries, "JSON解析失败")
                 tracker.reset_generating_progress()
                 accumulated_text = ""
-                retry_prompt = prompt + "\n\n【重要提醒】请确保返回完整的JSON数组。"
+                retry_prompt = prompt + "\n\n【重要提醒】上一次输出不是可解析JSON。请只返回完整JSON数组，从第一个字符[`[`]开始，到最后一个字符[`]`]结束，不要解释，不要省略，不要截断。"
                 async for chunk in user_ai_service.generate_text_stream(
-                    prompt=retry_prompt, provider=data.get("provider"), model=data.get("model")
+                    prompt=retry_prompt,
+                    provider=data.get("provider"),
+                    model=data.get("model"),
+                    max_tokens=_outline_json_max_tokens(current_batch_size, retry=True),
                 ):
                     accumulated_text += chunk
 

@@ -9,7 +9,7 @@ import { getProjectTasks, pollTaskUntilComplete, type TaskStatus } from '../serv
 import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
 import { outlineApi, chapterApi, projectApi, characterApi, polishApi } from '../services/api';
-import type { ApiError, Character, Outline as OutlineItem } from '../types';
+import type { ApiError, Character, Outline as OutlineItem, Project } from '../types';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -41,6 +41,52 @@ interface GenerateFormValues {
 }
 
 type PolishableOutlineField = 'story_direction' | 'requirements';
+
+interface ModelOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+interface ModelOptionsCachePayload {
+  cachedAt: number;
+  defaultModel?: string;
+  models: ModelOption[];
+}
+
+const MODEL_OPTIONS_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function getModelOptionsCacheKey(provider?: string, apiBaseUrl?: string) {
+  return `outline_model_options_v1:${provider || 'unknown'}:${apiBaseUrl || 'default'}`;
+}
+
+function readModelOptionsCache(provider?: string, apiBaseUrl?: string): ModelOptionsCachePayload | null {
+  try {
+    const raw = sessionStorage.getItem(getModelOptionsCacheKey(provider, apiBaseUrl));
+    if (!raw) return null;
+    const data = JSON.parse(raw) as ModelOptionsCachePayload;
+    if (!data.cachedAt || Date.now() - data.cachedAt > MODEL_OPTIONS_CACHE_TTL_MS) {
+      return null;
+    }
+    if (!Array.isArray(data.models)) {
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writeModelOptionsCache(provider: string | undefined, apiBaseUrl: string | undefined, payload: Omit<ModelOptionsCachePayload, 'cachedAt'>) {
+  try {
+    sessionStorage.setItem(
+      getModelOptionsCacheKey(provider, apiBaseUrl),
+      JSON.stringify({ ...payload, cachedAt: Date.now() })
+    );
+  } catch {
+    // 缓存失败不影响弹窗打开
+  }
+}
 
 interface OutlineOptimizeFormValues {
   scope: 'all' | 'filtered' | 'page';
@@ -125,9 +171,11 @@ function getOutlinePreview(content: string, maxLength = 120): { text: string; tr
 }
 
 const { TextArea } = Input;
+type ModalApi = ReturnType<typeof Modal.useModal>[0];
 
 interface PolishableTextAreaProps {
   form: FormInstance<GenerateFormValues>;
+  modalApi: ModalApi;
   name: PolishableOutlineField;
   label: string;
   rows: number;
@@ -139,6 +187,7 @@ interface PolishableTextAreaProps {
 
 function PolishableTextArea({
   form,
+  modalApi,
   name,
   label,
   rows,
@@ -150,23 +199,19 @@ function PolishableTextArea({
   const [isPolishing, setIsPolishing] = useState(false);
   const { token } = theme.useToken();
 
-  const handlePolish = async () => {
-    const currentValue = String(form.getFieldValue(name) || '').trim();
-    if (!currentValue) {
-      message.warning(`请先填写${label}`);
-      return;
-    }
-
+  const runPolish = async (currentValue: string, instruction: string) => {
     const closeLoading = message.loading(`正在润色${label}...`, 0);
     try {
       setIsPolishing(true);
       const selectedModel = form.getFieldValue('model');
       const selectedProvider = form.getFieldValue('provider');
+      const trimmedInstruction = instruction.trim();
       const result = await polishApi.polishText({
         original_text: currentValue,
         model: selectedModel || undefined,
         provider: selectedProvider || undefined,
         temperature: 0.7,
+        instruction: trimmedInstruction || undefined,
       });
 
       const polishedText = result.polished_text?.trim();
@@ -175,8 +220,78 @@ function PolishableTextArea({
         return;
       }
 
-      form.setFieldsValue({ [name]: polishedText });
-      message.success(`${label}已润色`);
+      modalApi.confirm({
+        title: `${label}润色结果`,
+        icon: <HighlightOutlined />,
+        width: 720,
+        centered: true,
+        okText: '应用润色结果',
+        cancelText: '保留原文',
+        content: (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 14, color: token.colorTextSecondary }}>
+              AI 已完成润色，确认后才会替换文本框内容。
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              {trimmedInstruction && (
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>本次要求</div>
+                  <div
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.6,
+                      padding: '8px 10px',
+                      border: `1px solid ${token.colorInfoBorder}`,
+                      borderRadius: token.borderRadius,
+                      background: token.colorInfoBg,
+                    }}
+                  >
+                    {trimmedInstruction}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>原文</div>
+                <div
+                  style={{
+                    maxHeight: 160,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,
+                    padding: '8px 10px',
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorFillQuaternary,
+                  }}
+                >
+                  {currentValue}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>润色结果</div>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,
+                    padding: '8px 10px',
+                    border: `1px solid ${token.colorPrimaryBorder}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorBgContainer,
+                  }}
+                >
+                  {polishedText}
+                </div>
+              </div>
+            </div>
+          </div>
+        ),
+        onOk: () => {
+          form.setFieldsValue({ [name]: polishedText });
+          message.success(`${label}已应用润色结果`);
+        },
+      });
     } catch (error) {
       console.error(`${label}润色失败:`, error);
       message.error(`${label}润色失败`);
@@ -184,6 +299,56 @@ function PolishableTextArea({
       closeLoading();
       setIsPolishing(false);
     }
+  };
+
+  const handlePolish = () => {
+    const currentValue = String(form.getFieldValue(name) || '').trim();
+    if (!currentValue) {
+      message.warning(`请先填写${label}`);
+      return;
+    }
+
+    let instruction = '';
+    modalApi.confirm({
+      title: `${label}润色要求`,
+      icon: <HighlightOutlined />,
+      width: 640,
+      centered: true,
+      okText: '开始润色',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            输入本次希望 AI 如何处理这段内容；留空则使用默认去 AI 味润色。
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：保留原意，只让表达更自然；语气更口语化；压缩到两句话；强化悬疑感；不要新增设定..."
+            autoFocus
+            onChange={(event) => {
+              instruction = event.target.value;
+            }}
+          />
+          <div
+            style={{
+              marginTop: 12,
+              maxHeight: 120,
+              overflowY: 'auto',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.6,
+              padding: '8px 10px',
+              border: `1px solid ${token.colorBorderSecondary}`,
+              borderRadius: token.borderRadius,
+              background: token.colorFillQuaternary,
+              color: token.colorTextSecondary,
+            }}
+          >
+            {currentValue}
+          </div>
+        </div>
+      ),
+      onOk: () => runPolish(currentValue, instruction),
+    });
   };
 
   const textAreaStyle: CSSProperties = {
@@ -225,6 +390,266 @@ function PolishableTextArea({
         }}
       />
     </div>
+  );
+}
+
+interface OutlineGenerateModalContentProps {
+  form: FormInstance<GenerateFormValues>;
+  modalApi: ModalApi;
+  hasOutlines: boolean;
+  initialMode: 'auto' | 'new' | 'continue';
+  currentProject: Project;
+}
+
+function OutlineGenerateModalContent({
+  form,
+  modalApi,
+  hasOutlines,
+  initialMode,
+  currentProject,
+}: OutlineGenerateModalContentProps) {
+  const { token } = theme.useToken();
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string | undefined>();
+  const [modelLoading, setModelLoading] = useState(true);
+  const [modelLoadError, setModelLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    form.setFieldsValue({
+      mode: initialMode,
+      chapter_count: 5,
+      narrative_perspective: currentProject.narrative_perspective || '第三人称',
+      plot_stage: 'development',
+      keep_existing: true,
+      theme: currentProject.theme || '',
+      model: undefined,
+    });
+
+    const loadModels = async () => {
+      setModelLoading(true);
+      setModelLoadError(null);
+
+      try {
+        const settingsResponse = await fetch('/api/settings');
+        if (!settingsResponse.ok) {
+          throw new Error('设置加载失败');
+        }
+
+        const settings = await settingsResponse.json();
+        const { api_key, api_base_url, api_provider, llm_model } = settings;
+
+        if (cancelled) return;
+
+        const cached = readModelOptionsCache(api_provider, api_base_url);
+        if (cached) {
+          setModelOptions(cached.models);
+          setDefaultModel(cached.defaultModel || llm_model);
+          form.setFieldsValue({ model: cached.defaultModel || llm_model || undefined });
+          setModelLoading(false);
+          return;
+        }
+
+        setDefaultModel(llm_model);
+        if (llm_model) {
+          form.setFieldsValue({ model: llm_model });
+        }
+
+        if (!api_key || !api_base_url) {
+          setModelOptions([]);
+          setModelLoading(false);
+          return;
+        }
+
+        const modelsResponse = await fetch(
+          `/api/settings/models?api_key=${encodeURIComponent(api_key)}&api_base_url=${encodeURIComponent(api_base_url)}&provider=${api_provider}`
+        );
+        if (!modelsResponse.ok) {
+          throw new Error('模型列表加载失败');
+        }
+
+        const data = await modelsResponse.json();
+        const models = Array.isArray(data.models) ? data.models as ModelOption[] : [];
+        if (cancelled) return;
+
+        setModelOptions(models);
+        writeModelOptionsCache(api_provider, api_base_url, {
+          defaultModel: llm_model,
+          models,
+        });
+      } catch (error) {
+        console.log('获取模型列表失败，将使用默认模型', error);
+        if (!cancelled) {
+          setModelLoadError('模型列表加载失败，将使用默认模型');
+        }
+      } finally {
+        if (!cancelled) {
+          setModelLoading(false);
+        }
+      }
+    };
+
+    void loadModels();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [form, initialMode, currentProject.narrative_perspective, currentProject.theme]);
+
+  return (
+    <Form
+      form={form}
+      layout="vertical"
+      style={{ marginTop: 16 }}
+    >
+      {hasOutlines && (
+        <Form.Item
+          label="生成模式"
+          name="mode"
+          tooltip="自动判断：根据是否有大纲自动选择；全新生成：删除旧大纲重新生成；续写模式：基于已有大纲继续创作"
+        >
+          <Radio.Group buttonStyle="solid">
+            <Radio.Button value="auto">自动判断</Radio.Button>
+            <Radio.Button value="new">全新生成</Radio.Button>
+            <Radio.Button value="continue">续写模式</Radio.Button>
+          </Radio.Group>
+        </Form.Item>
+      )}
+
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => prevValues.mode !== currentValues.mode}
+      >
+        {({ getFieldValue }) => {
+          const mode = getFieldValue('mode');
+          const isContinue = mode === 'continue' || (mode === 'auto' && hasOutlines);
+
+          if (isContinue) {
+            return null;
+          }
+
+          return (
+            <Form.Item
+              label="故事主题"
+              name="theme"
+              rules={[{ required: true, message: '请输入故事主题' }]}
+            >
+              <TextArea rows={3} placeholder="描述你的故事主题、核心设定和主要情节..." />
+            </Form.Item>
+          );
+        }}
+      </Form.Item>
+
+      <Form.Item
+        noStyle
+        shouldUpdate={(prevValues, currentValues) => prevValues.mode !== currentValues.mode}
+      >
+        {({ getFieldValue }) => {
+          const mode = getFieldValue('mode');
+          const isContinue = mode === 'continue' || (mode === 'auto' && hasOutlines);
+
+          return (
+            <>
+              {isContinue && (
+                <>
+                  <Form.Item
+                    label="故事发展方向"
+                    name="story_direction"
+                    tooltip="告诉AI你希望故事接下来如何发展"
+                  >
+                    <PolishableTextArea
+                      form={form}
+                      modalApi={modalApi}
+                      name="story_direction"
+                      label="故事发展方向"
+                      rows={3}
+                      placeholder="例如：主角遇到新的挑战、引入新角色、揭示关键秘密等..."
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    label="情节阶段"
+                    name="plot_stage"
+                    tooltip="帮助AI理解当前故事所处的阶段"
+                  >
+                    <Select>
+                      <Select.Option value="development">发展阶段 - 继续展开情节</Select.Option>
+                      <Select.Option value="climax">高潮阶段 - 矛盾激化</Select.Option>
+                      <Select.Option value="ending">结局阶段 - 收束伏笔</Select.Option>
+                    </Select>
+                  </Form.Item>
+                </>
+              )}
+
+              <Form.Item
+                label={isContinue ? '续写章节数' : '章节数量'}
+                name="chapter_count"
+                rules={[{ required: true, message: '请输入章节数量' }]}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  placeholder={isContinue ? '建议5-10章' : '如：30'}
+                />
+              </Form.Item>
+
+              <Form.Item
+                label="叙事视角"
+                name="narrative_perspective"
+                rules={[{ required: true, message: '请选择叙事视角' }]}
+              >
+                <Select>
+                  <Select.Option value="第一人称">第一人称</Select.Option>
+                  <Select.Option value="第三人称">第三人称</Select.Option>
+                  <Select.Option value="全知视角">全知视角</Select.Option>
+                </Select>
+              </Form.Item>
+
+              <Form.Item label="其他要求" name="requirements">
+                <PolishableTextArea
+                  form={form}
+                  modalApi={modalApi}
+                  name="requirements"
+                  label="其他要求"
+                  rows={2}
+                  placeholder="其他特殊要求（可选）"
+                />
+              </Form.Item>
+            </>
+          );
+        }}
+      </Form.Item>
+
+      <Form.Item
+        label="AI模型"
+        name="model"
+        tooltip="选择用于生成的AI模型，不选则使用系统默认模型"
+      >
+        <Select
+          placeholder={
+            modelLoading
+              ? '正在加载模型列表...'
+              : defaultModel
+                ? `默认: ${modelOptions.find(m => m.value === defaultModel)?.label || defaultModel}`
+                : '使用默认模型'
+          }
+          loading={modelLoading}
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          options={modelOptions}
+          notFoundContent={modelLoading ? '模型列表加载中...' : '暂无可选模型'}
+          onChange={(value) => {
+            form.setFieldsValue({ model: value });
+          }}
+        />
+        <div style={{ color: modelLoadError ? token.colorWarning : token.colorTextTertiary, fontSize: 12, marginTop: 4 }}>
+          {modelLoadError || (defaultModel ? `当前默认模型: ${modelOptions.find(m => m.value === defaultModel)?.label || defaultModel}` : '未配置默认模型')}
+        </div>
+      </Form.Item>
+    </Form>
   );
 }
 
@@ -707,34 +1132,9 @@ export default function Outline() {
     }
   };
 
-  const showGenerateModal = async () => {
+  const showGenerateModal = () => {
     const hasOutlines = outlines.length > 0;
     const initialMode = hasOutlines ? 'continue' : 'new';
-
-    // 直接加载可用模型列表
-    const settingsResponse = await fetch('/api/settings');
-    const settings = await settingsResponse.json();
-    const { api_key, api_base_url, api_provider } = settings;
-
-    let loadedModels: Array<{ value: string, label: string }> = [];
-    let defaultModel: string | undefined = undefined;
-
-    if (api_key && api_base_url) {
-      try {
-        const modelsResponse = await fetch(
-          `/api/settings/models?api_key=${encodeURIComponent(api_key)}&api_base_url=${encodeURIComponent(api_base_url)}&provider=${api_provider}`
-        );
-        if (modelsResponse.ok) {
-          const data = await modelsResponse.json();
-          if (data.models && data.models.length > 0) {
-            loadedModels = data.models;
-            defaultModel = settings.llm_model;
-          }
-        }
-      } catch {
-        console.log('获取模型列表失败，将使用默认模型');
-      }
-    }
 
     modalApi.confirm({
       title: hasOutlines ? (
@@ -746,166 +1146,13 @@ export default function Outline() {
       width: 700,
       centered: true,
       content: (
-        <Form
+        <OutlineGenerateModalContent
           form={generateForm}
-          layout="vertical"
-          style={{ marginTop: 16 }}
-          initialValues={{
-            mode: initialMode,
-            chapter_count: 5,
-            narrative_perspective: currentProject.narrative_perspective || '第三人称',
-            plot_stage: 'development',
-            keep_existing: true,
-            theme: currentProject.theme || '',
-            model: defaultModel,
-          }}
-        >
-          {hasOutlines && (
-            <Form.Item
-              label="生成模式"
-              name="mode"
-              tooltip="自动判断：根据是否有大纲自动选择；全新生成：删除旧大纲重新生成；续写模式：基于已有大纲继续创作"
-            >
-              <Radio.Group buttonStyle="solid">
-                <Radio.Button value="auto">自动判断</Radio.Button>
-                <Radio.Button value="new">全新生成</Radio.Button>
-                <Radio.Button value="continue">续写模式</Radio.Button>
-              </Radio.Group>
-            </Form.Item>
-          )}
-
-          <Form.Item
-            noStyle
-            shouldUpdate={(prevValues, currentValues) => prevValues.mode !== currentValues.mode}
-          >
-            {({ getFieldValue }) => {
-              const mode = getFieldValue('mode');
-              const isContinue = mode === 'continue' || (mode === 'auto' && hasOutlines);
-
-              // 续写模式不显示主题输入，使用项目原有主题
-              if (isContinue) {
-                return null;
-              }
-
-              // 全新生成模式需要输入主题
-              return (
-                <Form.Item
-                  label="故事主题"
-                  name="theme"
-                  rules={[{ required: true, message: '请输入故事主题' }]}
-                >
-                  <TextArea rows={3} placeholder="描述你的故事主题、核心设定和主要情节..." />
-                </Form.Item>
-              );
-            }}
-          </Form.Item>
-
-          <Form.Item
-            noStyle
-            shouldUpdate={(prevValues, currentValues) => prevValues.mode !== currentValues.mode}
-          >
-            {({ getFieldValue }) => {
-              const mode = getFieldValue('mode');
-              const isContinue = mode === 'continue' || (mode === 'auto' && hasOutlines);
-
-              return (
-                <>
-                  {isContinue && (
-                    <>
-                      <Form.Item
-                        label="故事发展方向"
-                        name="story_direction"
-                        tooltip="告诉AI你希望故事接下来如何发展"
-                      >
-                        <PolishableTextArea
-                          form={generateForm}
-                          name="story_direction"
-                          label="故事发展方向"
-                          rows={3}
-                          placeholder="例如：主角遇到新的挑战、引入新角色、揭示关键秘密等..."
-                        />
-                      </Form.Item>
-
-                      <Form.Item
-                        label="情节阶段"
-                        name="plot_stage"
-                        tooltip="帮助AI理解当前故事所处的阶段"
-                      >
-                        <Select>
-                          <Select.Option value="development">发展阶段 - 继续展开情节</Select.Option>
-                          <Select.Option value="climax">高潮阶段 - 矛盾激化</Select.Option>
-                          <Select.Option value="ending">结局阶段 - 收束伏笔</Select.Option>
-                        </Select>
-                      </Form.Item>
-                    </>
-                  )}
-
-                  <Form.Item
-                    label={isContinue ? "续写章节数" : "章节数量"}
-                    name="chapter_count"
-                    rules={[{ required: true, message: '请输入章节数量' }]}
-                  >
-                    <Input
-                      type="number"
-                      min={1}
-                      max={50}
-                      placeholder={isContinue ? "建议5-10章" : "如：30"}
-                    />
-                  </Form.Item>
-
-                  <Form.Item
-                    label="叙事视角"
-                    name="narrative_perspective"
-                    rules={[{ required: true, message: '请选择叙事视角' }]}
-                  >
-                    <Select>
-                      <Select.Option value="第一人称">第一人称</Select.Option>
-                      <Select.Option value="第三人称">第三人称</Select.Option>
-                      <Select.Option value="全知视角">全知视角</Select.Option>
-                    </Select>
-                  </Form.Item>
-
-                  <Form.Item label="其他要求" name="requirements">
-                    <PolishableTextArea
-                      form={generateForm}
-                      name="requirements"
-                      label="其他要求"
-                      rows={2}
-                      placeholder="其他特殊要求（可选）"
-                    />
-                  </Form.Item>
-
-                </>
-              );
-            }}
-          </Form.Item>
-
-          {/* 自定义模型选择 - 移到外层，所有模式都显示 */}
-          {loadedModels.length > 0 && (
-            <Form.Item
-              label="AI模型"
-              name="model"
-              tooltip="选择用于生成的AI模型，不选则使用系统默认模型"
-            >
-              <Select
-                placeholder={defaultModel ? `默认: ${loadedModels.find(m => m.value === defaultModel)?.label || defaultModel}` : "使用默认模型"}
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                options={loadedModels}
-                onChange={(value) => {
-                  console.log('用户在下拉框中选择了模型:', value);
-                  // 手动同步到Form
-                  generateForm.setFieldsValue({ model: value });
-                  console.log('已同步到Form，当前Form值:', generateForm.getFieldsValue());
-                }}
-              />
-              <div style={{ color: token.colorTextTertiary, fontSize: 12, marginTop: 4 }}>
-                {defaultModel ? `当前默认模型: ${loadedModels.find(m => m.value === defaultModel)?.label || defaultModel}` : '未配置默认模型'}
-              </div>
-            </Form.Item>
-          )}
-        </Form>
+          modalApi={modalApi}
+          hasOutlines={hasOutlines}
+          initialMode={initialMode}
+          currentProject={currentProject}
+        />
       ),
       okText: hasOutlines ? '开始续写' : '开始生成',
       cancelText: '取消',

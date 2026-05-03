@@ -1,73 +1,80 @@
-# React + TypeScript + Vite
+# MuMuAINovel Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+这是 MuMuAINovel 的 React + TypeScript + Vite 前端。生产构建默认输出到 `backend/static`，由 FastAPI 后端统一托管。
 
-Currently, two official plugins are available:
+## 开发
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+默认开发地址：
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```text
+http://localhost:5173
 ```
+
+Vite 已配置代理：
+
+- `/api` -> `http://localhost:8000`
+- `/generated-assets` -> `http://localhost:8000`
+
+因此本地开发时需要同时启动后端。
+
+## 构建
+
+```bash
+npm run build
+```
+
+默认输出目录：
+
+```text
+../backend/static
+```
+
+Docker 构建时会临时把输出目录改为镜像内的 `dist`，再复制到后端静态目录。
+
+## 功能开关
+
+以下变量是构建期变量，改动后必须重新构建。
+
+```bash
+VITE_ENABLE_SPONSOR=false
+VITE_ENABLE_ANNOUNCEMENT_MODAL=false
+VITE_ENABLE_MUMU_API_LINKS=false
+VITE_ENABLE_SPRING_FESTIVAL=false
+```
+
+含义：
+
+- `VITE_ENABLE_SPONSOR=false`：隐藏赞助入口。
+- `VITE_ENABLE_ANNOUNCEMENT_MODAL=false`：关闭公告弹窗。
+- `VITE_ENABLE_MUMU_API_LINKS=false`：隐藏 MuMu API 外链。
+- `VITE_ENABLE_SPRING_FESTIVAL=false`：关闭节日挂件。
+
+示例：
+
+```bash
+VITE_ENABLE_SPONSOR=false \
+VITE_ENABLE_ANNOUNCEMENT_MODAL=false \
+VITE_ENABLE_MUMU_API_LINKS=false \
+VITE_ENABLE_SPRING_FESTIVAL=false \
+npm run build
+```
+
+## 常用命令
+
+```bash
+npm run dev
+npm run build
+npm run lint
+npm run preview
+```
+
+## 注意事项
+
+- 不要提交 `dist`、`node_modules` 或本地缓存目录。
+- 不要在前端代码里写死 API Key、SMTP 密钥、Cloudflare Token 或个人服务器地址。
+- 文本润色、章节重写、大纲续写等功能依赖后端 AI 配置；前端只负责采集参数和展示结果。

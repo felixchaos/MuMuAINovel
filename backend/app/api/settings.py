@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from datetime import datetime
 import httpx
+import hashlib
 import json
 import time
 
@@ -32,6 +33,41 @@ from app.security import validate_public_http_url
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["设置管理"])
+
+MODEL_LIST_CACHE_TTL_SECONDS = 600
+_model_list_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _models_cache_key(provider: str, api_base_url: str, api_key: str) -> str:
+    key_hash = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+    return f"{provider}:{api_base_url.rstrip('/')}:{key_hash}"
+
+
+def _get_cached_models(cache_key: str) -> Optional[Dict[str, Any]]:
+    cached = _model_list_cache.get(cache_key)
+    if not cached:
+        return None
+    if time.monotonic() - cached["cached_at"] > MODEL_LIST_CACHE_TTL_SECONDS:
+        _model_list_cache.pop(cache_key, None)
+        return None
+    payload = dict(cached["payload"])
+    payload["cached"] = True
+    payload["cache_ttl_seconds"] = MODEL_LIST_CACHE_TTL_SECONDS
+    return payload
+
+
+def _set_cached_models(cache_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    cached_payload = dict(payload)
+    cached_payload.pop("cached", None)
+    cached_payload.pop("cache_ttl_seconds", None)
+    _model_list_cache[cache_key] = {
+        "cached_at": time.monotonic(),
+        "payload": cached_payload,
+    }
+    response_payload = dict(cached_payload)
+    response_payload["cached"] = False
+    response_payload["cache_ttl_seconds"] = MODEL_LIST_CACHE_TTL_SECONDS
+    return response_payload
 
 
 class CoverSettingsTestRequest(BaseModel):
@@ -582,6 +618,12 @@ async def get_available_models(
     try:
         provider = normalize_provider(provider)
         api_base_url = validate_public_http_url(api_base_url)
+        cache_key = _models_cache_key(provider, api_base_url, api_key)
+        cached_models = _get_cached_models(cache_key)
+        if cached_models:
+            logger.info(f"模型列表缓存命中: provider={provider}, base_url={api_base_url.rstrip('/')}")
+            return cached_models
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             if provider == "openai" or provider == "azure" or provider == "custom":
                 # OpenAI 兼容接口获取模型列表
@@ -616,11 +658,11 @@ async def get_available_models(
                     )
                 
                 logger.info(f"成功获取 {len(models)} 个模型")
-                return {
+                return _set_cached_models(cache_key, {
                     "provider": provider,
                     "models": models,
                     "count": len(models)
-                }
+                })
                 
             elif provider == "anthropic":
                 # Anthropic models API
@@ -630,7 +672,7 @@ async def get_available_models(
                 response.raise_for_status()
                 data = response.json()
                 models = [{"value": m["id"], "label": m["id"], "description": m.get("display_name", "")} for m in data.get("data", [])]
-                return {"provider": provider, "models": models, "count": len(models)}
+                return _set_cached_models(cache_key, {"provider": provider, "models": models, "count": len(models)})
             
             elif provider == "gemini":
                 # Gemini models API
@@ -643,7 +685,7 @@ async def get_available_models(
                     if "generateContent" in m.get("supportedGenerationMethods", []):
                         mid = m.get("name", "").replace("models/", "")
                         models.append({"value": mid, "label": m.get("displayName", mid), "description": ""})
-                return {"provider": provider, "models": models, "count": len(models)}
+                return _set_cached_models(cache_key, {"provider": provider, "models": models, "count": len(models)})
             
             else:
                 raise HTTPException(status_code=400, detail=f"不支持的提供商: {provider}")

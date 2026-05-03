@@ -30,7 +30,9 @@ from app.logger import get_logger
 router = APIRouter(prefix="/polish", tags=["AI去味"])
 logger = get_logger(__name__)
 
-POLISH_MAX_TOKENS_CEILING = 16000
+POLISH_MAX_TOKENS_CEILING = 32000
+POLISH_DEFAULT_MIN_TOKENS = 8192
+POLISH_INSTRUCTION_MIN_TOKENS = 12000
 
 
 def _extract_generated_text(response) -> str:
@@ -50,9 +52,11 @@ def _finish_reason(response) -> str:
     return str(reason)
 
 
-def _polish_max_tokens(text: str, *, has_instruction: bool = False) -> int:
-    minimum = 4096 if has_instruction else 2048
-    requested = max(len(text or "") * 2, minimum)
+def _polish_max_tokens(text: str, *, has_instruction: bool = False, retry: bool = False) -> int:
+    minimum = POLISH_INSTRUCTION_MIN_TOKENS if has_instruction else POLISH_DEFAULT_MIN_TOKENS
+    if retry:
+        minimum = min(minimum * 2, POLISH_MAX_TOKENS_CEILING)
+    requested = max(len(text or "") * 3, minimum)
     return min(requested, POLISH_MAX_TOKENS_CEILING)
 
 
@@ -61,8 +65,57 @@ def _ensure_non_empty_result(text: str, response, operation: str) -> str:
         return text
     reason = _finish_reason(response)
     if reason == "length":
-        raise HTTPException(status_code=502, detail=f"{operation}失败: AI输出被截断，请提高最大Tokens或换用更快模型")
+        raise HTTPException(status_code=502, detail=f"{operation}失败: AI输出额度耗尽但未返回正文，请换用非推理模型或更高输出上限")
     raise HTTPException(status_code=502, detail=f"{operation}失败: AI返回空内容")
+
+
+def _needs_empty_length_retry(response) -> bool:
+    return _finish_reason(response) == "length" and not _extract_generated_text(response).strip()
+
+
+async def _generate_polish_response(
+    ai_service: AIService,
+    *,
+    prompt: str,
+    source_text: str,
+    has_instruction: bool,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = 0.7,
+    operation: str,
+):
+    max_tokens = _polish_max_tokens(source_text, has_instruction=has_instruction)
+    response = await ai_service.generate_text(
+        prompt=prompt,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        auto_mcp=False,
+    )
+
+    if not _needs_empty_length_retry(response):
+        return response
+
+    retry_max_tokens = _polish_max_tokens(source_text, has_instruction=has_instruction, retry=True)
+    if retry_max_tokens <= max_tokens:
+        return response
+
+    logger.warning(
+        "%s输出为空且触发length，自动提高max_tokens重试: %s -> %s, model=%s",
+        operation,
+        max_tokens,
+        retry_max_tokens,
+        model or "default",
+    )
+    return await ai_service.generate_text(
+        prompt=prompt,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        max_tokens=retry_max_tokens,
+        auto_mcp=False,
+    )
 
 
 def _strip_code_fence(text: str) -> str:
@@ -184,12 +237,16 @@ async def _generate_optimized_text(
     model: Optional[str] = None,
     temperature: Optional[float] = 0.6,
 ) -> str:
-    response = await ai_service.generate_text(
-        prompt=f"{instruction}\n\n请处理以下内容：\n{source}",
+    prompt = f"{instruction}\n\n请处理以下内容：\n{source}"
+    response = await _generate_polish_response(
+        ai_service,
+        prompt=prompt,
+        source_text=source,
+        has_instruction=True,
         provider=provider,
         model=model,
         temperature=temperature,
-        max_tokens=_polish_max_tokens(source, has_instruction=True),
+        operation="AI优化",
     )
     return _ensure_non_empty_result(_extract_generated_text(response), response, "AI优化")
 
@@ -238,15 +295,15 @@ async def polish_text(
         logger.info(f"开始AI去味处理，原文长度: {len(request.original_text)}")
         
         # 调用AI进行去味处理
-        ai_response = await user_ai_service.generate_text(
+        ai_response = await _generate_polish_response(
+            user_ai_service,
             prompt=prompt,
+            source_text=request.original_text,
+            has_instruction=bool(request.instruction),
             provider=request.provider,
             model=request.model,
             temperature=request.temperature,
-            max_tokens=_polish_max_tokens(
-                request.original_text,
-                has_instruction=bool(request.instruction)
-            )
+            operation="AI去味",
         )
         polished_text = _ensure_non_empty_result(_extract_generated_text(ai_response), ai_response, "AI去味")
         
