@@ -54,6 +54,33 @@ class StoryEngineLane(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class StoryEngineBeat(BaseModel):
+    """A lightweight timeline beat derived from outlines, chapters, and analysis."""
+    id: str
+    title: str
+    beat_type: str = Field("chapter", description="outline/chapter/analysis")
+    chapter_number: Optional[int] = None
+    progress: int = Field(0, ge=0, le=100)
+    status: str = Field("neutral", description="ok/warning/empty/neutral")
+    stage: Optional[str] = None
+    conflict_level: Optional[int] = None
+    emotional_tone: Optional[str] = None
+    summary: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class StoryEngineCardDraft(BaseModel):
+    """A ddys-style plot-card draft derived without creating fork-only tables."""
+    id: str
+    title: str
+    card_type: str = Field("plot", description="plot/character/scene/conflict/hook/promise")
+    source: str = Field("outline", description="outline/chapter/analysis")
+    source_title: Optional[str] = None
+    chapter_number: Optional[int] = None
+    content: str
+    tags: List[str] = Field(default_factory=list)
+
+
 class StoryEngineSnapshotResponse(BaseModel):
     """Read-only story-engine snapshot built from official-compatible data."""
     project_id: str
@@ -63,5 +90,7 @@ class StoryEngineSnapshotResponse(BaseModel):
     metrics: List[StoryEngineMetric]
     sections: List[StoryEngineSection]
     lanes: List[StoryEngineLane] = Field(default_factory=list)
+    beats: List[StoryEngineBeat] = Field(default_factory=list)
+    cards: List[StoryEngineCardDraft] = Field(default_factory=list)
     recommendations: List[StoryEngineRecommendation]
     context_text: str

@@ -6,8 +6,9 @@ features can grow without breaking upstream compatibility.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,8 @@ from app.models.outline import Outline
 from app.models.project import Project
 from app.models.relationship import CharacterRelationship
 from app.schemas.story_engine import (
+    StoryEngineBeat,
+    StoryEngineCardDraft,
     StoryEngineItem,
     StoryEngineLane,
     StoryEngineMetric,
@@ -36,6 +39,42 @@ def _compact_text(text: Optional[str], max_len: int = 180) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return f"{cleaned[:max_len].rstrip()}..."
+
+
+def _json_list(value: Any) -> list[Any]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+    return []
+
+
+def _json_text(item: Any, *keys: str) -> str:
+    if isinstance(item, dict):
+        for key in keys:
+            value = item.get(key)
+            if value:
+                return _compact_text(str(value), 260)
+        return ""
+    return _compact_text(str(item), 260) if item is not None else ""
+
+
+def _json_tag(item: Any, key: str) -> Optional[str]:
+    if isinstance(item, dict):
+        value = item.get(key)
+        return str(value) if value else None
+    return None
 
 
 def _metric_status(value: int, *, warning_min: int = 1) -> str:
@@ -353,6 +392,215 @@ def _derive_story_lanes(
     return lanes
 
 
+def _beat_status(analysis: Optional[PlotAnalysis], has_content: bool) -> str:
+    if analysis and analysis.coherence_score is not None and analysis.coherence_score < 6:
+        return "warning"
+    if analysis:
+        return "ok"
+    return "neutral" if has_content else "empty"
+
+
+def _derive_story_beats(
+    *,
+    project: Project,
+    outline_rows: list[Outline],
+    chapter_rows: list[Chapter],
+    analysis_by_chapter: dict[str, PlotAnalysis],
+) -> list[StoryEngineBeat]:
+    """Build a ddys-style beat timeline from existing official records."""
+
+    if chapter_rows:
+        target = max(1, int(project.chapter_count or 0) or max((row.chapter_number or 0) for row in chapter_rows))
+        beats: list[StoryEngineBeat] = []
+        for index, chapter in enumerate(chapter_rows, start=1):
+            analysis = analysis_by_chapter.get(chapter.id)
+            plot_points = _json_list(analysis.plot_points) if analysis else []
+            first_point = _json_text(plot_points[0], "content", "description", "impact") if plot_points else ""
+            summary = (
+                first_point
+                or _compact_text(chapter.summary or chapter.content, 220)
+                or "暂无节拍摘要"
+            )
+            tags = [
+                tag
+                for tag in [
+                    analysis.plot_stage if analysis else None,
+                    analysis.pacing if analysis else None,
+                    "已分析" if analysis else "未分析",
+                ]
+                if tag
+            ]
+            beats.append(
+                StoryEngineBeat(
+                    id=f"chapter:{chapter.id}",
+                    title=f"第{chapter.chapter_number}章：{chapter.title}",
+                    beat_type="chapter",
+                    chapter_number=chapter.chapter_number,
+                    progress=_coverage(value=chapter.chapter_number or index, target=target),
+                    status=_beat_status(analysis, bool(_compact_text(chapter.content))),
+                    stage=analysis.plot_stage if analysis else None,
+                    conflict_level=analysis.conflict_level if analysis else None,
+                    emotional_tone=analysis.emotional_tone if analysis else None,
+                    summary=summary,
+                    tags=tags,
+                )
+            )
+        return beats
+
+    target = max(1, int(project.chapter_count or 0) or len(outline_rows) or 1)
+    return [
+        StoryEngineBeat(
+            id=f"outline:{outline.id}",
+            title=outline.title,
+            beat_type="outline",
+            chapter_number=outline.order_index,
+            progress=_coverage(value=outline.order_index or index, target=target),
+            status="neutral" if _compact_text(outline.content or outline.structure) else "empty",
+            summary=_compact_text(outline.content or outline.structure, 220) or "暂无节拍摘要",
+            tags=["大纲"],
+        )
+        for index, outline in enumerate(outline_rows, start=1)
+    ]
+
+
+def _card_title(prefix: str, content: str, fallback: str) -> str:
+    title = _compact_text(content, 28)
+    return f"{prefix}：{title}" if title else fallback
+
+
+def _derive_card_drafts(
+    *,
+    outline_rows: list[Outline],
+    chapter_rows: list[Chapter],
+    analysis_rows: list[PlotAnalysis],
+    chapter_by_id: dict[str, Chapter],
+    limit: int = 18,
+) -> list[StoryEngineCardDraft]:
+    """Derive plot-card drafts from analysis first, then fall back to outlines."""
+
+    cards: list[StoryEngineCardDraft] = []
+
+    def add_card(
+        *,
+        key: str,
+        title: str,
+        card_type: str,
+        source: str,
+        content: str,
+        source_title: Optional[str],
+        chapter_number: Optional[int],
+        tags: list[str],
+    ) -> None:
+        cleaned = _compact_text(content, 360)
+        if not cleaned or len(cards) >= limit:
+            return
+        cards.append(
+            StoryEngineCardDraft(
+                id=key,
+                title=title,
+                card_type=card_type,
+                source=source,
+                source_title=source_title,
+                chapter_number=chapter_number,
+                content=cleaned,
+                tags=[tag for tag in tags if tag],
+            )
+        )
+
+    for analysis in analysis_rows:
+        if len(cards) >= limit:
+            break
+        chapter = chapter_by_id.get(analysis.chapter_id)
+        source_title = f"第{chapter.chapter_number}章：{chapter.title}" if chapter else "章节分析"
+        chapter_number = chapter.chapter_number if chapter else None
+        base_tags = [analysis.plot_stage, analysis.emotional_tone]
+
+        for index, point in enumerate(_json_list(analysis.plot_points)[:2], start=1):
+            content = _json_text(point, "content", "description", "impact")
+            add_card(
+                key=f"analysis:{analysis.id}:plot:{index}",
+                title=_card_title("情节点", content, "情节点"),
+                card_type="plot",
+                source="analysis",
+                content=content,
+                source_title=source_title,
+                chapter_number=chapter_number,
+                tags=base_tags + [_json_tag(point, "type"), "情节点"],
+            )
+
+        for index, hook in enumerate(_json_list(analysis.hooks)[:1], start=1):
+            content = _json_text(hook, "content", "description")
+            add_card(
+                key=f"analysis:{analysis.id}:hook:{index}",
+                title=_card_title("钩子", content, "钩子"),
+                card_type="hook",
+                source="analysis",
+                content=content,
+                source_title=source_title,
+                chapter_number=chapter_number,
+                tags=base_tags + [_json_tag(hook, "type"), _json_tag(hook, "position"), "钩子"],
+            )
+
+        for index, foreshadow in enumerate(_json_list(analysis.foreshadows)[:1], start=1):
+            content = _json_text(foreshadow, "content", "description")
+            add_card(
+                key=f"analysis:{analysis.id}:promise:{index}",
+                title=_card_title("伏笔", content, "伏笔"),
+                card_type="promise",
+                source="analysis",
+                content=content,
+                source_title=source_title,
+                chapter_number=chapter_number,
+                tags=base_tags + [_json_tag(foreshadow, "type"), "伏笔"],
+            )
+
+        for index, state in enumerate(_json_list(analysis.character_states)[:1], start=1):
+            content = _json_text(state, "key_event", "psychological_change", "state_after", "state_before")
+            character_name = _json_tag(state, "character_name")
+            add_card(
+                key=f"analysis:{analysis.id}:character:{index}",
+                title=_card_title("角色变化", content, "角色变化"),
+                card_type="character",
+                source="analysis",
+                content=content,
+                source_title=source_title,
+                chapter_number=chapter_number,
+                tags=base_tags + [character_name, "角色"],
+            )
+
+    if cards:
+        return cards
+
+    for outline in outline_rows:
+        add_card(
+            key=f"outline:{outline.id}",
+            title=outline.title,
+            card_type="plot",
+            source="outline",
+            content=outline.content or outline.structure or "",
+            source_title="大纲",
+            chapter_number=outline.order_index,
+            tags=["大纲", "剧情草稿"],
+        )
+
+    if cards:
+        return cards
+
+    for chapter in chapter_rows:
+        add_card(
+            key=f"chapter:{chapter.id}",
+            title=f"第{chapter.chapter_number}章：{chapter.title}",
+            card_type="plot",
+            source="chapter",
+            content=chapter.summary or chapter.content or "",
+            source_title="章节",
+            chapter_number=chapter.chapter_number,
+            tags=[chapter.status, "章节"],
+        )
+
+    return cards
+
+
 def _recommendations(
     *,
     project: Project,
@@ -560,6 +808,33 @@ async def build_story_engine_snapshot(
             .limit(8)
         )
     ).scalars().all()
+    timeline_outline_rows = (
+        await db.execute(
+            select(Outline)
+            .where(Outline.project_id == project_id)
+            .order_by(Outline.order_index.asc(), Outline.created_at.asc())
+            .limit(40)
+        )
+    ).scalars().all()
+    timeline_chapter_rows = (
+        await db.execute(
+            select(Chapter)
+            .where(Chapter.project_id == project_id)
+            .order_by(Chapter.chapter_number.asc(), Chapter.created_at.asc())
+            .limit(40)
+        )
+    ).scalars().all()
+    analysis_rows = (
+        await db.execute(
+            select(PlotAnalysis)
+            .join(Chapter, PlotAnalysis.chapter_id == Chapter.id)
+            .where(PlotAnalysis.project_id == project_id)
+            .order_by(Chapter.chapter_number.asc(), PlotAnalysis.created_at.asc())
+            .limit(40)
+        )
+    ).scalars().all()
+    analysis_by_chapter = {analysis.chapter_id: analysis for analysis in analysis_rows}
+    chapter_by_id = {chapter.id: chapter for chapter in [*timeline_chapter_rows, *chapter_rows]}
 
     profile_items = _project_profile_items(project)
     sections: list[StoryEngineSection] = []
@@ -790,6 +1065,18 @@ async def build_story_engine_snapshot(
             organization_rows=organization_rows,
             career_rows=career_rows,
             foreshadow_rows=foreshadow_rows,
+        ),
+        beats=_derive_story_beats(
+            project=project,
+            outline_rows=timeline_outline_rows,
+            chapter_rows=timeline_chapter_rows,
+            analysis_by_chapter=analysis_by_chapter,
+        ),
+        cards=_derive_card_drafts(
+            outline_rows=timeline_outline_rows,
+            chapter_rows=timeline_chapter_rows,
+            analysis_rows=analysis_rows,
+            chapter_by_id=chapter_by_id,
         ),
         recommendations=_recommendations(
             project=project,

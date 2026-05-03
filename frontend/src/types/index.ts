@@ -265,6 +265,31 @@ export interface StoryEngineLane {
   tags: string[];
 }
 
+export interface StoryEngineBeat {
+  id: string;
+  title: string;
+  beat_type: 'outline' | 'chapter' | 'analysis' | string;
+  chapter_number?: number;
+  progress: number;
+  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
+  stage?: string;
+  conflict_level?: number;
+  emotional_tone?: string;
+  summary?: string;
+  tags: string[];
+}
+
+export interface StoryEngineCardDraft {
+  id: string;
+  title: string;
+  card_type: 'plot' | 'character' | 'scene' | 'conflict' | 'hook' | 'promise' | string;
+  source: 'outline' | 'chapter' | 'analysis' | string;
+  source_title?: string;
+  chapter_number?: number;
+  content: string;
+  tags: string[];
+}
+
 export interface StoryEngineSnapshot {
   project_id: string;
   title: string;
@@ -273,6 +298,8 @@ export interface StoryEngineSnapshot {
   metrics: StoryEngineMetric[];
   sections: StoryEngineSection[];
   lanes: StoryEngineLane[];
+  beats: StoryEngineBeat[];
+  cards: StoryEngineCardDraft[];
   recommendations: StoryEngineRecommendation[];
   context_text: string;
 }

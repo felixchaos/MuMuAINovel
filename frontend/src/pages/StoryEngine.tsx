@@ -12,6 +12,7 @@ import {
   Skeleton,
   Space,
   Tag,
+  Timeline,
   Tooltip,
   Typography,
   message,
@@ -22,10 +23,14 @@ import {
   ClusterOutlined,
   CopyOutlined,
   ExclamationCircleOutlined,
+  FieldTimeOutlined,
+  ProfileOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
 import { projectApi } from '../services/api';
 import type {
+  StoryEngineBeat,
+  StoryEngineCardDraft,
   StoryEngineLane,
   StoryEngineMetric,
   StoryEngineRecommendation,
@@ -228,6 +233,48 @@ export default function StoryEngine() {
     );
   };
 
+  const renderBeat = (beat: StoryEngineBeat) => {
+    const meta = statusMeta(beat.status);
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        <Space wrap size={6}>
+          <Text strong>{beat.title}</Text>
+          <Tag color={meta.color}>{meta.label}</Tag>
+          {typeof beat.conflict_level === 'number' && (
+            <Tag color={beat.conflict_level >= 7 ? 'red' : 'orange'}>冲突 {beat.conflict_level}</Tag>
+          )}
+          {beat.stage && <Tag>{beat.stage}</Tag>}
+          {beat.emotional_tone && <Tag>{beat.emotional_tone}</Tag>}
+          {beat.tags.map((tag) => (
+            <Tag key={`${beat.id}:${tag}`}>{tag}</Tag>
+          ))}
+        </Space>
+        <Progress percent={beat.progress} size="small" style={{ maxWidth: 220 }} />
+        <Text type="secondary">{beat.summary || '暂无节拍摘要'}</Text>
+      </Space>
+    );
+  };
+
+  const renderCardDraft = (card: StoryEngineCardDraft) => (
+    <List.Item style={{ paddingInline: 0 }}>
+      <List.Item.Meta
+        avatar={<ProfileOutlined style={{ color: token.colorPrimary }} />}
+        title={
+          <Space wrap size={6}>
+            <Text strong>{card.title}</Text>
+            <Tag color="processing">{card.card_type}</Tag>
+            {card.chapter_number && <Tag>第{card.chapter_number}章</Tag>}
+            {card.source_title && <Text type="secondary">{card.source_title}</Text>}
+            {card.tags.map((tag) => (
+              <Tag key={`${card.id}:${tag}`}>{tag}</Tag>
+            ))}
+          </Space>
+        }
+        description={card.content}
+      />
+    </List.Item>
+  );
+
   const renderRecommendation = (item: StoryEngineRecommendation) => {
     const meta = priorityMeta(item.priority);
     const sourcePathMap: Record<string, string> = {
@@ -328,6 +375,57 @@ export default function StoryEngine() {
                   {snapshot.lanes.map(renderLane)}
                 </Row>
               </Card>
+            )}
+
+            {((snapshot.beats || []).length > 0 || (snapshot.cards || []).length > 0) && (
+              <Row gutter={[12, 12]}>
+                {(snapshot.beats || []).length > 0 && (
+                  <Col xs={24} xl={12}>
+                    <Card
+                      title={
+                        <Space>
+                          <FieldTimeOutlined />
+                          <span>时间线节拍</span>
+                        </Space>
+                      }
+                      extra={<Text type="secondary">最多展示前 16 个节点</Text>}
+                      style={{ height: '100%' }}
+                    >
+                      <Timeline
+                        items={(snapshot.beats || []).slice(0, 16).map((beat) => ({
+                          key: beat.id,
+                          color: beat.status === 'warning'
+                            ? token.colorWarning
+                            : beat.status === 'ok'
+                              ? token.colorSuccess
+                              : token.colorPrimary,
+                          children: renderBeat(beat),
+                        }))}
+                      />
+                    </Card>
+                  </Col>
+                )}
+                {(snapshot.cards || []).length > 0 && (
+                  <Col xs={24} xl={12}>
+                    <Card
+                      title={
+                        <Space>
+                          <ProfileOutlined />
+                          <span>剧情卡草稿</span>
+                        </Space>
+                      }
+                      extra={<Text type="secondary">由分析结果优先派生</Text>}
+                      style={{ height: '100%' }}
+                    >
+                      <List
+                        size="small"
+                        dataSource={(snapshot.cards || []).slice(0, 12)}
+                        renderItem={renderCardDraft}
+                      />
+                    </Card>
+                  </Col>
+                )}
+              </Row>
             )}
 
             <Row gutter={[12, 12]}>

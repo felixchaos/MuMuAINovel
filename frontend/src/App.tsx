@@ -34,8 +34,7 @@ import './App.css';
 function App() {
   return (
     <>
-      {/* 🧧 春节喜庆装饰 */}
-      <SpringFestival />
+      {FEATURE_FLAGS.springFestival && <SpringFestival />}
       <BrowserRouter
         future={{
           v7_startTransition: true,
