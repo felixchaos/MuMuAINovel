@@ -42,6 +42,18 @@ class StoryEngineRecommendation(BaseModel):
     source: str = "system"
 
 
+class StoryEngineLane(BaseModel):
+    """A derived story line built from official-compatible project data."""
+    key: str
+    title: str
+    lane_type: str = Field("plot", description="plot/character/faction/promise/continuity")
+    status: str = Field("neutral", description="ok/warning/empty/neutral")
+    progress: int = Field(0, ge=0, le=100)
+    summary: str
+    items: List[StoryEngineItem] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+
+
 class StoryEngineSnapshotResponse(BaseModel):
     """Read-only story-engine snapshot built from official-compatible data."""
     project_id: str
@@ -50,5 +62,6 @@ class StoryEngineSnapshotResponse(BaseModel):
     readiness_score: int = Field(0, ge=0, le=100)
     metrics: List[StoryEngineMetric]
     sections: List[StoryEngineSection]
+    lanes: List[StoryEngineLane] = Field(default_factory=list)
     recommendations: List[StoryEngineRecommendation]
     context_text: str

@@ -22,6 +22,7 @@ from app.models.project import Project
 from app.models.relationship import CharacterRelationship
 from app.schemas.story_engine import (
     StoryEngineItem,
+    StoryEngineLane,
     StoryEngineMetric,
     StoryEngineRecommendation,
     StoryEngineSection,
@@ -173,6 +174,183 @@ def _build_context_text(
     lines.append("")
     lines.append(story_context)
     return "\n".join(line for line in lines if line is not None)
+
+
+def _lane_status(total: int, progress: int) -> str:
+    if total <= 0:
+        return "empty"
+    if progress < 45:
+        return "warning"
+    return "ok"
+
+
+def _derive_story_lanes(
+    *,
+    project: Project,
+    outline_count: int,
+    chapter_count: int,
+    content_chapter_count: int,
+    character_count: int,
+    organization_count: int,
+    relationship_count: int,
+    career_count: int,
+    foreshadow_count: int,
+    analysis_count: int,
+    outline_rows: list[Outline],
+    chapter_rows: list[Chapter],
+    character_rows: list[Character],
+    organization_rows: list[Character],
+    career_rows: list[Career],
+    foreshadow_rows: list[Foreshadow],
+) -> list[StoryEngineLane]:
+    """Derive ddys-style story lines without introducing fork-only tables."""
+
+    target_chapters = max(1, chapter_count or int(project.chapter_count or 0) or outline_count or 1)
+    main_progress = _coverage(value=max(outline_count, content_chapter_count), target=target_chapters)
+    character_target = max(3, int(project.character_count or 0) or 5)
+    character_progress = int(
+        round((_coverage(value=character_count, target=character_target) * 0.65)
+              + (_coverage(value=relationship_count, target=max(1, character_count)) * 0.35))
+    )
+    faction_progress = int(
+        round((_coverage(value=organization_count, target=3) * 0.65)
+              + (_coverage(value=career_count, target=2) * 0.35))
+    )
+    promise_resolved = sum(1 for item in foreshadow_rows if item.status in {"resolved", "partially_resolved"})
+    promise_progress = 0 if foreshadow_count == 0 else max(15, _coverage(value=promise_resolved, target=max(1, foreshadow_count)))
+    continuity_progress = _coverage(value=analysis_count, target=max(1, content_chapter_count))
+
+    lanes = [
+        StoryEngineLane(
+            key="main-plot",
+            title="主线推进",
+            lane_type="plot",
+            status=_lane_status(outline_count + content_chapter_count, main_progress),
+            progress=main_progress,
+            summary=(
+                f"已有 {outline_count} 条大纲、{content_chapter_count}/{chapter_count} 章正文。"
+                "这条线用于判断故事是否有清晰的阶段目标和推进事实。"
+            ),
+            items=[
+                StoryEngineItem(
+                    id=outline.id,
+                    title=outline.title,
+                    subtitle=f"大纲 {outline.order_index if outline.order_index is not None else '-'}",
+                    summary=_compact_text(outline.content or outline.structure, 160),
+                )
+                for outline in outline_rows[:5]
+            ] or [
+                StoryEngineItem(
+                    id=chapter.id,
+                    title=f"第{chapter.chapter_number}章：{chapter.title}",
+                    subtitle=chapter.status,
+                    summary=_compact_text(chapter.summary or chapter.content, 160),
+                )
+                for chapter in chapter_rows[:5]
+            ],
+            tags=["大纲", "章节"],
+        ),
+        StoryEngineLane(
+            key="character-arcs",
+            title="角色弧线",
+            lane_type="character",
+            status=_lane_status(character_count, character_progress),
+            progress=min(100, character_progress),
+            summary=(
+                f"已有 {character_count} 个角色、{relationship_count} 条关系。"
+                "这条线用于追踪角色动机、状态变化和关系张力。"
+            ),
+            items=[
+                StoryEngineItem(
+                    id=character.id,
+                    title=character.name,
+                    subtitle=character.role_type or "角色",
+                    summary=_compact_text(character.current_state or character.personality or character.background, 160),
+                    tags=[tag for tag in [character.status] if tag],
+                )
+                for character in character_rows[:6]
+            ],
+            tags=["角色", "关系"],
+        ),
+        StoryEngineLane(
+            key="faction-system",
+            title="势力与力量体系",
+            lane_type="faction",
+            status=_lane_status(organization_count + career_count, faction_progress),
+            progress=min(100, faction_progress),
+            summary=(
+                f"已有 {organization_count} 个组织、{career_count} 个职业/体系条目。"
+                "这条线用于固定阵营结构、能力边界和长期冲突来源。"
+            ),
+            items=[
+                StoryEngineItem(
+                    id=organization.id,
+                    title=organization.name,
+                    subtitle=organization.organization_type or "组织",
+                    summary=_compact_text(
+                        organization.organization_purpose
+                        or organization.current_state
+                        or organization.background,
+                        150,
+                    ),
+                )
+                for organization in organization_rows[:4]
+            ] + [
+                StoryEngineItem(
+                    id=career.id,
+                    title=career.name,
+                    subtitle=f"{career.type}体系",
+                    summary=_compact_text(career.description or career.worldview_rules or career.special_abilities, 150),
+                )
+                for career in career_rows[:3]
+            ],
+            tags=["组织", "职业"],
+        ),
+        StoryEngineLane(
+            key="promise-foreshadow",
+            title="伏笔承诺",
+            lane_type="promise",
+            status=_lane_status(foreshadow_count, promise_progress),
+            progress=promise_progress,
+            summary=(
+                f"已有 {foreshadow_count} 条伏笔记录。"
+                "这条线用于管理读者期待、悬念回收和长线承诺。"
+            ),
+            items=[
+                StoryEngineItem(
+                    id=foreshadow.id,
+                    title=foreshadow.title,
+                    subtitle=foreshadow.status,
+                    summary=_compact_text(foreshadow.content, 160),
+                    tags=[tag for tag in [foreshadow.category, "长线" if foreshadow.is_long_term else None] if tag],
+                )
+                for foreshadow in foreshadow_rows[:6]
+            ],
+            tags=["伏笔", "回收"],
+        ),
+        StoryEngineLane(
+            key="continuity-audit",
+            title="连续性审计",
+            lane_type="continuity",
+            status=_lane_status(content_chapter_count, continuity_progress),
+            progress=continuity_progress,
+            summary=(
+                f"已分析 {analysis_count}/{content_chapter_count} 章正文。"
+                "这条线用于沉淀章节事实、冲突强度、情绪曲线和潜在断裂点。"
+            ),
+            items=[
+                StoryEngineItem(
+                    id=chapter.id,
+                    title=f"第{chapter.chapter_number}章：{chapter.title}",
+                    subtitle=f"{chapter.word_count or 0}字",
+                    summary=_compact_text(chapter.summary or chapter.content, 160),
+                )
+                for chapter in chapter_rows[:5]
+            ],
+            tags=["章节分析", "一致性"],
+        ),
+    ]
+    return lanes
 
 
 def _recommendations(
@@ -595,6 +773,24 @@ async def build_story_engine_snapshot(
         readiness_score=readiness_score,
         metrics=metrics,
         sections=sections,
+        lanes=_derive_story_lanes(
+            project=project,
+            outline_count=outline_count,
+            chapter_count=chapter_count,
+            content_chapter_count=content_chapter_count,
+            character_count=character_count,
+            organization_count=organization_count,
+            relationship_count=relationship_count,
+            career_count=career_count,
+            foreshadow_count=foreshadow_count,
+            analysis_count=analysis_count,
+            outline_rows=outline_rows,
+            chapter_rows=chapter_rows,
+            character_rows=character_rows,
+            organization_rows=organization_rows,
+            career_rows=career_rows,
+            foreshadow_rows=foreshadow_rows,
+        ),
         recommendations=_recommendations(
             project=project,
             outline_count=outline_count,

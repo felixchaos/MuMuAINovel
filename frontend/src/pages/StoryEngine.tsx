@@ -25,7 +25,13 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { projectApi } from '../services/api';
-import type { StoryEngineMetric, StoryEngineRecommendation, StoryEngineSection, StoryEngineSnapshot } from '../types';
+import type {
+  StoryEngineLane,
+  StoryEngineMetric,
+  StoryEngineRecommendation,
+  StoryEngineSection,
+  StoryEngineSnapshot,
+} from '../types';
 
 const { Text, Title, Paragraph } = Typography;
 
@@ -172,6 +178,56 @@ export default function StoryEngine() {
     );
   };
 
+  const renderLane = (lane: StoryEngineLane) => {
+    const meta = statusMeta(lane.status);
+    return (
+      <Col xs={24} xl={12} key={lane.key}>
+        <Card
+          title={
+            <Space wrap>
+              <Text strong>{lane.title}</Text>
+              <Tag color={meta.color}>{meta.label}</Tag>
+              {lane.tags.map((tag) => (
+                <Tag key={`${lane.key}:${tag}`}>{tag}</Tag>
+              ))}
+            </Space>
+          }
+          extra={<Progress percent={lane.progress} size="small" style={{ width: 108 }} />}
+          style={{ height: '100%' }}
+          styles={{ body: { paddingTop: 12 } }}
+        >
+          <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            {lane.summary}
+          </Paragraph>
+          {lane.items.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可派生线索" />
+          ) : (
+            <List
+              size="small"
+              dataSource={lane.items.slice(0, 6)}
+              renderItem={(item) => (
+                <List.Item style={{ paddingInline: 0 }}>
+                  <List.Item.Meta
+                    title={
+                      <Space wrap size={6}>
+                        <Text>{item.title}</Text>
+                        {item.subtitle && <Text type="secondary">{item.subtitle}</Text>}
+                        {item.tags.map((tag) => (
+                          <Tag key={`${lane.key}:${item.id}:${tag}`}>{tag}</Tag>
+                        ))}
+                      </Space>
+                    }
+                    description={item.summary || '暂无摘要'}
+                  />
+                </List.Item>
+              )}
+            />
+          )}
+        </Card>
+      </Col>
+    );
+  };
+
   const renderRecommendation = (item: StoryEngineRecommendation) => {
     const meta = priorityMeta(item.priority);
     const sourcePathMap: Record<string, string> = {
@@ -260,6 +316,17 @@ export default function StoryEngine() {
                   dataSource={snapshot.recommendations}
                   renderItem={renderRecommendation}
                 />
+              </Card>
+            )}
+
+            {(snapshot.lanes || []).length > 0 && (
+              <Card
+                title="剧情线索"
+                extra={<Text type="secondary">由现有官方数据派生，不新增专用表</Text>}
+              >
+                <Row gutter={[12, 12]}>
+                  {snapshot.lanes.map(renderLane)}
+                </Row>
               </Card>
             )}
 

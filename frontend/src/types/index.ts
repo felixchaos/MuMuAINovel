@@ -254,6 +254,17 @@ export interface StoryEngineRecommendation {
   source: string;
 }
 
+export interface StoryEngineLane {
+  key: string;
+  title: string;
+  lane_type: 'plot' | 'character' | 'faction' | 'promise' | 'continuity' | string;
+  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
+  progress: number;
+  summary: string;
+  items: StoryEngineItem[];
+  tags: string[];
+}
+
 export interface StoryEngineSnapshot {
   project_id: string;
   title: string;
@@ -261,6 +272,7 @@ export interface StoryEngineSnapshot {
   readiness_score: number;
   metrics: StoryEngineMetric[];
   sections: StoryEngineSection[];
+  lanes: StoryEngineLane[];
   recommendations: StoryEngineRecommendation[];
   context_text: string;
 }
