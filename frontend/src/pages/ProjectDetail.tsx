@@ -17,6 +17,7 @@ import {
   HeartOutlined,
   TrophyOutlined,
   BulbOutlined,
+  ClusterOutlined,
   CloudOutlined,
   MoonOutlined,
 } from '@ant-design/icons';
@@ -164,6 +165,11 @@ export default function ProjectDetail() {
           label: <Link to={`/project/${projectId}/chapter-analysis`}>剧情分析</Link>,
         },
         {
+          key: 'story-engine',
+          icon: <ClusterOutlined />,
+          label: <Link to={`/project/${projectId}/story-engine`}>剧情工程</Link>,
+        },
+        {
           key: 'foreshadows',
           icon: <BulbOutlined />,
           label: <Link to={`/project/${projectId}/foreshadows`}>伏笔管理</Link>,
@@ -235,6 +241,11 @@ export default function ProjectDetail() {
       label: <Link to={`/project/${projectId}/chapter-analysis`}>剧情分析</Link>,
     },
     {
+      key: 'story-engine',
+      icon: <ClusterOutlined />,
+      label: <Link to={`/project/${projectId}/story-engine`}>剧情工程</Link>,
+    },
+    {
       key: 'foreshadows',
       icon: <BulbOutlined />,
       label: <Link to={`/project/${projectId}/foreshadows`}>伏笔管理</Link>,
@@ -261,6 +272,7 @@ export default function ProjectDetail() {
     if (path.includes('/outline')) return 'outline';
     if (path.includes('/characters')) return 'characters';
     if (path.includes('/chapter-analysis')) return 'chapter-analysis';
+    if (path.includes('/story-engine')) return 'story-engine';
     if (path.includes('/foreshadows')) return 'foreshadows';
     if (path.includes('/chapters')) return 'chapters';
     if (path.includes('/writing-styles')) return 'writing-styles';

@@ -219,6 +219,52 @@ export interface ProjectWizardUpdate extends ProjectUpdate {
   wizard_step?: number;
 }
 
+export interface StoryEngineMetric {
+  key: string;
+  label: string;
+  value: number;
+  total?: number;
+  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
+  description?: string;
+}
+
+export interface StoryEngineItem {
+  id: string;
+  title: string;
+  subtitle?: string;
+  summary?: string;
+  tags: string[];
+}
+
+export interface StoryEngineSection {
+  key: string;
+  title: string;
+  description?: string;
+  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
+  total: number;
+  coverage: number;
+  items: StoryEngineItem[];
+}
+
+export interface StoryEngineRecommendation {
+  key: string;
+  title: string;
+  detail: string;
+  priority: 'high' | 'medium' | 'low' | string;
+  source: string;
+}
+
+export interface StoryEngineSnapshot {
+  project_id: string;
+  title: string;
+  generated_at: string;
+  readiness_score: number;
+  metrics: StoryEngineMetric[];
+  sections: StoryEngineSection[];
+  recommendations: StoryEngineRecommendation[];
+  context_text: string;
+}
+
 // 项目创建向导
 export interface ProjectWizardRequest {
   title: string;

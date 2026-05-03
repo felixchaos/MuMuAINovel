@@ -59,6 +59,7 @@ import type {
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
+  StoryEngineSnapshot,
 } from '../types';
 
 interface MCPPluginSimpleCreate {
@@ -339,6 +340,11 @@ export const projectApi = {
   getProjects: () => api.get<unknown, Project[]>('/projects'),
 
   getProject: (id: string) => api.get<unknown, Project>(`/projects/${id}`),
+
+  getStoryEngineSnapshot: (id: string, contextLimit: number = 12000) =>
+    api.get<unknown, StoryEngineSnapshot>(`/projects/${id}/story-engine/snapshot`, {
+      params: { context_limit: contextLimit },
+    }),
 
   createProject: (data: ProjectCreate) => api.post<unknown, Project>('/projects', data),
 
