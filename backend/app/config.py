@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: Optional[str] = None
     SMTP_FROM_NAME: str = "MuMuAINovel"
     EMAIL_AUTH_ENABLED: bool = True
-    EMAIL_REGISTER_ENABLED: bool = True
+    EMAIL_REGISTER_ENABLED: bool = False
     EMAIL_VERIFICATION_CODE_TTL_MINUTES: int = 10
     EMAIL_VERIFICATION_RESEND_INTERVAL_SECONDS: int = 60
     

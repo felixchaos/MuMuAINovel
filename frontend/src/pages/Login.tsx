@@ -318,7 +318,9 @@ export default function Login() {
 
   const loginTips = useMemo(() => {
     const tips = [
-      '首次 LinuxDO 登录会自动创建账号。',
+      emailRegisterEnabled
+        ? '首次 LinuxDO 登录会自动创建账号。'
+        : '新用户注册已关闭，已有用户仍可继续登录。',
     ];
 
     if (localAuthEnabled) {
@@ -330,7 +332,7 @@ export default function Login() {
     }
 
     return tips;
-  }, [emailAuthEnabled, localAuthEnabled]);
+  }, [emailAuthEnabled, emailRegisterEnabled, localAuthEnabled]);
 
   const featureItems = [
     {
@@ -1022,13 +1024,13 @@ export default function Login() {
                     />
                   ) : null}
 
-                  {emailAuthEnabled && !emailRegisterEnabled ? (
+                  {(emailAuthEnabled || linuxdoEnabled) && !emailRegisterEnabled ? (
                     <Alert
                       type="info"
                       showIcon
                       style={{ marginTop: 12, borderRadius: 12 }}
-                      message="邮箱注册暂未开放"
-                      description="当前仅开放邮箱验证码登录与找回密码，如需注册请联系管理员。"
+                      message="新用户注册暂未开放"
+                      description="当前仅允许已有账号登录；新邮箱注册和首次 LinuxDO 登录创建账号已关闭。"
                     />
                   ) : null}
 

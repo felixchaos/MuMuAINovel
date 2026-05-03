@@ -150,7 +150,7 @@ export default function SystemSettingsPage() {
               <Title level={3} style={{ color: '#fff', margin: 0 }}>系统设置</Title>
             </Space>
             <Paragraph style={{ color: 'rgba(255,255,255,0.88)', margin: 0 }}>
-              仅管理员可见，用于维护 SMTP 发信能力与邮箱注册相关系统参数。
+              仅管理员可见，用于维护 SMTP 发信能力、新用户注册与验证码相关系统参数。
             </Paragraph>
           </Space>
         </div>
@@ -241,8 +241,13 @@ export default function SystemSettingsPage() {
                       <Form.Item name="email_auth_enabled" label="启用邮箱认证" valuePropName="checked">
                         <Switch />
                       </Form.Item>
-                      <Form.Item name="email_register_enabled" label="启用邮箱注册" valuePropName="checked">
-                        <Switch />
+                      <Form.Item
+                        name="email_register_enabled"
+                        label="允许新用户注册"
+                        valuePropName="checked"
+                        extra="关闭后，邮箱注册和首次 LinuxDO 登录创建账号都会被拒绝；已有用户仍可登录。"
+                      >
+                        <Switch checkedChildren="开放" unCheckedChildren="关闭" />
                       </Form.Item>
                       <Form.Item name="verification_code_ttl_minutes" label="验证码有效期（分钟）" rules={[{ required: true, message: '请输入验证码有效期' }]}>
                         <InputNumber style={{ width: '100%' }} min={1} max={120} />

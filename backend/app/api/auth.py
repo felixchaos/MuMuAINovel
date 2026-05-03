@@ -425,7 +425,7 @@ async def send_email_verification_code(request: EmailSendCodeRequest):
 
     if scene == "register":
         if not runtime["email_register_enabled"]:
-            raise HTTPException(status_code=403, detail="邮箱注册未启用")
+            raise HTTPException(status_code=403, detail="新用户注册未启用")
         if existing_user:
             raise HTTPException(status_code=400, detail="该邮箱已注册")
     else:
@@ -488,7 +488,7 @@ async def email_register(request: EmailRegisterRequest, response: Response):
     if not runtime["email_auth_enabled"]:
         raise HTTPException(status_code=403, detail="邮箱认证未启用")
     if not runtime["email_register_enabled"]:
-        raise HTTPException(status_code=403, detail="邮箱注册未启用")
+        raise HTTPException(status_code=403, detail="新用户注册未启用")
 
     email = _validate_email(request.email)
     code = request.code.strip()
@@ -674,6 +674,15 @@ async def _handle_callback(
     display_name = user_info.get("name", username)
     avatar_url = user_info.get("avatar_url")
     trust_level = user_info.get("trust_level", 0)
+    user_id = f"linuxdo_{linuxdo_id}"
+    existing_user = await user_manager.get_user(user_id)
+    is_initial_admin = settings.INITIAL_ADMIN_LINUXDO_ID and linuxdo_id == settings.INITIAL_ADMIN_LINUXDO_ID
+
+    if not existing_user and not is_initial_admin:
+        runtime = await _get_auth_runtime_settings()
+        if not runtime["email_register_enabled"]:
+            logger.warning(f"[OAuth登录] 新用户注册已关闭，拒绝 LinuxDO 用户创建: {linuxdo_id}")
+            raise HTTPException(status_code=403, detail="新用户注册未启用，请联系管理员")
 
     user = await user_manager.create_or_update_from_linuxdo(
         linuxdo_id=linuxdo_id,
