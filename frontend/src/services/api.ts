@@ -157,7 +157,7 @@ export const authApi = {
     linuxdo_enabled: boolean;
     email_auth_enabled: boolean;
     email_register_enabled: boolean;
-  }>('/auth/config'),
+  }>('/auth/config', { params: { _t: Date.now() } }),
 
   localLogin: (username: string, password: string) =>
     api.post<unknown, { success: boolean; message: string; user: User }>('/auth/local/login', { username, password }),

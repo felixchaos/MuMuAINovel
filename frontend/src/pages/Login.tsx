@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Button,
@@ -100,6 +100,21 @@ export default function Login() {
   const emailAuthEnabled = authConfig.email_auth_enabled;
   const emailRegisterEnabled = authConfig.email_register_enabled;
 
+  const fetchAuthConfig = useCallback(async () => {
+    try {
+      const config = await authApi.getAuthConfig();
+      setAuthConfig(config);
+    } catch (error) {
+      console.error('获取认证配置失败:', error);
+      setAuthConfig({
+        local_auth_enabled: false,
+        linuxdo_enabled: true,
+        email_auth_enabled: false,
+        email_register_enabled: false,
+      });
+    }
+  }, []);
+
   useEffect(() => {
     const timers = [
       { value: loginCountdown, setter: setLoginCountdown },
@@ -136,23 +151,32 @@ export default function Login() {
         const redirect = searchParams.get('redirect') || '/';
         navigate(redirect);
       } catch {
-        try {
-          const config = await authApi.getAuthConfig();
-          setAuthConfig(config);
-        } catch (error) {
-          console.error('获取认证配置失败:', error);
-          setAuthConfig({
-            local_auth_enabled: false,
-            linuxdo_enabled: true,
-            email_auth_enabled: false,
-            email_register_enabled: false,
-          });
-        }
+        await fetchAuthConfig();
         setChecking(false);
       }
     };
     checkAuth();
-  }, [navigate, searchParams]);
+  }, [fetchAuthConfig, navigate, searchParams]);
+
+  useEffect(() => {
+    if (checking) {
+      return undefined;
+    }
+
+    const refreshAuthConfig = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchAuthConfig();
+      }
+    };
+
+    window.addEventListener('focus', refreshAuthConfig);
+    document.addEventListener('visibilitychange', refreshAuthConfig);
+
+    return () => {
+      window.removeEventListener('focus', refreshAuthConfig);
+      document.removeEventListener('visibilitychange', refreshAuthConfig);
+    };
+  }, [checking, fetchAuthConfig]);
 
   const handleLoginSuccess = () => {
     message.success('登录成功！');

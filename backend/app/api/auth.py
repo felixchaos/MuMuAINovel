@@ -333,9 +333,10 @@ def _validate_verification_scene(scene: str) -> str:
 
 
 @router.get("/config")
-async def get_auth_config():
+async def get_auth_config(response: Response):
     """获取认证配置信息"""
     runtime = await _get_auth_runtime_settings()
+    response.headers["Cache-Control"] = "no-store"
     return {
         "local_auth_enabled": settings.LOCAL_AUTH_ENABLED,
         "linuxdo_enabled": bool(settings.LINUXDO_CLIENT_ID and settings.LINUXDO_CLIENT_SECRET),
