@@ -12,7 +12,7 @@
 - 增强润色工作流：文本框内润色支持填写用户要求，生成后先确认，再决定是否应用，避免直接覆盖原文。
 - 增强角色/组织/大纲优化：尽量复用已有后台任务、AI 调用和历史记录流程，而不是另起一套孤立逻辑。
 - 增强导入导出：TXT 拆书解析更稳，章节导出支持范围选择和分章 ZIP，便于上传到写作平台。
-- 增强部署体验：支持关闭赞助入口、公告弹窗、外链入口和节日挂件；支持管理员在网页里维护 SMTP 与注册开关。
+- 增强部署体验：支持管理员在网页里维护 SMTP 与注册开关，适合个人或小团队自部署。
 - 增强模型体验：模型列表接口带缓存，大纲弹窗不再等待模型列表加载完才出现。
 
 ## 快速部署
@@ -71,26 +71,12 @@ http://localhost:8000
 
 ## 个人部署推荐构建方式
 
-如果不需要官方赞助入口、公告弹窗、MuMu API 外链和节日挂件，构建时传入这些参数：
-
-```bash
-docker compose build \
-  --build-arg VITE_ENABLE_SPONSOR=false \
-  --build-arg VITE_ENABLE_ANNOUNCEMENT_MODAL=false \
-  --build-arg VITE_ENABLE_MUMU_API_LINKS=false \
-  --build-arg VITE_ENABLE_SPRING_FESTIVAL=false
-
-docker compose up -d
-```
-
 如果构建网络较慢，可以尝试国内镜像参数：
 
 ```bash
 docker compose build --build-arg USE_CN_MIRROR=true
 docker compose up -d
 ```
-
-需要同时使用国内镜像和关闭前端入口时，把多个 `--build-arg` 放到同一个 `docker compose build` 命令里。
 
 ## 常用命令
 
@@ -157,17 +143,6 @@ AI Key 是用户级配置。管理员可以先配置自己的 Key；其他用户
 | `SMTP_PASSWORD` | SMTP 密码或授权码 |
 | `SMTP_FROM_EMAIL` | 发件邮箱 |
 | `SMTP_FROM_NAME` | 发件名称 |
-
-### 前端功能开关
-
-这些是构建期变量，修改后需要重新构建前端或 Docker 镜像。
-
-| 构建参数 | 设置为 `false` 时 |
-| --- | --- |
-| `VITE_ENABLE_SPONSOR` | 隐藏赞助支持入口 |
-| `VITE_ENABLE_ANNOUNCEMENT_MODAL` | 关闭公告弹窗 |
-| `VITE_ENABLE_MUMU_API_LINKS` | 隐藏 MuMu API 外链 |
-| `VITE_ENABLE_SPRING_FESTIVAL` | 关闭节日挂件 |
 
 ## Cloudflare / 反向代理
 

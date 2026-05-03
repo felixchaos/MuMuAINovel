@@ -36,34 +36,6 @@ npm run build
 
 Docker 构建时会临时把输出目录改为镜像内的 `dist`，再复制到后端静态目录。
 
-## 功能开关
-
-以下变量是构建期变量，改动后必须重新构建。
-
-```bash
-VITE_ENABLE_SPONSOR=false
-VITE_ENABLE_ANNOUNCEMENT_MODAL=false
-VITE_ENABLE_MUMU_API_LINKS=false
-VITE_ENABLE_SPRING_FESTIVAL=false
-```
-
-含义：
-
-- `VITE_ENABLE_SPONSOR=false`：隐藏赞助入口。
-- `VITE_ENABLE_ANNOUNCEMENT_MODAL=false`：关闭公告弹窗。
-- `VITE_ENABLE_MUMU_API_LINKS=false`：隐藏 MuMu API 外链。
-- `VITE_ENABLE_SPRING_FESTIVAL=false`：关闭节日挂件。
-
-示例：
-
-```bash
-VITE_ENABLE_SPONSOR=false \
-VITE_ENABLE_ANNOUNCEMENT_MODAL=false \
-VITE_ENABLE_MUMU_API_LINKS=false \
-VITE_ENABLE_SPRING_FESTIVAL=false \
-npm run build
-```
-
 ## 常用命令
 
 ```bash
