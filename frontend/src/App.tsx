@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import ProjectList from './pages/ProjectList';
 import ProjectWizardNew from './pages/ProjectWizardNew';
@@ -27,14 +28,21 @@ import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 import ProtectedRoute from './components/ProtectedRoute';
 import AppFooter from './components/AppFooter';
-import SpringFestival from './components/SpringFestival';
 import { FEATURE_FLAGS } from './config/featureFlags';
 import './App.css';
+
+const SpringFestival = FEATURE_FLAGS.springFestival
+  ? lazy(() => import('./components/SpringFestival'))
+  : null;
 
 function App() {
   return (
     <>
-      {FEATURE_FLAGS.springFestival && <SpringFestival />}
+      {SpringFestival && (
+        <Suspense fallback={null}>
+          <SpringFestival />
+        </Suspense>
+      )}
       <BrowserRouter
         future={{
           v7_startTransition: true,
