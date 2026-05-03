@@ -74,12 +74,12 @@ class ChapterRegenerator:
             # 3. 构建系统提示词（注入写作风格）
             system_prompt_with_style = None
             if style_content:
-                system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
+                system_prompt_with_style = f"""【🎨 写作风格要求】
 
 {style_content}
 
-⚠️ 请严格遵循上述写作风格要求进行重写，这是最重要的指令！
-确保在整个章节重写过程中始终保持风格的一致性。"""
+优先级说明：写作风格必须服从前文连续性、角色人设、已发生事实、世界/职业/力量体系设定和后续章节边界。
+请在不破坏连续性的前提下保持风格一致。"""
                 logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
             
             # 4. 流式生成新内容，同时跟踪进度

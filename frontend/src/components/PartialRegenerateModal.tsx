@@ -99,7 +99,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
           start_position: startPosition,
           end_position: endPosition,
           user_instructions: userInstructions,
-          context_chars: 500,
+          context_chars: 1000,
           style_id: styleId,
           length_mode: lengthMode,
           target_word_count: lengthMode === 'custom' ? customWordCount : undefined,

@@ -5,7 +5,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 import json
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime
 from asyncio import Queue, Lock
 
@@ -768,6 +768,230 @@ async def build_characters_info_with_careers(
         characters_info_parts.append(full_info)
     
     return "\n".join(characters_info_parts)
+
+
+def _compact_rewrite_context_text(text: Optional[str], max_length: int) -> str:
+    """压缩重写上下文，保留开头和结尾的关键边界。"""
+    if not text:
+        return ""
+    normalized = str(text).strip()
+    if len(normalized) <= max_length:
+        return normalized
+
+    marker = "\n...\n"
+    keep = max(0, max_length - len(marker))
+    head_length = max(1, keep // 2)
+    tail_length = max(1, keep - head_length)
+    return normalized[:head_length].rstrip() + marker + normalized[-tail_length:].lstrip()
+
+
+async def _get_rewrite_outline(
+    db: AsyncSession,
+    chapter: Chapter
+) -> Optional[Outline]:
+    """获取重写用章节大纲，优先使用章节直接关联的大纲。"""
+    if chapter.outline_id:
+        outline_result = await db.execute(
+            select(Outline).where(Outline.id == chapter.outline_id)
+        )
+    else:
+        outline_result = await db.execute(
+            select(Outline)
+            .where(Outline.project_id == chapter.project_id)
+            .where(Outline.order_index == chapter.chapter_number)
+        )
+    return outline_result.scalar_one_or_none()
+
+
+async def _build_next_chapter_boundary_context(
+    db: AsyncSession,
+    chapter: Chapter,
+    max_length: int = 1200
+) -> str:
+    """构建后续章节边界，防止重写破坏已经存在的后文起点。"""
+    next_result = await db.execute(
+        select(Chapter)
+        .where(Chapter.project_id == chapter.project_id)
+        .where(Chapter.chapter_number > chapter.chapter_number)
+        .order_by(Chapter.chapter_number)
+        .limit(2)
+    )
+    next_chapters = next_result.scalars().all()
+    if not next_chapters:
+        return ""
+
+    lines = []
+    for index, next_chapter in enumerate(next_chapters):
+        snippets = [f"第{next_chapter.chapter_number}章《{next_chapter.title or '未命名'}》"]
+        if next_chapter.summary:
+            snippets.append(f"摘要：{_compact_rewrite_context_text(next_chapter.summary, 220)}")
+
+        if next_chapter.expansion_plan:
+            try:
+                plan = json.loads(next_chapter.expansion_plan)
+                plot_summary = plan.get('plot_summary')
+                key_events = plan.get('key_events') or []
+                if plot_summary:
+                    snippets.append(f"规划：{_compact_rewrite_context_text(plot_summary, 220)}")
+                if key_events:
+                    snippets.append(f"关键事件：{'；'.join(str(event) for event in key_events[:4])}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if index == 0 and next_chapter.content:
+            opening = next_chapter.content.strip()[:500]
+            if opening:
+                snippets.append(f"开篇锚点：{opening}")
+
+        lines.append("\n".join(snippets))
+
+    return _compact_rewrite_context_text("\n\n".join(lines), max_length)
+
+
+async def _build_rewrite_continuity_context(
+    db: AsyncSession,
+    project: Optional[Project],
+    chapter: Chapter,
+    outline: Optional[Outline],
+    user_id: str,
+    target_word_count: Optional[int] = None,
+    style_content: str = ""
+) -> dict[str, Any]:
+    """
+    构建重写专用连续性上下文。
+
+    复用章节生成工作流里的上下文构建器，避免全章/局部重写只看当前段落。
+    """
+    if not project:
+        return {
+            "previous_context": "",
+            "chapter_outline": outline.content if outline else chapter.summary or "暂无大纲",
+            "characters_info": "暂无角色信息",
+            "chapter_careers": "",
+            "context_stats": {}
+        }
+
+    effective_target = target_word_count or chapter.word_count or len(chapter.content or "") or 3000
+    outline_mode = getattr(project, "outline_mode", None) or "one-to-many"
+    try:
+        if outline_mode == "one-to-one":
+            builder = OneToOneContextBuilder(
+                memory_service=memory_service,
+                foreshadow_service=foreshadow_service
+            )
+            chapter_context = await builder.build(
+                chapter=chapter,
+                project=project,
+                outline=outline,
+                user_id=user_id,
+                db=db,
+                target_word_count=effective_target
+            )
+        else:
+            builder = OneToManyContextBuilder(
+                memory_service=memory_service,
+                foreshadow_service=foreshadow_service
+            )
+            chapter_context = await builder.build(
+                chapter=chapter,
+                project=project,
+                outline=outline,
+                user_id=user_id,
+                db=db,
+                style_content=style_content,
+                target_word_count=effective_target
+            )
+    except Exception as context_error:
+        logger.warning(
+            "⚠️ 重写连续性上下文构建失败，将使用基础上下文: chapter_id=%s error=%s",
+            chapter.id,
+            context_error,
+            exc_info=True
+        )
+        characters_result = await db.execute(
+            select(Character).where(Character.project_id == chapter.project_id)
+        )
+        characters = characters_result.scalars().all()
+        characters_info = await build_characters_info_with_careers(
+            db=db,
+            project_id=chapter.project_id,
+            characters=characters
+        )
+        return {
+            "previous_context": "",
+            "chapter_outline": outline.content if outline else chapter.summary or "暂无大纲",
+            "characters_info": characters_info,
+            "chapter_careers": "",
+            "context_stats": {"mode": "fallback"}
+        }
+
+    next_boundary = await _build_next_chapter_boundary_context(db, chapter)
+    characters_info = (getattr(chapter_context, "chapter_characters", None) or "").strip()
+
+    if not characters_info or characters_info.startswith("暂无"):
+        characters_result = await db.execute(
+            select(Character).where(Character.project_id == chapter.project_id)
+        )
+        characters = characters_result.scalars().all()
+        characters_info = await build_characters_info_with_careers(
+            db=db,
+            project_id=chapter.project_id,
+            characters=characters
+        )
+
+    sections: list[tuple[str, str, int]] = [
+        (
+            "重写硬性优先级",
+            "\n".join([
+                "1. 前文连贯性、人设、人物状态、关系、已发生事实必须优先保障。",
+                "2. 如果后续章节已存在，不能破坏后续章节的开篇锚点、已发生事实和角色状态。",
+                "3. 用户修改要求只能在不破坏第1、2条的范围内执行；若冲突，以连续性为准。",
+                "4. 写作风格、字数、修辞优化低于剧情连续性和设定一致性。"
+            ]),
+            800
+        ),
+        (
+            "本章目标大纲",
+            getattr(chapter_context, "chapter_outline", "") or (outline.content if outline else chapter.summary or ""),
+            2200
+        ),
+        ("最近章节规划/前情摘要", getattr(chapter_context, "recent_chapters_context", "") or "", 1800),
+        ("上一章结尾锚点", getattr(chapter_context, "continuation_point", "") or "", 1200),
+        ("上一章摘要", getattr(chapter_context, "previous_chapter_summary", "") or "", 700),
+        ("关键事件", "；".join(getattr(chapter_context, "previous_chapter_events", []) or []), 700),
+        ("角色/组织/关系/当前状态", characters_info, 3600),
+        ("职业/力量体系", getattr(chapter_context, "chapter_careers", "") or "", 2600),
+        ("伏笔提醒", getattr(chapter_context, "foreshadow_reminders", "") or "", 1800),
+        ("相关记忆", getattr(chapter_context, "relevant_memories", "") or "", 1800),
+        ("后续章节边界", next_boundary, 1400),
+    ]
+
+    lines = [
+        f"当前重写目标：第{chapter.chapter_number}章《{chapter.title or '未命名'}》",
+        f"项目模式：{outline_mode}",
+    ]
+    for title, content, max_length in sections:
+        compacted = _compact_rewrite_context_text(content, max_length)
+        if compacted:
+            lines.append(f"\n【{title}】\n{compacted}")
+
+    previous_context = "\n".join(lines).strip()
+    context_stats = dict(getattr(chapter_context, "context_stats", {}) or {})
+    context_stats.update({
+        "rewrite_context_length": len(previous_context),
+        "next_boundary_length": len(next_boundary or "")
+    })
+
+    return {
+        "previous_context": previous_context,
+        "chapter_outline": (
+            getattr(chapter_context, "chapter_outline", None) or
+            (outline.content if outline else chapter.summary or "暂无大纲")
+        ),
+        "characters_info": characters_info,
+        "chapter_careers": getattr(chapter_context, "chapter_careers", "") or "",
+        "context_stats": context_stats
+    }
 
 
 @router.get("/{chapter_id}/can-generate", summary="检查章节是否可以生成")
@@ -3874,18 +4098,7 @@ async def regenerate_chapter_stream(
             )
             
             # 获取章节大纲（优先使用 chapter.outline_id 直接关联）
-            if chapter.outline_id:
-                outline_result = await temp_db.execute(
-                    select(Outline).where(Outline.id == chapter.outline_id)
-                )
-            else:
-                # 回退到按序号查找
-                outline_result = await temp_db.execute(
-                    select(Outline)
-                    .where(Outline.project_id == chapter.project_id)
-                    .where(Outline.order_index == chapter.chapter_number)
-                )
-            outline = outline_result.scalar_one_or_none()
+            outline = await _get_rewrite_outline(temp_db, chapter)
             
             # 获取写作风格
             style_content = ""
@@ -3922,6 +4135,22 @@ async def regenerate_chapter_stream(
             else:
                 logger.info("ℹ️ 未指定写作风格，使用默认提示词")
             
+            continuity_context = await _build_rewrite_continuity_context(
+                db=temp_db,
+                project=project,
+                chapter=chapter,
+                outline=outline,
+                user_id=user_id,
+                target_word_count=regenerate_request.target_word_count,
+                style_content=style_content
+            )
+            logger.info(
+                "📚 全章重写连续性上下文: chapter_id=%s length=%s stats=%s",
+                chapter_id,
+                len(continuity_context.get("previous_context") or ""),
+                continuity_context.get("context_stats")
+            )
+
             # 构建项目上下文
             project_context = {
                 'project_title': project.title if project else '未知',
@@ -3931,9 +4160,10 @@ async def regenerate_chapter_stream(
                 'time_period': project.world_time_period if project else '未设定',
                 'location': project.world_location if project else '未设定',
                 'atmosphere': project.world_atmosphere if project else '未设定',
-                'characters_info': characters_info_with_careers,
-                'chapter_outline': outline.content if outline else chapter.summary or '暂无大纲',
-                'previous_context': ''  # 可以后续扩展添加前置章节上下文
+                'characters_info': continuity_context.get('characters_info') or characters_info_with_careers,
+                'chapter_outline': continuity_context.get('chapter_outline') or (outline.content if outline else chapter.summary or '暂无大纲'),
+                'chapter_careers': continuity_context.get('chapter_careers') or '',
+                'previous_context': continuity_context.get('previous_context') or ''
             }
         finally:
             await temp_db.close()
@@ -4380,6 +4610,25 @@ async def partial_regenerate_stream(
                 length_requirement = f"目标字数：约{partial_request.target_word_count}字（允许±20%浮动）"
             else:
                 length_requirement = f"保持与原文相近的字数（约{original_word_count}字）"
+
+            outline = await _get_rewrite_outline(db, chapter)
+            continuity_context = await _build_rewrite_continuity_context(
+                db=db,
+                project=project,
+                chapter=chapter,
+                outline=outline,
+                user_id=user_id,
+                target_word_count=partial_request.target_word_count or original_word_count,
+                style_content=style_content
+            )
+            story_continuity_context = continuity_context.get("previous_context") or ""
+            logger.info(
+                "📚 局部重写连续性上下文: chapter_id=%s selected=%s length=%s stats=%s",
+                chapter_id,
+                original_word_count,
+                len(story_continuity_context),
+                continuity_context.get("context_stats")
+            )
             
             # 获取提示词模板
             template = await PromptService.get_template("PARTIAL_REGENERATE", user_id, db)
@@ -4395,8 +4644,16 @@ async def partial_regenerate_stream(
                 context_after=context_after if context_after else "（这是章节结尾）",
                 user_instructions=partial_request.user_instructions,
                 length_requirement=length_requirement,
-                style_content=style_content if style_content else "保持与原文一致的叙事风格"
+                style_content=style_content if style_content else "保持与原文一致的叙事风格",
+                story_continuity_context=story_continuity_context if story_continuity_context else "（暂无可用的前后文连续性上下文）"
             )
+            if story_continuity_context and "{story_continuity_context}" not in template:
+                prompt = f"""<story_continuity priority="P0">
+【全局连续性硬约束】
+{story_continuity_context}
+</story_continuity>
+
+{prompt}"""
             
             yield await tracker.preparing("开始生成...")
 

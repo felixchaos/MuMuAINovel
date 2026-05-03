@@ -219,10 +219,10 @@ class PartialRegenerateRequest(BaseModel):
     
     # 可选参数
     context_chars: int = Field(
-        500,
+        1000,
         description="上下文截取长度（前后各截取多少字符）",
         ge=100,
-        le=2000
+        le=4000
     )
     style_id: Optional[int] = Field(None, description="写作风格ID，不提供则使用项目默认风格")
     length_mode: Optional[str] = Field(
@@ -242,7 +242,7 @@ class PartialRegenerateRequest(BaseModel):
             "start_position": 1234,
             "end_position": 1260,
             "user_instructions": "增加更细腻的打斗描写，加入主角的心理活动",
-            "context_chars": 500,
+            "context_chars": 1000,
             "length_mode": "expand"
         }
     })
