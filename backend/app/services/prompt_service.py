@@ -2889,9 +2889,15 @@ class PromptService:
         )
         custom_template = result.scalar_one_or_none()
         
-        if custom_template:
+        if custom_template and custom_template.template_content and custom_template.template_content.strip():
             logger.info(f"✅ 使用用户自定义提示词: user_id={user_id}, template_key={template_key}, template_name={custom_template.template_name}")
             return custom_template.template_content
+
+        if custom_template:
+            logger.warning(
+                f"⚠️ 用户自定义提示词内容为空，降级到系统默认模板: "
+                f"user_id={user_id}, template_key={template_key}, template_name={custom_template.template_name}"
+            )
         
         # 2. 降级到系统默认模板
         logger.info(f"⚪ 使用系统默认提示词: user_id={user_id}, template_key={template_key} (未找到自定义模板)")
@@ -2921,6 +2927,12 @@ class PromptService:
                 "category": "封面生成",
                 "description": "根据项目基础信息生成小说封面绘制提示词，适用于竖版书籍封面",
                 "parameters": ["title", "genre", "theme", "description"]
+            },
+            "AI_DENOISING": {
+                "name": "AI去味/文本润色",
+                "category": "文本润色",
+                "description": "用于润色文本、降低AI味并保留原意、事实、人设和叙事视角",
+                "parameters": ["original_text"]
             },
             "WORLD_BUILDING": {
                 "name": "世界构建",
