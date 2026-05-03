@@ -28,6 +28,7 @@ import AuthCallback from './pages/AuthCallback';
 import ProtectedRoute from './components/ProtectedRoute';
 import AppFooter from './components/AppFooter';
 import SpringFestival from './components/SpringFestival';
+import { FEATURE_FLAGS } from './config/featureFlags';
 import './App.css';
 
 function App() {
@@ -55,7 +56,7 @@ function App() {
           <Route path="/user-management" element={<ProtectedRoute><UserManagement /></ProtectedRoute>} />
           <Route path="/chapters/:chapterId/reader" element={<ProtectedRoute><ChapterReader /></ProtectedRoute>} />
           <Route path="/project/:projectId" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>}>
-            <Route index element={<Navigate to="sponsor" replace />} />
+            <Route index element={<Navigate to={FEATURE_FLAGS.sponsor ? 'sponsor' : 'world-setting'} replace />} />
             <Route path="world-setting" element={<WorldSetting />} />
             <Route path="careers" element={<Careers />} />
             <Route path="outline" element={<Outline />} />
@@ -69,7 +70,7 @@ function App() {
             <Route path="foreshadows" element={<Foreshadows />} />
             <Route path="writing-styles" element={<WritingStyles />} />
             <Route path="prompt-workshop" element={<PromptWorkshop />} />
-            <Route path="sponsor" element={<Sponsor />} />
+            <Route path="sponsor" element={FEATURE_FLAGS.sponsor ? <Sponsor /> : <Navigate to="../world-setting" replace />} />
             {/* <Route path="polish" element={<Polish />} /> */}
           </Route>
         </Routes>

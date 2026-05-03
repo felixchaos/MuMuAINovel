@@ -28,6 +28,7 @@ import ThemeSwitch from '../components/ThemeSwitch';
 import { useThemeMode } from '../theme/useThemeMode';
 import { getStoredSidebarCollapsed, setStoredSidebarCollapsed } from '../utils/sidebarState';
 import FloatingTaskPanel from '../components/FloatingTaskPanel';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 
 const { Header, Sider, Content } = Layout;
 
@@ -115,11 +116,11 @@ export default function ProjectDetail() {
   // Hook 内部已经更新了 store，不需要再次刷新
 
   const menuItems = [
-    {
+    ...(FEATURE_FLAGS.sponsor ? [{
       key: 'sponsor',
       icon: <HeartOutlined />,
       label: <Link to={`/project/${projectId}/sponsor`}>赞助支持</Link>,
-    },
+    }] : []),
     {
       type: 'group' as const,
       label: '创作管理',
@@ -195,11 +196,11 @@ export default function ProjectDetail() {
   ];
 
   const menuItemsCollapsed = [
-    {
+    ...(FEATURE_FLAGS.sponsor ? [{
       key: 'sponsor',
       icon: <HeartOutlined />,
       label: <Link to={`/project/${projectId}/sponsor`}>赞助支持</Link>,
-    },
+    }] : []),
     {
       key: 'world-setting',
       icon: <GlobalOutlined />,
@@ -277,9 +278,9 @@ export default function ProjectDetail() {
     if (path.includes('/chapters')) return 'chapters';
     if (path.includes('/writing-styles')) return 'writing-styles';
     if (path.includes('/prompt-workshop')) return 'prompt-workshop';
-    if (path.includes('/sponsor')) return 'sponsor';
+    if (FEATURE_FLAGS.sponsor && path.includes('/sponsor')) return 'sponsor';
     // if (path.includes('/polish')) return 'polish';
-    return 'sponsor'; // 默认选中赞助支持
+    return 'world-setting';
   }, [location.pathname]);
 
   if (loading || !currentProject) {

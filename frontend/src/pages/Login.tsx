@@ -31,6 +31,7 @@ import { authApi } from '../services/api';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import AnnouncementModal from '../components/AnnouncementModal';
 import ThemeSwitch from '../components/ThemeSwitch';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -160,7 +161,7 @@ export default function Login() {
     const hideToday = localStorage.getItem('announcement_hide_today');
     const today = new Date().toDateString();
 
-    if (hideForever === 'true' || hideToday === today) {
+    if (!FEATURE_FLAGS.announcementModal || hideForever === 'true' || hideToday === today) {
       const redirect = searchParams.get('redirect') || '/';
       navigate(redirect);
     } else {
@@ -321,7 +322,7 @@ export default function Login() {
     ];
 
     if (localAuthEnabled) {
-      tips.unshift('本地登录默认账号：admin / admin123');
+      tips.unshift('本地管理员账号：admin，密码以部署配置为准。');
     }
 
     if (emailAuthEnabled) {
@@ -809,12 +810,14 @@ export default function Login() {
 
   return (
     <>
-      <AnnouncementModal
-        visible={showAnnouncement}
-        onClose={handleAnnouncementClose}
-        onDoNotShowToday={handleDoNotShowToday}
-        onNeverShow={handleNeverShow}
-      />
+      {FEATURE_FLAGS.announcementModal && (
+        <AnnouncementModal
+          visible={showAnnouncement}
+          onClose={handleAnnouncementClose}
+          onDoNotShowToday={handleDoNotShowToday}
+          onNeverShow={handleNeverShow}
+        />
+      )}
       <Layout style={{ minHeight: '100vh', background: token.colorBgLayout }}>
         <div
           style={{

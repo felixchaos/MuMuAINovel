@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Typography, Space, Divider, Badge, Button, Grid, theme } from 'antd';
 import { GithubOutlined, CopyrightOutlined, HeartFilled, ClockCircleOutlined, GiftOutlined } from '@ant-design/icons';
 import { VERSION_INFO, getVersionString } from '../config/version';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 import { checkLatestVersion } from '../services/versionService';
 
 const { Text, Link } = Typography;
@@ -98,24 +99,28 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
                 <span>{getVersionString()}</span>
               </Text>
             </Badge>
-            <Divider type="vertical" style={{ margin: '0 4px', borderColor: token.colorBorder }} />
-            <Button
-              type="text"
-              size="small"
-              icon={<GiftOutlined />}
-              onClick={() => window.open('https://mumuverse.space:1588/', '_blank')}
-              style={{
-                color: token.colorTextSecondary,
-                fontSize: 11,
-                height: 24,
-                padding: '0 4px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              赞助
-            </Button>
+            {FEATURE_FLAGS.sponsor && (
+              <>
+                <Divider type="vertical" style={{ margin: '0 4px', borderColor: token.colorBorder }} />
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<GiftOutlined />}
+                  onClick={() => window.open('https://mumuverse.space:1588/', '_blank')}
+                  style={{
+                    color: token.colorTextSecondary,
+                    fontSize: 11,
+                    height: 24,
+                    padding: '0 4px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  赞助
+                </Button>
+              </>
+            )}
             <Divider type="vertical" style={{ margin: '0 4px', borderColor: token.colorBorder }} />
             <Link
               href={VERSION_INFO.githubUrl}
@@ -214,35 +219,36 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
               LinuxDO 社区
             </Link>
 
-            {/* 赞助按钮 */}
-            <Button
-              type="primary"
-              icon={<GiftOutlined style={{ fontSize: 14 }} />}
-              onClick={() => window.open('https://mumuverse.space:1588/', '_blank')}
-              style={{
-                background: token.colorPrimary,
-                border: 'none',
-                boxShadow: `0 4px 12px ${alphaColor(token.colorPrimary, 0.35)}`,
-                fontSize: 13,
-                height: 32,
-                padding: '0 20px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                fontWeight: 600,
-                transition: 'all 0.3s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'translateY(-2px)';
-                e.currentTarget.style.boxShadow = `0 6px 16px ${alphaColor(token.colorPrimary, 0.5)}`;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'translateY(0)';
-                e.currentTarget.style.boxShadow = `0 4px 12px ${alphaColor(token.colorPrimary, 0.35)}`;
-              }}
-            >
-              赞助支持
-            </Button>
+            {FEATURE_FLAGS.sponsor && (
+              <Button
+                type="primary"
+                icon={<GiftOutlined style={{ fontSize: 14 }} />}
+                onClick={() => window.open('https://mumuverse.space:1588/', '_blank')}
+                style={{
+                  background: token.colorPrimary,
+                  border: 'none',
+                  boxShadow: `0 4px 12px ${alphaColor(token.colorPrimary, 0.35)}`,
+                  fontSize: 13,
+                  height: 32,
+                  padding: '0 20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontWeight: 600,
+                  transition: 'all 0.3s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-2px)';
+                  e.currentTarget.style.boxShadow = `0 6px 16px ${alphaColor(token.colorPrimary, 0.5)}`;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'translateY(0)';
+                  e.currentTarget.style.boxShadow = `0 4px 12px ${alphaColor(token.colorPrimary, 0.35)}`;
+                }}
+              >
+                赞助支持
+              </Button>
+            )}
 
             {/* 许可证 */}
             <Link

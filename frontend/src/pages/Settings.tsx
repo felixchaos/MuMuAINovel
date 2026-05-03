@@ -4,6 +4,7 @@ import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, Check
 import { settingsApi, mcpPluginApi } from '../services/api';
 import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
@@ -14,6 +15,7 @@ export default function SettingsPage() {
   const { token } = theme.useToken();
   const screens = useBreakpoint();
   const isMobile = !screens.md; // md断点是768px
+  const mumuApiLinksEnabled = FEATURE_FLAGS.mumuApiLinks;
   const [form] = Form.useForm();
   const [modal, contextHolder] = Modal.useModal();
   const [loading, setLoading] = useState(false);
@@ -1228,7 +1230,7 @@ export default function SettingsPage() {
                             </Select>
                           </Form.Item>
 
-                          {selectedProvider === 'mumu' && (
+                          {mumuApiLinksEnabled && selectedProvider === 'mumu' && (
                             <Alert
                               type="info"
                               showIcon
@@ -1740,7 +1742,7 @@ export default function SettingsPage() {
                           </Select>
                         </Form.Item>
 
-                        {selectedCoverProvider === 'mumu' && (
+                        {mumuApiLinksEnabled && selectedCoverProvider === 'mumu' && (
                           <Alert
                             type="info"
                             showIcon
@@ -1765,7 +1767,7 @@ export default function SettingsPage() {
                         )}
 
                         <Form.Item label="封面图片 API Key" name="cover_api_key" rules={[{ required: true, message: '请输入封面图片 API Key' }]}>
-                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder={selectedCoverProvider === 'mumu' ? '请输入 MuMuのAPI Key' : '输入封面图片 API Key'} autoComplete="new-password" />
+                          <Input.Password size={isMobile ? 'middle' : 'large'} placeholder={mumuApiLinksEnabled && selectedCoverProvider === 'mumu' ? '请输入 MuMuのAPI Key' : '输入封面图片 API Key'} autoComplete="new-password" />
                         </Form.Item>
 
                         <Form.Item label="封面图片 API 地址" name="cover_api_base_url" rules={[{ type: 'url', message: '请输入有效的URL' }]}>
@@ -1786,7 +1788,7 @@ export default function SettingsPage() {
                         <Form.Item label="封面图片模型" name="cover_image_model" rules={[{ required: true, message: '请输入封面图片模型名称' }]}>
                           <Input
                             size={isMobile ? 'middle' : 'large'}
-                            placeholder={selectedCoverProvider === 'mumu'
+                            placeholder={mumuApiLinksEnabled && selectedCoverProvider === 'mumu'
                               ? '选择地址后自动填入推荐模型'
                               : selectedCoverProvider === 'grok'
                                 ? 'grok-2-image'
@@ -1884,7 +1886,7 @@ export default function SettingsPage() {
                   </Select>
                 </Form.Item>
 
-                {selectedPresetProvider === 'mumu' && (
+                {mumuApiLinksEnabled && selectedPresetProvider === 'mumu' && (
                   <Alert
                     type="info"
                     showIcon

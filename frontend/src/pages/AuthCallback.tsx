@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Spin, Result, Button, Modal, Input, message, theme } from 'antd';
 import { authApi } from '../services/api';
 import AnnouncementModal from '../components/AnnouncementModal';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
@@ -66,7 +67,7 @@ export default function AuthCallback() {
         const hideToday = localStorage.getItem('announcement_hide_today');
         const today = new Date().toDateString();
 
-        if (hideForever === 'true' || hideToday === today) {
+        if (!FEATURE_FLAGS.announcementModal || hideForever === 'true' || hideToday === today) {
           // 延迟一下再跳转，让用户看到成功提示
           setTimeout(() => {
             navigate(redirect);
@@ -186,7 +187,7 @@ export default function AuthCallback() {
       const hideToday = localStorage.getItem('announcement_hide_today');
       const today = new Date().toDateString();
 
-      if (hideForever === 'true' || hideToday === today) {
+      if (!FEATURE_FLAGS.announcementModal || hideForever === 'true' || hideToday === today) {
         setTimeout(() => {
           navigate(redirect);
         }, 500);
@@ -223,7 +224,7 @@ export default function AuthCallback() {
     const hideToday = localStorage.getItem('announcement_hide_today');
     const today = new Date().toDateString();
 
-    if (hideForever === 'true' || hideToday === today) {
+    if (!FEATURE_FLAGS.announcementModal || hideForever === 'true' || hideToday === today) {
       setTimeout(() => {
         navigate(redirect);
       }, 500);
@@ -236,12 +237,14 @@ export default function AuthCallback() {
 
   return (
     <>
-      <AnnouncementModal
-        visible={showAnnouncement}
-        onClose={handleAnnouncementClose}
-        onDoNotShowToday={handleDoNotShowToday}
-        onNeverShow={handleNeverShow}
-      />
+      {FEATURE_FLAGS.announcementModal && (
+        <AnnouncementModal
+          visible={showAnnouncement}
+          onClose={handleAnnouncementClose}
+          onDoNotShowToday={handleDoNotShowToday}
+          onNeverShow={handleNeverShow}
+        />
+      )}
 
       <Modal
         title="设置账号密码"
