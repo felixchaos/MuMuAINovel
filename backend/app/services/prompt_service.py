@@ -492,6 +492,11 @@ class PromptService:
 {characters_info}
 </characters>
 
+<foreshadow_reminders priority="P1">
+【伏笔提醒】
+{foreshadow_reminders}
+</foreshadow_reminders>
+
 <user_input priority="P0">
 【用户输入】
 续写章节数：{chapter_count}章
@@ -1626,27 +1631,20 @@ class PromptService:
 <task>
 【重写任务】
 1. 仔细理解原始章节的内容、情节走向和叙事意图
-2. 先核对前文事实、人物状态、关系、设定、伏笔和后续章节边界
-3. 再分析所有修改要求，包括AI分析建议和用户自定义指令
-4. 只在不破坏连续性和既有设定的范围内执行修改要求
+2. 认真分析所有的修改要求，包括AI分析建议和用户自定义指令
+3. 针对每一条修改建议，在新版本中进行具体改进
+4. 在保持故事连贯性和角色一致性的前提下，创作改进后的新版本
 5. 确保新版本在艺术性、可读性和叙事质量上都有明显提升
 </task>
 
 <guidelines>
-【优先级】
-P0：前文连贯性、角色人设、人物状态、已发生事实、叙事视角、世界/职业/力量体系设定
-P0：如果后续章节已存在，不能破坏后续章节的起点和已发生事实
-P1：用户自定义修改要求、AI分析建议、重点优化方向
-P2：写作风格、字数控制、修辞优化
-当P1/P2与P0冲突时，必须优先保留P0，并用不破坏连续性的方式满足用户意图。
-
 【改写原则】
-- **连续性优先**：先保证与前文、后文、人设和设定一致，再处理修改指令
-- **问题导向**：针对修改指令中指出的问题进行改进，但不得覆盖既有事实
+- **问题导向**：针对修改指令中指出的每个问题进行改进
 - **保持精华**：保留原章节中优秀的描写、对话和情节设计
 - **深化细节**：增强场景描写、情感渲染和人物刻画
 - **节奏优化**：调整叙事节奏，避免拖沓或过快
-- **风格一致**：如果提供了写作风格要求，在不破坏连续性的前提下遵循
+- **风格一致**：如果提供了写作风格要求，必须严格遵循
+- **冲突处理**：当修改指令与前文事实、角色人设、已发生剧情或后续章节边界冲突时，以故事连贯性为准，并用折中写法尽量满足修改意图
 
 【重点关注】
 - 如果修改指令提到"节奏"问题，重点调整叙事速度和场景切换
@@ -2438,13 +2436,13 @@ P2：写作风格、字数控制、修辞优化
 
 【重要要求】
 1. 只输出重写后的内容，不要包含任何解释、前缀或后缀
-2. 前文连贯性、人设、已发生事实和后文边界优先于用户修改要求
-3. 用户修改要求只能在不破坏连续性的范围内执行
-4. 保持与前后文的自然衔接、语气连贯和整体叙事风格一致
+2. 保持与前后文的自然衔接和语气连贯
+3. 严格遵循用户的修改要求；如果要求与前后文、角色人设或已发生事实冲突，以故事连贯性为准
+4. 保持整体叙事风格的一致性
 </task>
 
-<story_continuity priority="P0">
-【全局连续性硬约束】
+<story_continuity>
+【全局连续性冲突约束】
 {story_continuity_context}
 </story_continuity>
 
@@ -2486,10 +2484,8 @@ P2：写作风格、字数控制、修辞优化
 <constraints>
 【必须遵守】
 ✅ 前后衔接：输出内容必须与前文自然衔接，与后文平滑过渡
-✅ 连续性优先：不得推翻前文事实、人设、关系、人物状态、世界/职业/力量体系和后文边界
-✅ 需求服从连续性：如果用户要求与既有连续性冲突，优先保留连续性，并用折中写法满足用户意图
 ✅ 风格一致：保持与原文相同的叙事风格、语气和人称
-✅ 要求执行：在不破坏连续性的前提下执行用户的修改要求
+✅ 要求优先：严格执行用户的修改要求；如果用户要求与故事连贯性冲突，以前后文衔接和既有事实为准
 ✅ 字数控制：遵循字数要求
 
 【禁止事项】
@@ -2678,6 +2674,18 @@ P2：写作风格、字数控制、修辞优化
             system_template = await cls.get_template("CHAPTER_REGENERATION_SYSTEM", user_id, db)
         else:
             system_template = cls.CHAPTER_REGENERATION_SYSTEM
+
+        system_template = cls.format_prompt(
+            system_template,
+            chapter_number=chapter_number,
+            title=title,
+            word_count=word_count,
+            content=content,
+            modification_instructions=modification_instructions,
+            project_context=json.dumps(project_context, ensure_ascii=False),
+            style_content=style_content,
+            target_word_count=target_word_count
+        )
         
         prompt_parts = [system_template]
         
@@ -2694,11 +2702,11 @@ P2：写作风格、字数控制、修辞优化
 ---
 """)
 
-        # 全局连续性硬约束
+        # 全局连续性冲突约束
         if project_context.get('previous_context'):
-            prompt_parts.append(f"""## 🔒 P0 连续性硬约束
+            prompt_parts.append(f"""## 🔒 连续性冲突约束
 
-以下内容的优先级高于修改指令、写作风格和字数控制。重写时必须先保证前文连贯性、角色状态、已发生事实、设定一致性和后续章节边界。
+以下内容用于处理“前文连贯性”和“用户修改要求”的冲突：当用户修改要求与前文事实、角色状态、已发生剧情或后续章节边界冲突时，以故事连贯性为准。其它创作要求按后续模板执行。
 
 {project_context['previous_context']}
 
@@ -2757,7 +2765,7 @@ P2：写作风格、字数控制、修辞优化
 
 {style_content}
 
-请在不破坏P0连续性硬约束的前提下遵循上述写作风格。
+请在重新创作时严格遵循上述写作风格。
 
 ---
 """)
@@ -2765,12 +2773,12 @@ P2：写作风格、字数控制、修辞优化
         # 创作要求
         prompt_parts.append(f"""## ✨ 创作要求
 
-1. **连续性优先**：确保与前后章节的情节、人物状态、关系、设定和叙事视角保持一致
-2. **解决问题**：在不破坏连续性的前提下，针对上述修改指令中提到的问题进行改进
-3. **保留精华**：保持原章节中优秀的部分和关键情节，不随意推翻已发生事实
-4. **提升质量**：在节奏、情感、描写等方面明显优于原版
+1. **解决问题**：针对上述修改指令中提到的所有问题进行改进
+2. **保持连贯**：确保与前后章节的情节、人物、风格保持一致；如果用户修改要求与连贯性冲突，以连贯性为准
+3. **提升质量**：在节奏、情感、描写等方面明显优于原版
+4. **保留精华**：保持原章节中优秀的部分和关键情节
 5. **字数控制**：目标字数约{target_word_count}字（可适当浮动±20%）
-{f'6. **风格一致**：在服从连续性硬约束的前提下按照上述写作风格进行创作' if style_content else ''}
+{f'6. **风格一致**：严格按照上述写作风格进行创作' if style_content else ''}
 
 ---
 
@@ -2957,16 +2965,16 @@ P2：写作风格、字数控制、修辞优化
                 "name": "大纲生成",
                 "category": "大纲生成",
                 "description": "根据项目信息生成完整的章节大纲",
-                "parameters": ["title", "theme", "genre", "chapter_count", "narrative_perspective", "target_words", 
+                "parameters": ["title", "theme", "genre", "chapter_count", "narrative_perspective",
                              "time_period", "location", "atmosphere", "rules", "characters_info", "requirements", "mcp_references"]
             },
             "OUTLINE_CONTINUE": {
                 "name": "大纲续写",
                 "category": "大纲生成",
                 "description": "基于已有章节续写大纲",
-                "parameters": ["title", "theme", "genre", "narrative_perspective", "chapter_count", "time_period", 
-                             "location", "atmosphere", "rules", "characters_info", "current_chapter_count", 
-                             "all_chapters_brief", "recent_plot", "memory_context", "mcp_references", 
+                "parameters": ["title", "theme", "genre", "narrative_perspective", "chapter_count", "time_period",
+                             "location", "atmosphere", "rules", "recent_outlines", "characters_info",
+                             "foreshadow_reminders", "current_chapter_count", "mcp_references",
                              "plot_stage_instruction", "start_chapter", "end_chapter", "story_direction", "requirements"]
             },
             "CHAPTER_GENERATION_ONE_TO_MANY": {
@@ -2974,7 +2982,8 @@ P2：写作风格、字数控制、修辞优化
                 "category": "章节创作",
                 "description": "1-N模式：根据大纲创作章节内容（用于第1章，无前置章节）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
-                             "target_word_count", "narrative_perspective", "characters_info"]
+                             "target_word_count", "narrative_perspective", "characters_info", "chapter_careers",
+                             "foreshadow_reminders", "relevant_memories"]
             },
             "CHAPTER_GENERATION_ONE_TO_MANY_NEXT": {
                 "name": "章节创作-1-N模式（第2章及以后）",
@@ -2982,14 +2991,16 @@ P2：写作风格、字数控制、修辞优化
                 "description": "1-N模式：基于前置章节内容创作新章节（用于第2章及以后）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
                              "target_word_count", "narrative_perspective", "characters_info", "continuation_point",
-                             "foreshadow_reminders", "relevant_memories", "story_skeleton", "previous_chapter_summary"]
+                             "chapter_careers", "foreshadow_reminders", "relevant_memories",
+                             "recent_chapters_context", "previous_chapter_summary"]
             },
             "CHAPTER_GENERATION_ONE_TO_ONE": {
                 "name": "章节创作-1-1模式（第1章）",
                 "category": "章节创作",
                 "description": "1-1模式：章节创作（用于第1章，无前置章节）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
-                             "target_word_count", "narrative_perspective", "characters_info", "chapter_careers"]
+                             "target_word_count", "narrative_perspective", "characters_info", "chapter_careers",
+                             "foreshadow_reminders", "relevant_memories"]
             },
             "CHAPTER_GENERATION_ONE_TO_ONE_NEXT": {
                 "name": "章节创作-1-1模式（第2章及以后）",
@@ -2997,7 +3008,8 @@ P2：写作风格、字数控制、修辞优化
                 "description": "1-1模式：基于上一章内容创作新章节（用于第2章及以后）",
                 "parameters": ["project_title", "genre", "chapter_number", "chapter_title", "chapter_outline",
                              "target_word_count", "narrative_perspective", "previous_chapter_content",
-                             "characters_info", "chapter_careers", "foreshadow_reminders", "relevant_memories"]
+                             "previous_chapter_summary", "characters_info", "chapter_careers",
+                             "foreshadow_reminders", "relevant_memories"]
             },
             "CHAPTER_REGENERATION_SYSTEM": {
                 "name": "章节重写系统提示",
@@ -3010,33 +3022,33 @@ P2：写作风格、字数控制、修辞优化
                 "name": "局部重写",
                 "category": "章节重写",
                 "description": "根据用户修改要求重写选中的段落内容",
-                "parameters": ["context_before", "original_word_count", "selected_text", "context_after",
-                             "user_instructions", "length_requirement", "style_content"]
+                "parameters": ["story_continuity_context", "context_before", "original_word_count", "selected_text",
+                             "context_after", "user_instructions", "length_requirement", "style_content"]
             },
             "PLOT_ANALYSIS": {
                 "name": "情节分析",
                 "category": "情节分析",
                 "description": "深度分析章节的剧情、钩子、伏笔等",
-                "parameters": ["chapter_number", "title", "content", "word_count"]
+                "parameters": ["chapter_number", "title", "content", "word_count", "existing_foreshadows", "characters_info"]
             },
             "OUTLINE_EXPAND_SINGLE": {
                 "name": "大纲单批次展开",
                 "category": "情节展开",
                 "description": "将大纲节点展开为详细章节规划（单批次）",
-                "parameters": ["project_title", "project_genre", "project_theme", "project_narrative_perspective", 
-                             "project_world_time_period", "project_world_location", "project_world_atmosphere", 
-                             "characters_info", "outline_order_index", "outline_title", "outline_content", 
-                             "context_info", "strategy_instruction", "target_chapter_count", "scene_instruction", "scene_field"]
+                "parameters": ["project_title", "project_genre", "project_theme", "project_narrative_perspective",
+                             "project_world_time_period", "project_world_location", "project_world_atmosphere",
+                             "characters_info", "outline_order_index", "outline_title", "outline_content",
+                             "context_info", "strategy_instruction", "target_chapter_count", "scene_field"]
             },
             "OUTLINE_EXPAND_MULTI": {
                 "name": "大纲分批展开",
                 "category": "情节展开",
                 "description": "将大纲节点展开为详细章节规划（分批）",
-                "parameters": ["project_title", "project_genre", "project_theme", "project_narrative_perspective", 
-                             "project_world_time_period", "project_world_location", "project_world_atmosphere", 
-                             "characters_info", "outline_order_index", "outline_title", "outline_content", 
-                             "context_info", "previous_context", "strategy_instruction", "start_index", 
-                             "end_index", "target_chapter_count", "scene_instruction", "scene_field"]
+                "parameters": ["project_title", "project_genre", "project_theme", "project_narrative_perspective",
+                             "project_world_time_period", "project_world_location", "project_world_atmosphere",
+                             "characters_info", "outline_order_index", "outline_title", "outline_content",
+                             "context_info", "previous_context", "strategy_instruction", "start_index",
+                             "end_index", "target_chapter_count", "scene_field"]
             },
             "MCP_TOOL_TEST": {
                 "name": "MCP工具测试(用户提示词)",
@@ -3067,7 +3079,8 @@ P2：写作风格、字数控制、修辞优化
                 "category": "自动角色引入",
                 "description": "分析新生成的大纲，判断是否需要引入新角色",
                 "parameters": ["title", "genre", "theme", "time_period", "location", "atmosphere",
-                             "existing_characters", "new_outlines", "start_chapter", "end_chapter"]
+                             "existing_characters", "all_chapters_brief", "start_chapter", "chapter_count",
+                             "plot_stage", "story_direction"]
             },
             "AUTO_CHARACTER_GENERATION": {
                 "name": "自动角色生成",

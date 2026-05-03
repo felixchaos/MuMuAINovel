@@ -98,6 +98,19 @@ def _is_same_ai_service(left: AIService, right: AIService) -> bool:
     )
 
 
+def _build_style_system_prompt(style_content: Optional[str]) -> Optional[str]:
+    """构建写作风格系统提示词。"""
+    if not style_content:
+        return None
+
+    return f"""【🎨 写作风格要求 - 最高优先级】
+
+{style_content}
+
+⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
+确保在整个章节创作过程中始终保持风格的一致性。"""
+
+
 @router.post("", response_model=ChapterResponse, summary="创建章节")
 async def create_chapter(
     chapter: ChapterCreate,
@@ -941,12 +954,11 @@ async def _build_rewrite_continuity_context(
 
     sections: list[tuple[str, str, int]] = [
         (
-            "重写硬性优先级",
+            "连续性冲突处理",
             "\n".join([
-                "1. 前文连贯性、人设、人物状态、关系、已发生事实必须优先保障。",
-                "2. 如果后续章节已存在，不能破坏后续章节的开篇锚点、已发生事实和角色状态。",
-                "3. 用户修改要求只能在不破坏第1、2条的范围内执行；若冲突，以连续性为准。",
-                "4. 写作风格、字数、修辞优化低于剧情连续性和设定一致性。"
+                "1. 当用户修改要求与前文事实、人设、人物状态、关系或已发生剧情冲突时，以故事连贯性为准。",
+                "2. 如果后续章节已存在，不能为了满足用户修改要求而破坏后续章节的开篇锚点、已发生事实和角色状态。",
+                "3. 除上述冲突处理外，其它创作优先级按原有提示词执行。"
             ]),
             800
         ),
@@ -1917,15 +1929,9 @@ async def generate_chapter_content_stream(
                 
                 logger.info(f"开始AI流式创作章节 {chapter_id}")
                 
-                # 🎨 方案一：将写作风格注入到系统提示词（最高优先级）
-                system_prompt_with_style = None
+                # 将写作风格注入系统提示词。
+                system_prompt_with_style = _build_style_system_prompt(style_content)
                 if style_content:
-                    system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
                     logger.info(f"✅ 已将写作风格注入系统提示词（{len(style_content)}字符）")
                 
                 # 🔢 计算 max_tokens 限制
@@ -2403,14 +2409,7 @@ async def _run_chapter_generation_bg(
     # === 准备阶段 ===
     await tracker.preparing("准备AI提示词...")
 
-    system_prompt_with_style = None
-    if style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
+    system_prompt_with_style = _build_style_system_prompt(style_content)
 
     calculated_max_tokens = int(target_word_count * 3)
     calculated_max_tokens = max(2000, min(calculated_max_tokens, 16000))
@@ -3895,15 +3894,9 @@ async def generate_single_chapter_for_batch(
     else:
         prompt = base_prompt
     
-    # 🎨 方案一：将写作风格注入到系统提示词（批量生成）
-    system_prompt_with_style = None
+    # 将写作风格注入系统提示词。
+    system_prompt_with_style = _build_style_system_prompt(style_content)
     if style_content:
-        system_prompt_with_style = f"""【🎨 写作风格要求 - 最高优先级】
-
-{style_content}
-
-⚠️ 请严格遵循上述写作风格要求进行创作，这是最重要的指令！
-确保在整个章节创作过程中始终保持风格的一致性。"""
         logger.info(f"✅ 批量生成 - 已将写作风格注入系统提示词（{len(style_content)}字符）")
     
     # 🔢 计算 max_tokens 限制（批量生成）
@@ -4648,8 +4641,8 @@ async def partial_regenerate_stream(
                 story_continuity_context=story_continuity_context if story_continuity_context else "（暂无可用的前后文连续性上下文）"
             )
             if story_continuity_context and "{story_continuity_context}" not in template:
-                prompt = f"""<story_continuity priority="P0">
-【全局连续性硬约束】
+                prompt = f"""<story_continuity>
+【全局连续性冲突约束】
 {story_continuity_context}
 </story_continuity>
 
