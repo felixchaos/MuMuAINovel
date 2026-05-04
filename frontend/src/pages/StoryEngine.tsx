@@ -6,9 +6,11 @@ import {
   Card,
   Col,
   Empty,
+  Input,
   List,
   Progress,
   Row,
+  Select,
   Skeleton,
   Space,
   Tag,
@@ -75,6 +77,8 @@ export default function StoryEngine() {
   const [snapshot, setSnapshot] = useState<StoryEngineSnapshot | null>(null);
   const [visualization, setVisualization] = useState<StoryEngineVisualization | null>(null);
   const [loading, setLoading] = useState(false);
+  const [visualQuery, setVisualQuery] = useState('');
+  const [timelineFilter, setTimelineFilter] = useState<string>('all');
   const { token } = theme.useToken();
 
   const loadSnapshot = useCallback(async () => {
@@ -335,14 +339,32 @@ export default function StoryEngine() {
 
   const renderVisualization = () => {
     if (!visualization) return null;
+    const normalizedQuery = visualQuery.trim().toLowerCase();
+    const matchText = (...values: unknown[]) => {
+      if (!normalizedQuery) return true;
+      return values
+        .flatMap((value) => Array.isArray(value) ? value : [value])
+        .some((value) => String(value || '').toLowerCase().includes(normalizedQuery));
+    };
+    const matrixRows = visualization.character_chapter_matrix.filter((row) =>
+      matchText(row.entity, row.chapters.map((cell) => cell.evidence || ''))
+    );
     const timelineGroups = [
       { key: 'relationship', title: '关系变化时间线', items: visualization.relationship_timeline },
       { key: 'foreshadow', title: '伏笔时间线', items: visualization.foreshadow_timeline },
       { key: 'organization', title: '组织变化时间线', items: visualization.organization_timeline },
       { key: 'world', title: '世界观声明时间线', items: visualization.world_timeline },
-    ].filter((group) => group.items.length > 0);
+    ]
+      .filter((group) => timelineFilter === 'all' || group.key === timelineFilter)
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) =>
+          matchText(item.title, item.content, item.entities, item.tags, item.chapter_number)
+        ),
+      }))
+      .filter((group) => group.items.length > 0);
 
-    if (!visualization.character_chapter_matrix.length && !timelineGroups.length) {
+    if (!matrixRows.length && !timelineGroups.length) {
       return null;
     }
 
@@ -352,13 +374,34 @@ export default function StoryEngine() {
           <Title level={4} style={{ margin: 0 }}>剧情图谱</Title>
           <Text type="secondary">由结构化事实派生</Text>
         </Space>
+        <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+          <Input.Search
+            allowClear
+            placeholder="搜索角色、章节证据、关系、伏笔或世界观事实"
+            value={visualQuery}
+            onChange={(event) => setVisualQuery(event.target.value)}
+            style={{ width: 360, maxWidth: '100%' }}
+          />
+          <Select
+            value={timelineFilter}
+            onChange={setTimelineFilter}
+            style={{ width: 180 }}
+            options={[
+              { label: '全部时间线', value: 'all' },
+              { label: '关系变化', value: 'relationship' },
+              { label: '伏笔', value: 'foreshadow' },
+              { label: '组织变化', value: 'organization' },
+              { label: '世界观声明', value: 'world' },
+            ]}
+          />
+        </Space>
         <Row gutter={[12, 12]}>
-          {visualization.character_chapter_matrix.length > 0 && (
+          {matrixRows.length > 0 && (
             <Col xs={24} xl={12}>
               <Card size="small" title="角色-章节出现矩阵" style={{ height: '100%' }}>
                 <List
                   size="small"
-                  dataSource={visualization.character_chapter_matrix.slice(0, 12)}
+                  dataSource={matrixRows.slice(0, 12)}
                   renderItem={(row) => (
                     <List.Item style={{ paddingInline: 0 }}>
                       <Space direction="vertical" size={4} style={{ width: '100%' }}>
