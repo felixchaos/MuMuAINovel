@@ -118,6 +118,8 @@ async def get_ai_usage_summary(
         completion_tokens=totals[3] or 0,
         total_tokens=totals[4] or 0,
         reference_estimated_cost=totals[5],
+        pricing_cache_updated_at=openrouter_pricing_service.updated_at,
+        pricing_cache_ttl_hours=openrouter_pricing_service.ttl_hours,
         by_model=[
             AIUsageModelSummary(
                 provider=row.provider,
@@ -160,7 +162,7 @@ async def refresh_openrouter_pricing(request: Request):
     _require_user_id(request)
     count = await openrouter_pricing_service.refresh()
     return {
-        "message": "OpenRouter参考价格缓存已刷新",
+        "message": "OpenRouter服务器参考价格缓存已刷新",
         "count": count,
         "updated_at": datetime.utcnow().isoformat(),
     }

@@ -160,7 +160,7 @@ export default function SettingsPage() {
     setUsageLoading(true);
     try {
       const result = await aiUsageApi.refreshPricing();
-      message.success(`OpenRouter参考价格已刷新：${result.count} 个模型`);
+      message.success(`服务器参考价缓存已刷新：${result.count} 个模型`);
       await loadUsageSummary(usageDays);
     } catch (error) {
       console.error('刷新OpenRouter参考价格失败:', error);
@@ -1000,6 +1000,9 @@ export default function SettingsPage() {
 
   const renderUsagePanel = () => {
     const summary = usageSummary;
+    const pricingCacheText = summary?.pricing_cache_updated_at
+      ? `当前服务器价格缓存更新时间：${new Date(summary.pricing_cache_updated_at).toLocaleString()}，自动有效期 ${summary.pricing_cache_ttl_hours || 24} 小时。`
+      : '服务器会按天缓存 OpenRouter 模型价格；首次命中或缓存过期时自动拉取。';
     const statItems = [
       { label: '总调用', value: formatTokenNumber(summary?.total_calls), hint: `成功 ${formatTokenNumber(summary?.success_calls)} 次` },
       { label: '输入 Token', value: formatTokenNumber(summary?.prompt_tokens), hint: 'Prompt / 上下文' },
@@ -1013,7 +1016,8 @@ export default function SettingsPage() {
           <Alert
             type="info"
             showIcon
-            message="这里只统计 Token 用量；OpenRouter 价格库只用于参考估算，不代表实际扣费。"
+            message="这里只统计 Token 用量；参考价不代表实际扣费。"
+            description={`OpenRouter 价格库仅用于给用户判断模型成本，价格仅供参考，可能存在数小时延迟，也可能和中转站/供应商实际价格不同。${pricingCacheText}`}
           />
 
           <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
@@ -1034,7 +1038,7 @@ export default function SettingsPage() {
               </Button>
             </Space>
             <Button icon={<ReloadOutlined />} onClick={handleRefreshPricing}>
-              刷新 OpenRouter 参考价
+              刷新服务器参考价缓存
             </Button>
           </Space>
 

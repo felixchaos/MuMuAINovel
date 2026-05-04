@@ -57,5 +57,7 @@ class AIUsageSummaryResponse(BaseModel):
     reference_estimated_cost: Optional[float] = None
     reference_currency: str = "USD"
     pricing_source: str = "openrouter"
+    pricing_cache_updated_at: Optional[datetime] = None
+    pricing_cache_ttl_hours: int = 24
     by_model: List[AIUsageModelSummary]
     recent_logs: List[AIUsageLogResponse]

@@ -198,6 +198,8 @@ export interface AIUsageSummary {
   reference_estimated_cost?: number;
   reference_currency: string;
   pricing_source: string;
+  pricing_cache_updated_at?: string;
+  pricing_cache_ttl_hours: number;
   by_model: AIUsageModelSummary[];
   recent_logs: AIUsageLog[];
 }
