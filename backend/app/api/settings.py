@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from types import SimpleNamespace
 from pydantic import BaseModel
 from datetime import datetime
 import httpx
@@ -747,7 +748,11 @@ class ApiTestRequest(BaseModel):
 
 
 @router.post("/check-function-calling")
-async def check_function_calling_support(data: ApiTestRequest, request: Request = None):
+async def check_function_calling_support(
+    data: ApiTestRequest,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
     """
     检查模型是否支持 Function Calling（工具调用）
     
@@ -812,6 +817,7 @@ async def check_function_calling_support(data: ApiTestRequest, request: Request 
             default_temperature=0.3,  # 使用较低温度以获得更确定的行为
             default_max_tokens=200,
             user_id=user_id,
+            db_session=db,
             enable_mcp=False,
         )
         
@@ -971,7 +977,11 @@ async def check_function_calling_support(data: ApiTestRequest, request: Request 
 
 
 @router.post("/test")
-async def test_api_connection(data: ApiTestRequest, request: Request = None):
+async def test_api_connection(
+    data: ApiTestRequest,
+    request: Request = None,
+    db: AsyncSession = Depends(get_db),
+):
     """
     测试 API 连接和配置是否正确
     
@@ -1003,6 +1013,7 @@ async def test_api_connection(data: ApiTestRequest, request: Request = None):
             default_temperature=temperature,
             default_max_tokens=max_tokens,
             user_id=user_id,
+            db_session=db,
             enable_mcp=False,
         )
         
@@ -1519,7 +1530,8 @@ async def test_preset(
     )
     
     logger.info(f"用户 {user.user_id} 测试预设: {target_preset['name']}")
-    return await test_api_connection(test_request)
+    request_shim = SimpleNamespace(state=SimpleNamespace(user_id=user.user_id))
+    return await test_api_connection(test_request, request=request_shim, db=db)
 
 
 @router.post("/presets/from-current", response_model=PresetResponse)
