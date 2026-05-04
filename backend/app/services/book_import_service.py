@@ -1207,6 +1207,36 @@ class BookImportService:
 
         return stripped or normalized
 
+    def _build_chapter_split_warnings(
+        self,
+        *,
+        title: str,
+        content: str,
+        source_chapter_number: int,
+        split_confidence: float,
+        split_problem_label: str,
+        abnormal_chapter_numbers: set[int],
+    ) -> list[str]:
+        warnings: list[str] = []
+        content_length = len((content or "").strip())
+        normalized_title = str(title or "").strip()
+
+        if source_chapter_number in abnormal_chapter_numbers:
+            warnings.append("切分诊断将本章标记为异常章节")
+        if content_length < 300:
+            warnings.append("正文短于300字，可能是误切或标题页")
+        elif content_length > 12000:
+            warnings.append("正文超过12000字，可能漏切了多个章节")
+        if re.fullmatch(r"第?\s*\d+\s*章?", normalized_title) or re.fullmatch(
+            r"第?\s*[零一二三四五六七八九十百千万两〇]+\s*章?",
+            normalized_title,
+        ):
+            warnings.append("标题缺少有效章节名，建议补全或确认边界")
+        if split_confidence and split_confidence < 0.55 and split_problem_label:
+            warnings.append(f"整体切分置信度偏低：{split_problem_label}")
+
+        return list(dict.fromkeys(warnings))
+
     async def _build_preview(
         self,
         *,
@@ -1257,13 +1287,29 @@ class BookImportService:
         )
         selected_total = len(selected_chapters_raw)
         selection_label = self._get_extract_mode_label(task.extract_mode, selected_total)
+        abnormal_chapter_numbers = {
+            int(number)
+            for number in (split_report or {}).get("abnormal_chapter_numbers", [])
+            if str(number).isdigit()
+        }
+        split_problem_label = str((split_report or {}).get("problem_label") or "").strip()
+        split_confidence = float((split_report or {}).get("confidence") or 0)
 
         title_counter: Counter[str] = Counter()
         for idx, chapter in enumerate(selected_chapters_raw, start=1):
+            source_chapter_number = int(chapter.get("chapter_number") or idx)
             raw_title = (chapter.get("title") or f"第{idx}章").strip()[:200]
             title = self._strip_chapter_prefix(raw_title)[:200]
             content = (chapter.get("content") or "").strip()
             summary = self._build_summary(content)
+            split_warnings = self._build_chapter_split_warnings(
+                title=title,
+                content=content,
+                source_chapter_number=source_chapter_number,
+                split_confidence=split_confidence,
+                split_problem_label=split_problem_label,
+                abnormal_chapter_numbers=abnormal_chapter_numbers,
+            )
 
             chapters.append(
                 BookImportChapter(
@@ -1272,6 +1318,7 @@ class BookImportService:
                     summary=summary,
                     chapter_number=idx,
                     outline_title=title,
+                    split_warnings=split_warnings,
                 )
             )
 
@@ -1312,6 +1359,9 @@ class BookImportService:
                         level="warning",
                     )
                 )
+                for chapter in chapters:
+                    if chapter.title == title:
+                        chapter.split_warnings.append(f"章节标题重复出现 {count} 次，建议确认是否分页或误切")
 
         entity_candidates = self._scan_import_entity_candidates(
             chapters=chapters,

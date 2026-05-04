@@ -95,6 +95,7 @@ class BookImportChapter(BaseModel):
     summary: Optional[str] = Field(None, description="章节摘要")
     chapter_number: int = Field(..., ge=1, description="章节序号")
     outline_title: Optional[str] = Field(None, description="关联大纲标题（可选）")
+    split_warnings: list[str] = Field(default_factory=list, description="章节边界/切分疑点")
 
 
 class BookImportOutline(BaseModel):

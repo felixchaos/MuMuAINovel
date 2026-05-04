@@ -1309,6 +1309,7 @@ export interface BookImportChapter {
   summary?: string;
   chapter_number: number;
   outline_title?: string;
+  split_warnings?: string[];
 }
 
 export interface BookImportOutline {

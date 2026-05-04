@@ -207,6 +207,7 @@ export default function BookImport() {
   const [taskStatus, setTaskStatus] = useState<BookImportTask | null>(null);
   const [preview, setPreview] = useState<BookImportPreview | null>(null);
   const [selectedEntityCandidateKeys, setSelectedEntityCandidateKeys] = useState<string[]>([]);
+  const [showSuspectChaptersOnly, setShowSuspectChaptersOnly] = useState(false);
 
   const [creatingTask, setCreatingTask] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -290,6 +291,19 @@ export default function BookImport() {
       selectedEntityCandidateKeySet.has(bookImportEntityCandidateKey(item))
     );
   }, [preview?.entity_candidates, selectedEntityCandidateKeySet]);
+
+  const suspectChapterItems = useMemo(() => {
+    if (!preview?.chapters?.length) return [];
+    return preview.chapters
+      .map((chapter, index) => ({ chapter, index }))
+      .filter(({ chapter }) => (chapter.split_warnings || []).length > 0);
+  }, [preview?.chapters]);
+
+  const visibleChapterItems = useMemo(() => {
+    if (!preview?.chapters?.length) return [];
+    const allItems = preview.chapters.map((chapter, index) => ({ chapter, index }));
+    return showSuspectChaptersOnly ? suspectChapterItems : allItems;
+  }, [preview?.chapters, showSuspectChaptersOnly, suspectChapterItems]);
 
   const normalizedTailChapterCount = useMemo(
     () => Math.max(5, Math.ceil(tailChapterCount / 5) * 5),
@@ -704,6 +718,7 @@ export default function BookImport() {
     setTailChapterCount(10);
     setSetupMode('auto');
     setPostImportGeneration('auto');
+    setShowSuspectChaptersOnly(false);
 
     message.success('已重新开始，请重新上传 TXT 并解析');
   }, []);
@@ -728,6 +743,11 @@ export default function BookImport() {
         ...current,
         content: [current.content, nextChapter.content].filter(Boolean).join('\n\n'),
         summary: [current.summary, nextChapter.summary].filter(Boolean).join('\n'),
+        split_warnings: Array.from(new Set([
+          ...(current.split_warnings || []),
+          ...(nextChapter.split_warnings || []),
+          '已手动合并章节，请复核新边界',
+        ])),
       });
 
       const normalizedChapters = chapters.map((chapter, chapterIndex) => ({
@@ -802,6 +822,7 @@ export default function BookImport() {
               content: secondContent,
               summary: '',
               outline_title: `${target.outline_title || target.title}（拆分）`,
+              split_warnings: ['已手动拆分章节，请复核新边界'],
             }
           );
           const normalizedChapters = chapters.map((item, chapterIndex) => ({
@@ -1638,13 +1659,51 @@ export default function BookImport() {
                 </Row>
               </Card>
 
-              <Card size="small" title={`章节（${preview.chapters.length}）`}>
+              <Card
+                size="small"
+                title={`章节（${preview.chapters.length}）`}
+                extra={
+                  <Checkbox
+                    checked={showSuspectChaptersOnly}
+                    disabled={suspectChapterItems.length === 0}
+                    onChange={(event) => setShowSuspectChaptersOnly(event.target.checked)}
+                  >
+                    只看疑似边界（{suspectChapterItems.length}）
+                  </Checkbox>
+                }
+              >
+                {visibleChapterItems.length === 0 ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无疑似边界章节" />
+                ) : (
                 <Collapse
-                  items={preview.chapters.map((ch, idx) => ({
+                  items={visibleChapterItems.map(({ chapter: ch, index: idx }) => ({
                     key: String(idx),
-                    label: `第 ${ch.chapter_number} 章 · ${ch.title}`,
+                    label: (
+                      <Space size={8} wrap>
+                        <Text>第 {ch.chapter_number} 章 · {ch.title}</Text>
+                        {(ch.split_warnings || []).length > 0 && (
+                          <Tag color="orange">疑似边界 {ch.split_warnings?.length}</Tag>
+                        )}
+                      </Space>
+                    ),
                     children: (
                       <Space direction="vertical" style={{ width: '100%' }}>
+                        {(ch.split_warnings || []).length > 0 && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="本章需要复核边界"
+                            description={
+                              <Space size={[6, 6]} wrap>
+                                {(ch.split_warnings || []).map((warning, warningIndex) => (
+                                  <Tag key={`${warning}-${warningIndex}`} color="orange">
+                                    {warning}
+                                  </Tag>
+                                ))}
+                              </Space>
+                            }
+                          />
+                        )}
                         <Space size={8} wrap>
                           <Button size="small" onClick={() => splitPreviewChapter(idx)}>
                             拆分本章
@@ -1678,6 +1737,7 @@ export default function BookImport() {
                     ),
                   }))}
                 />
+                )}
               </Card>
 
               </Space>
