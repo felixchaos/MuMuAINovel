@@ -3281,13 +3281,19 @@ class BookImportService:
 
     async def _get_task(self, *, task_id: str, user_id: str) -> _BookImportTask:
         async with self._tasks_lock:
-            task = self._tasks.get(task_id)
+            cached_task = self._tasks.get(task_id)
 
-        if not task:
-            background_task = await self._get_background_task(task_id=task_id, user_id=user_id)
-            if not background_task:
-                raise HTTPException(status_code=404, detail="任务不存在")
-            task = self._task_from_background_task(background_task)
+        background_task = await self._get_background_task(task_id=task_id, user_id=user_id)
+        if background_task:
+            if cached_task:
+                self._merge_background_task_state(cached_task, background_task)
+                task = cached_task
+            else:
+                task = self._task_from_background_task(background_task)
+        elif cached_task:
+            task = cached_task
+        else:
+            raise HTTPException(status_code=404, detail="任务不存在")
 
         if task.user_id != user_id:
             raise HTTPException(status_code=403, detail="无权访问该任务")
@@ -3352,6 +3358,44 @@ class BookImportService:
                 if isinstance(item, dict)
             ],
         )
+
+    def _merge_background_task_state(self, task: _BookImportTask, background_task: BackgroundTask) -> None:
+        """以 BackgroundTask 为生命周期事实来源，热缓存只保留运行态预览/文件上下文。"""
+        if (
+            task.updated_at
+            and background_task.updated_at
+            and background_task.updated_at < task.updated_at
+            and not background_task.cancel_requested
+        ):
+            return
+
+        task.status = background_task.status or task.status
+        task.progress = int(background_task.progress or task.progress or 0)
+        task.message = background_task.status_message or task.message
+        task.error = background_task.error_message
+        task.updated_at = background_task.updated_at or task.updated_at
+        task.cancelled = bool(background_task.cancel_requested)
+
+        task_result = background_task.task_result or {}
+        if isinstance(task_result, dict):
+            task.imported_project_id = task_result.get("imported_project_id") or task.imported_project_id
+            preview_storage = task_result.get("preview_storage")
+            if isinstance(preview_storage, dict) and preview_storage.get("path"):
+                task.preview_storage_path = str(self._normalize_preview_storage_path(
+                    preview_storage.get("path"),
+                    user_id=task.user_id,
+                    task_id=task.task_id,
+                ))
+            task.failed_steps = [
+                _StepFailure(
+                    step_name=str(item.get("step_name") or ""),
+                    step_label=str(item.get("step_label") or ""),
+                    error_message=str(item.get("error") or item.get("error_message") or ""),
+                    retry_count=int(item.get("retry_count") or 0),
+                )
+                for item in task_result.get("failed_steps", [])
+                if isinstance(item, dict)
+            ] or task.failed_steps
 
     def _to_status(self, task: _BookImportTask) -> BookImportTaskStatusResponse:
         return BookImportTaskStatusResponse(
