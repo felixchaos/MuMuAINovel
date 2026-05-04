@@ -258,10 +258,22 @@ async def import_project_chapters(
                 warnings.append(f"{filename}：正文为空，已跳过")
             continue
 
-        chapters_data = txt_parser_service.split_chapters(cleaned)
+        chapters_data, split_report = txt_parser_service.split_chapters_with_report(cleaned)
         if not chapters_data:
             warnings.append(f"{filename}：未识别到有效章节，已跳过")
             continue
+
+        confidence = float(split_report.get("confidence") or 0)
+        mode_label = split_report.get("mode_label") or split_report.get("mode") or "未知模式"
+        warnings.append(
+            f"{filename}：章节切分模式 {mode_label}，置信度 {int(confidence * 100)}%，识别 {len(chapters_data)} 章"
+        )
+        if confidence < 0.55:
+            warnings.append(f"{filename}：章节切分置信度较低，请导入后检查章节边界")
+        abnormal_numbers = split_report.get("abnormal_chapter_numbers") or []
+        if abnormal_numbers:
+            preview_numbers = "、".join(str(number) for number in abnormal_numbers[:20])
+            warnings.append(f"{filename}：建议检查章节 {preview_numbers} 的长度是否异常")
 
         for item in chapters_data:
             title = str(item.get("title") or "").strip()

@@ -11,6 +11,7 @@ ExtractLevel = Literal["basic", "standard", "deep"]
 WarningLevel = Literal["info", "warning", "error"]
 BookImportExtractMode = Literal["tail", "full"]
 BookImportSetupMode = Literal["auto", "manual"]
+BookImportEntityType = Literal["character", "organization", "location", "item", "unknown"]
 
 
 class BookImportWarning(BaseModel):
@@ -18,6 +19,31 @@ class BookImportWarning(BaseModel):
     code: str = Field(..., description="告警编码")
     message: str = Field(..., description="告警内容")
     level: WarningLevel = Field(default="warning", description="告警等级")
+
+
+class BookImportSplitReport(BaseModel):
+    """TXT 切分诊断报告"""
+    mode: str = Field(..., description="切分模式标识")
+    mode_label: str = Field(..., description="切分模式中文名")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="切分置信度 0-1")
+    chapter_count: int = Field(default=0, ge=0, description="识别章节数")
+    total_words: int = Field(default=0, ge=0, description="总字数")
+    average_words: int = Field(default=0, ge=0, description="平均章节字数")
+    min_words: int = Field(default=0, ge=0, description="最短章节字数")
+    max_words: int = Field(default=0, ge=0, description="最长章节字数")
+    short_chapter_count: int = Field(default=0, ge=0, description="短章节数量")
+    long_chapter_count: int = Field(default=0, ge=0, description="长章节数量")
+    abnormal_chapter_numbers: list[int] = Field(default_factory=list, description="异常章节序号")
+    reasons: list[str] = Field(default_factory=list, description="诊断原因")
+
+
+class BookImportEntityCandidate(BaseModel):
+    """拆书预扫描实体候选"""
+    name: str = Field(..., description="候选名称")
+    entity_type: BookImportEntityType = Field(default="unknown", description="候选类型")
+    occurrence_count: int = Field(default=0, ge=0, description="全文出现次数")
+    first_chapter_number: Optional[int] = Field(None, description="首次出现章节")
+    evidence: list[str] = Field(default_factory=list, description="证据片段")
 
 
 class ProjectSuggestion(BaseModel):
@@ -85,6 +111,8 @@ class BookImportPreviewResponse(BaseModel):
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline]
     warnings: list[BookImportWarning]
+    split_report: Optional[BookImportSplitReport] = None
+    entity_candidates: list[BookImportEntityCandidate] = Field(default_factory=list)
 
 
 class BookImportApplyRequest(BaseModel):

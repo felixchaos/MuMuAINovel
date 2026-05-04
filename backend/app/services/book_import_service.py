@@ -34,6 +34,7 @@ from app.schemas.book_import import (
     BookImportApplyRequest,
     BookImportApplyResponse,
     BookImportChapter,
+    BookImportEntityCandidate,
     BookImportExtractMode,
     BookImportOutline,
     BookImportPreviewResponse,
@@ -646,13 +647,17 @@ class BookImportService:
             self._set_task_state(task, status="running", progress=10, message=f"文本清洗完成（编码：{encoding}）")
             self._check_cancelled(task)
 
-            chapters_data = txt_parser_service.split_chapters(cleaned)
+            chapters_data, split_report = txt_parser_service.split_chapters_with_report(cleaned)
             if not chapters_data:
                 raise ValueError("未能识别到有效章节，请检查TXT内容")
 
             self._set_task_state(
                 task, status="running", progress=15,
-                message=f"已识别 {len(chapters_data)} 个章节，正在构建预览结构...",
+                message=(
+                    f"已识别 {len(chapters_data)} 个章节"
+                    f"（{split_report.get('mode_label', '未知模式')}，置信度 {int(float(split_report.get('confidence') or 0) * 100)}%），"
+                    "正在构建预览结构..."
+                ),
             )
             self._check_cancelled(task)
 
@@ -662,6 +667,7 @@ class BookImportService:
                 filename=task.filename,
                 task_id=task.task_id,
                 chapters_data=chapters_data,
+                split_report=split_report,
             )
 
             self._check_cancelled(task)
@@ -1056,6 +1062,7 @@ class BookImportService:
         filename: str,
         task_id: str,
         chapters_data: list[dict],
+        split_report: Optional[dict] = None,
     ) -> BookImportPreviewResponse:
         suggestion = ProjectSuggestion(
             title=Path(filename).stem[:200] or "拆书导入项目",
@@ -1068,6 +1075,28 @@ class BookImportService:
 
         chapters: list[BookImportChapter] = []
         warnings: list[BookImportWarning] = []
+        if split_report:
+            confidence = float(split_report.get("confidence") or 0)
+            if confidence < 0.55:
+                warnings.append(
+                    BookImportWarning(
+                        code="low_split_confidence",
+                        message=(
+                            f"章节切分置信度较低（{int(confidence * 100)}%，"
+                            f"模式：{split_report.get('mode_label') or split_report.get('mode') or '未知'}），"
+                            "建议导入前检查章节边界"
+                        ),
+                        level="warning",
+                    )
+                )
+            for reason in (split_report.get("reasons") or [])[:5]:
+                warnings.append(
+                    BookImportWarning(
+                        code="split_diagnostic",
+                        message=str(reason),
+                        level="info" if confidence >= 0.55 else "warning",
+                    )
+                )
 
         selected_chapters_raw, was_trimmed = self._select_raw_chapters_for_preview(
             chapters_data=chapters_data,
@@ -1132,6 +1161,11 @@ class BookImportService:
                     )
                 )
 
+        entity_candidates = self._scan_import_entity_candidates(
+            chapters=chapters,
+            title=Path(filename).stem,
+        )
+
         if was_trimmed:
             warnings.append(
                 BookImportWarning(
@@ -1155,6 +1189,8 @@ class BookImportService:
                 chapters=chapters,
                 outlines=outlines,
                 warnings=warnings,
+                split_report=split_report,
+                entity_candidates=entity_candidates,
             )
 
         # AI 反向生成项目信息：进度 20% -> 95%
@@ -1184,7 +1220,100 @@ class BookImportService:
             chapters=chapters,
             outlines=outlines,
             warnings=warnings,
+            split_report=split_report,
+            entity_candidates=entity_candidates,
         )
+
+    def _scan_import_entity_candidates(
+        self,
+        *,
+        chapters: list[BookImportChapter],
+        title: str,
+        limit: int = 40,
+    ) -> list[BookImportEntityCandidate]:
+        source_text = self._build_import_source_text(chapters, max_chars=120000)
+        if not source_text:
+            return []
+
+        candidates: dict[tuple[str, str], BookImportEntityCandidate] = {}
+
+        def add_candidate(name: str, entity_type: str, bonus: int = 0) -> None:
+            normalized = str(name or "").strip()
+            if not normalized or len(normalized) > 24:
+                return
+            occurrence_count = source_text.count(normalized) + bonus
+            if occurrence_count < 2:
+                return
+
+            first_chapter_number: Optional[int] = None
+            evidence: list[str] = []
+            for chapter in chapters:
+                chapter_text = f"{chapter.title}\n{chapter.content or ''}"
+                pos = chapter_text.find(normalized)
+                if pos < 0:
+                    continue
+                first_chapter_number = chapter.chapter_number
+                start = max(0, pos - 28)
+                end = min(len(chapter_text), pos + len(normalized) + 42)
+                snippet = " ".join(chapter_text[start:end].split())
+                if snippet and snippet not in evidence:
+                    evidence.append(snippet)
+                if len(evidence) >= 2:
+                    break
+
+            key = (normalized, entity_type)
+            existing = candidates.get(key)
+            if not existing or occurrence_count > existing.occurrence_count:
+                candidates[key] = BookImportEntityCandidate(
+                    name=normalized,
+                    entity_type=entity_type,  # type: ignore[arg-type]
+                    occurrence_count=occurrence_count,
+                    first_chapter_number=first_chapter_number,
+                    evidence=evidence,
+                )
+
+        for name in self._extract_import_source_name_candidates(
+            source_text=source_text,
+            title=title,
+            limit=limit,
+        ):
+            add_candidate(name, "character")
+
+        entity_patterns = [
+            (
+                "organization",
+                r"([\u4e00-\u9fff]{2,18}(?:学院|学校|公司|集团|帝国|王国|联邦|舰队|军团|军|局|社|协会|组织|教会|家族|政府|部门|研究所))",
+            ),
+            (
+                "location",
+                r"([\u4e00-\u9fff]{2,18}(?:城|市|镇|村|港|岛|山|海|湖|街|路|站|馆|厅|教室|广场|码头|旅馆|酒馆|医院|图书馆))",
+            ),
+            (
+                "item",
+                r"([\u4e00-\u9fff]{2,18}(?:钥匙|戒指|项链|书|剑|刀|枪|舰|船|药剂|宝石|装置|芯片|信件|地图|笔记本))",
+            ),
+        ]
+
+        for entity_type, pattern in entity_patterns:
+            counter: Counter[str] = Counter()
+            for match in re.finditer(pattern, source_text):
+                candidate = str(match.group(1) or "").strip()
+                if len(candidate) < 2 or len(candidate) > 24:
+                    continue
+                counter[candidate] += 1
+            for name, count in counter.most_common(20):
+                add_candidate(name, entity_type, bonus=max(0, count - source_text.count(name)))
+
+        ranked = sorted(
+            candidates.values(),
+            key=lambda item: (
+                {"character": 0, "organization": 1, "location": 2, "item": 3, "unknown": 4}.get(item.entity_type, 9),
+                -item.occurrence_count,
+                item.first_chapter_number or 999999,
+                item.name,
+            ),
+        )
+        return ranked[:limit]
 
     def _build_fallback_import_outlines(self, chapters: list[BookImportChapter]) -> list[BookImportOutline]:
         return [

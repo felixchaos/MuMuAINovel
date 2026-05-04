@@ -30,6 +30,16 @@ class TxtParserService:
         re.compile(r"^(?:prologue|epilogue).*$", re.IGNORECASE),
     ]
 
+    SPLIT_MODE_LABELS = {
+        "empty": "空文本",
+        "numbered_sections": "篇章小节",
+        "pagination_headings": "分页标题",
+        "strong_headings": "标准章节标题",
+        "weak_headings": "弱标题推断",
+        "fallback_window": "固定窗口兜底",
+        "quality_fallback_window": "质量兜底窗口",
+    }
+
     def decode_bytes(self, content: bytes) -> tuple[str, str]:
         """
         尝试解码 TXT 字节流
@@ -63,8 +73,21 @@ class TxtParserService:
         Returns:
             [{title, content, chapter_number}]
         """
+        chapters, _report = self.split_chapters_with_report(text)
+        return chapters
+
+    def split_chapters_with_report(self, text: str) -> tuple[list[dict], dict]:
+        """章节切分，并返回可展示的切分诊断报告。"""
+        chapters, split_mode = self._split_chapters_internal(text)
+        return chapters, self._build_split_report(
+            chapters=chapters,
+            split_mode=split_mode,
+            source_text=text,
+        )
+
+    def _split_chapters_internal(self, text: str) -> tuple[list[dict], str]:
         if not text.strip():
-            return []
+            return [], "empty"
 
         lines = text.split("\n")
         strong_heading_indexes: list[int] = []
@@ -87,7 +110,7 @@ class TxtParserService:
         ):
             section_chapters = self._split_numbered_sections(lines, section_heading_indexes)
             if section_chapters:
-                return self._post_process_chapters(section_chapters)
+                return self._post_process_chapters(section_chapters), "numbered_sections"
 
         # 兼容导出文本常见的“书名(1) / 书名(2)”分页标题。
         if len(strong_heading_indexes) < 2:
@@ -95,24 +118,94 @@ class TxtParserService:
             if pagination_heading_indexes:
                 pagination_chapters = self._split_standard_headings(lines, pagination_heading_indexes)
                 if pagination_chapters:
-                    return self._post_process_chapters(pagination_chapters)
+                    return self._post_process_chapters(pagination_chapters), "pagination_headings"
 
         # 标准章节标题足够多时，弱标题只会增加对白/短句误判。
-        heading_indexes = strong_heading_indexes if len(strong_heading_indexes) >= 2 else (
-            strong_heading_indexes + weak_heading_indexes
-        )
+        has_strong_mode = len(strong_heading_indexes) >= 2
+        heading_indexes = strong_heading_indexes if has_strong_mode else (strong_heading_indexes + weak_heading_indexes)
         heading_indexes = sorted(set(heading_indexes))
 
         # 如果一个标题都识别不到，走固定窗口兜底
         if not heading_indexes:
-            return self._fallback_split(text)
+            return self._fallback_split(text), "fallback_window"
 
         chapters = self._split_standard_headings(lines, heading_indexes)
         processed = self._post_process_chapters(chapters)
         if processed and self._has_reasonable_chapter_quality(processed):
-            return processed
+            return processed, "strong_headings" if has_strong_mode else "weak_headings"
 
-        return self._fallback_split(text)
+        return self._fallback_split(text), "quality_fallback_window"
+
+    def _build_split_report(self, *, chapters: list[dict], split_mode: str, source_text: str) -> dict:
+        lengths = [len((chapter.get("content") or "").strip()) for chapter in chapters]
+        chapter_count = len(chapters)
+        total_words = sum(lengths)
+        average_words = int(total_words / chapter_count) if chapter_count else 0
+        min_words = min(lengths) if lengths else 0
+        max_words = max(lengths) if lengths else 0
+        short_numbers = [
+            int(chapter.get("chapter_number") or idx)
+            for idx, chapter in enumerate(chapters, start=1)
+            if len((chapter.get("content") or "").strip()) < 300
+        ]
+        long_numbers = [
+            int(chapter.get("chapter_number") or idx)
+            for idx, chapter in enumerate(chapters, start=1)
+            if len((chapter.get("content") or "").strip()) > 12000
+        ]
+
+        reasons: list[str] = []
+        confidence = {
+            "numbered_sections": 0.86,
+            "strong_headings": 0.88,
+            "pagination_headings": 0.78,
+            "weak_headings": 0.58,
+            "fallback_window": 0.38,
+            "quality_fallback_window": 0.34,
+            "empty": 0.0,
+        }.get(split_mode, 0.5)
+
+        if split_mode in {"fallback_window", "quality_fallback_window"}:
+            reasons.append("未找到可靠章节标题，已按固定字数窗口兜底切分")
+        if split_mode == "weak_headings":
+            reasons.append("仅识别到弱标题，建议人工确认章节边界")
+        if split_mode == "pagination_headings":
+            reasons.append("检测到分页式标题，已按同名连续页码切分")
+        if split_mode == "numbered_sections":
+            reasons.append("检测到篇章标题下的独立小节编号，已按小节编号切分")
+
+        if chapter_count <= 1 and len(source_text) > 5000:
+            confidence -= 0.25
+            reasons.append("长文本只识别到一个章节，可能存在漏切")
+        if short_numbers:
+            confidence -= min(0.2, len(short_numbers) / max(1, chapter_count) * 0.25)
+            reasons.append(f"有 {len(short_numbers)} 个章节短于300字，建议检查是否误切")
+        if long_numbers:
+            confidence -= min(0.16, len(long_numbers) / max(1, chapter_count) * 0.2)
+            reasons.append(f"有 {len(long_numbers)} 个章节超过12000字，建议检查是否漏切")
+        if chapter_count >= 3 and min_words > 0 and max_words / max(1, min_words) >= 8:
+            confidence -= 0.12
+            reasons.append("章节长度差异较大，可能存在边界异常")
+        if not chapters and source_text.strip():
+            reasons.append("文本存在内容，但未能识别有效章节")
+
+        confidence = max(0.0, min(0.99, confidence))
+        abnormal_numbers = sorted(set(short_numbers + long_numbers))[:80]
+
+        return {
+            "mode": split_mode,
+            "mode_label": self.SPLIT_MODE_LABELS.get(split_mode, split_mode),
+            "confidence": round(confidence, 2),
+            "chapter_count": chapter_count,
+            "total_words": total_words,
+            "average_words": average_words,
+            "min_words": min_words,
+            "max_words": max_words,
+            "short_chapter_count": len(short_numbers),
+            "long_chapter_count": len(long_numbers),
+            "abnormal_chapter_numbers": abnormal_numbers,
+            "reasons": reasons,
+        }
 
     def _is_strong_heading(self, line: str) -> bool:
         if len(line) > 120:

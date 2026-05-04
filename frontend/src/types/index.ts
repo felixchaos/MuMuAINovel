@@ -1118,11 +1118,35 @@ export type BookImportTaskStatus = 'pending' | 'running' | 'completed' | 'failed
 export type BookImportWarningLevel = 'info' | 'warning' | 'error';
 export type BookImportExtractMode = 'tail' | 'full';
 export type BookImportSetupMode = 'auto' | 'manual';
+export type BookImportEntityType = 'character' | 'organization' | 'location' | 'item' | 'unknown';
 
 export interface BookImportWarning {
   code: string;
   message: string;
   level: BookImportWarningLevel;
+}
+
+export interface BookImportSplitReport {
+  mode: string;
+  mode_label: string;
+  confidence: number;
+  chapter_count: number;
+  total_words: number;
+  average_words: number;
+  min_words: number;
+  max_words: number;
+  short_chapter_count: number;
+  long_chapter_count: number;
+  abnormal_chapter_numbers: number[];
+  reasons: string[];
+}
+
+export interface BookImportEntityCandidate {
+  name: string;
+  entity_type: BookImportEntityType;
+  occurrence_count: number;
+  first_chapter_number?: number;
+  evidence: string[];
 }
 
 export interface BookImportProjectSuggestion {
@@ -1169,6 +1193,8 @@ export interface BookImportPreview {
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
   warnings: BookImportWarning[];
+  split_report?: BookImportSplitReport;
+  entity_candidates?: BookImportEntityCandidate[];
 }
 
 export interface BookImportApplyPayload {

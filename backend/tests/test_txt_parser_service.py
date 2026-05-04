@@ -101,8 +101,36 @@ def test_real_act_sample_keeps_numbered_sections() -> None:
     assert [chapter["chapter_number"] for chapter in chapters] == [1, 2, 3, 4, 5]
 
 
+def test_split_report_exposes_mode_and_quality() -> None:
+    parser = TxtParserService()
+    text = "\n".join(
+        [
+            "异象旅馆 第一幕：来自异国的求助信号",
+            "",
+            "（1）",
+            _paragraph("午后的阳光穿过图书馆顶层的彩绘玻璃。"),
+            "",
+            "（2）",
+            _paragraph("魔法屏障像水纹一样恢复，艾米瑟娅听见警报。"),
+            "",
+            "（3）",
+            _paragraph("诺森把地图摊开，旅馆大厅里只剩下钟表声。"),
+        ]
+    )
+
+    chapters, report = parser.split_chapters_with_report(parser.clean_text(text))
+
+    assert len(chapters) == 3
+    assert report["mode"] == "numbered_sections"
+    assert report["mode_label"] == "篇章小节"
+    assert report["confidence"] >= 0.75
+    assert report["chapter_count"] == 3
+    assert report["reasons"]
+
+
 if __name__ == "__main__":
     test_act_numbered_sections_are_chapters()
     test_book_title_pagination_is_split()
     test_markdown_headings_are_split()
     test_real_act_sample_keeps_numbered_sections()
+    test_split_report_exposes_mode_and_quality()

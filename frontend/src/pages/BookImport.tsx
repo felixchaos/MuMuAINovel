@@ -1120,6 +1120,111 @@ export default function BookImport() {
                 />
               )}
 
+              {preview.split_report && (
+                <Card
+                  size="small"
+                  title="章节切分诊断"
+                  extra={
+                    <Tag color={preview.split_report.confidence >= 0.75 ? 'green' : preview.split_report.confidence >= 0.55 ? 'orange' : 'red'}>
+                      {preview.split_report.mode_label}
+                    </Tag>
+                  }
+                >
+                  <Row gutter={[12, 12]} align="middle">
+                    <Col xs={24} md={8}>
+                      <Text type="secondary">切分置信度</Text>
+                      <Progress
+                        percent={Math.round((preview.split_report.confidence || 0) * 100)}
+                        size="small"
+                        status={preview.split_report.confidence >= 0.55 ? 'normal' : 'exception'}
+                      />
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">章节数</Text>
+                      <div><Text strong>{preview.split_report.chapter_count}</Text></div>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">平均字数</Text>
+                      <div><Text strong>{preview.split_report.average_words}</Text></div>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">最短</Text>
+                      <div><Text strong>{preview.split_report.min_words}</Text></div>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">最长</Text>
+                      <div><Text strong>{preview.split_report.max_words}</Text></div>
+                    </Col>
+                    {preview.split_report.reasons.length > 0 && (
+                      <Col span={24}>
+                        <Space size={[6, 6]} wrap>
+                          {preview.split_report.reasons.map((reason, idx) => (
+                            <Tag key={`${reason}-${idx}`} color={preview.split_report!.confidence >= 0.55 ? 'blue' : 'orange'}>
+                              {reason}
+                            </Tag>
+                          ))}
+                        </Space>
+                      </Col>
+                    )}
+                    {preview.split_report.abnormal_chapter_numbers.length > 0 && (
+                      <Col span={24}>
+                        <Text type="secondary">建议检查章节：</Text>
+                        <Text>{preview.split_report.abnormal_chapter_numbers.slice(0, 20).join('、')}</Text>
+                      </Col>
+                    )}
+                  </Row>
+                </Card>
+              )}
+
+              {preview.entity_candidates && preview.entity_candidates.length > 0 && (
+                <Card
+                  size="small"
+                  title={`实体预扫描（${preview.entity_candidates.length}）`}
+                  extra={<Text type="secondary">导入后可作为角色/组织/地点候选参考</Text>}
+                >
+                  <List
+                    size="small"
+                    dataSource={preview.entity_candidates.slice(0, 40)}
+                    renderItem={(item) => {
+                      const typeLabel = {
+                        character: '人物',
+                        organization: '组织',
+                        location: '地点',
+                        item: '物品',
+                        unknown: '未知',
+                      }[item.entity_type] || '未知';
+                      const typeColor = {
+                        character: 'cyan',
+                        organization: 'purple',
+                        location: 'green',
+                        item: 'gold',
+                        unknown: 'default',
+                      }[item.entity_type] || 'default';
+
+                      return (
+                        <List.Item>
+                          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                            <Space size={[8, 4]} wrap>
+                              <Text strong>{item.name}</Text>
+                              <Tag color={typeColor}>{typeLabel}</Tag>
+                              <Tag>{item.occurrence_count} 次</Tag>
+                              {item.first_chapter_number ? (
+                                <Text type="secondary">首见第 {item.first_chapter_number} 章</Text>
+                              ) : null}
+                            </Space>
+                            {item.evidence.length > 0 && (
+                              <Text type="secondary">
+                                {item.evidence.slice(0, 2).join(' / ')}
+                              </Text>
+                            )}
+                          </Space>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                </Card>
+              )}
+
               <Card size="small" title="导入后设定处理">
                 <Radio.Group
                   value={postImportGeneration}

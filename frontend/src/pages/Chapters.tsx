@@ -1595,10 +1595,31 @@ export default function Chapters() {
       const updatedProject = await projectApi.getProject(currentProject.id);
       setCurrentProject(updatedProject);
 
+      const importSummary = `新增 ${result.imported} 章，覆盖 ${result.updated} 章，跳过 ${result.skipped} 章`;
       if (result.warnings?.length) {
-        message.warning(`导入完成，但有 ${result.warnings.length} 条提醒`);
+        modal.success({
+          title: '导入完成',
+          width: 620,
+          content: (
+            <Space direction="vertical" style={{ width: '100%' }} size={12}>
+              <div>{importSummary}</div>
+              <Alert
+                type="info"
+                showIcon
+                message="章节切分诊断"
+                description={
+                  <List
+                    size="small"
+                    dataSource={result.warnings}
+                    renderItem={(warning) => <List.Item>{warning}</List.Item>}
+                  />
+                }
+              />
+            </Space>
+          ),
+        });
       } else {
-        message.success(`导入完成：新增 ${result.imported} 章，覆盖 ${result.updated} 章，跳过 ${result.skipped} 章`);
+        message.success(`导入完成：${importSummary}`);
       }
       setImportModalVisible(false);
       setImportFileList([]);
