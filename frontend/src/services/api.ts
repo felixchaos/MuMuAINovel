@@ -322,6 +322,11 @@ export const settingsApi = {
       preset_id: presetId || null,
     }),
 
+  setPolishPresetSelection: (presetId?: string) =>
+    api.put<unknown, { message: string; polish_preset_id?: string; preset_name?: string }>('/settings/presets/usage/polish', {
+      preset_id: presetId || null,
+    }),
+
   createPresetFromCurrent: (name: string, description?: string) =>
     api.post<unknown, APIKeyPreset>('/settings/presets/from-current', null, {
       params: { name, description }

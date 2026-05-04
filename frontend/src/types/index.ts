@@ -144,6 +144,7 @@ export interface PresetListResponse {
   total: number;
   active_preset_id?: string;
   chapter_analysis_preset_id?: string;
+  polish_preset_id?: string;
 }
 
 // LinuxDO 授权 URL 响应

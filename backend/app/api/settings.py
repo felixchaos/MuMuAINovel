@@ -20,7 +20,7 @@ from app.schemas.settings import (
     SettingsCreate, SettingsUpdate, SettingsResponse,
     APIKeyPreset, APIKeyPresetConfig, PresetCreateRequest,
     PresetUpdateRequest, PresetResponse, PresetListResponse,
-    ChapterAnalysisPresetSelectionRequest,
+    ChapterAnalysisPresetSelectionRequest, PolishPresetSelectionRequest,
     SystemSMTPSettingsResponse, SystemSMTPSettingsUpdate, SMTPTestRequest
 )
 from app.user_manager import User
@@ -112,6 +112,24 @@ def _get_chapter_analysis_preset_id(prefs: Dict[str, Any]) -> Optional[str]:
     """读取章节内容分析专用API预设ID。"""
     preset_id = prefs.get('chapter_analysis_preset_id')
     return preset_id if isinstance(preset_id, str) and preset_id.strip() else None
+
+
+def _get_polish_preset_id(prefs: Dict[str, Any]) -> Optional[str]:
+    """读取AI润色/优化专用API预设ID。"""
+    preset_id = prefs.get('polish_preset_id')
+    return preset_id if isinstance(preset_id, str) and preset_id.strip() else None
+
+
+USAGE_PRESET_CONFIG = {
+    "chapter_analysis": {
+        "label": "章节内容分析",
+        "reader": _get_chapter_analysis_preset_id,
+    },
+    "polish": {
+        "label": "AI润色/优化",
+        "reader": _get_polish_preset_id,
+    },
+}
 
 
 def _build_ai_service_from_config(
@@ -277,22 +295,23 @@ async def get_user_ai_service_from_db_by_usage(
     mcp_plugins = mcp_result.scalars().all()
     enable_mcp = any(plugin.enabled for plugin in mcp_plugins) if mcp_plugins else False
 
-    if usage == "chapter_analysis":
+    usage_config = USAGE_PRESET_CONFIG.get(usage)
+    if usage_config:
         prefs = _safe_load_preferences(settings.preferences)
         api_presets = _get_api_presets_payload(prefs)
         presets = api_presets.get('presets', [])
-        preset_id = _get_chapter_analysis_preset_id(prefs)
+        preset_id = usage_config["reader"](prefs)
         if preset_id:
             target_preset = next((p for p in presets if p.get('id') == preset_id), None)
             if target_preset and isinstance(target_preset.get('config'), dict):
-                logger.info(f"用户 {user_id} 使用章节内容分析专用API预设: {target_preset.get('name')}")
+                logger.info(f"用户 {user_id} 使用{usage_config['label']}专用API预设: {target_preset.get('name')}")
                 return _build_ai_service_from_config(
                     config=target_preset['config'],
                     user_id=user_id,
                     db=db,
                     enable_mcp=enable_mcp,
                 )
-            logger.warning(f"用户 {user_id} 配置的章节内容分析预设不存在，回退默认API配置: {preset_id}")
+            logger.warning(f"用户 {user_id} 配置的{usage_config['label']}预设不存在，回退默认API配置: {preset_id}")
 
     return create_user_ai_service_with_mcp(
         api_provider=settings.api_provider,
@@ -1164,6 +1183,9 @@ async def get_presets(
     chapter_analysis_preset_id = _get_chapter_analysis_preset_id(prefs)
     if chapter_analysis_preset_id and not any(p.get('id') == chapter_analysis_preset_id for p in presets):
         chapter_analysis_preset_id = None
+    polish_preset_id = _get_polish_preset_id(prefs)
+    if polish_preset_id and not any(p.get('id') == polish_preset_id for p in presets):
+        polish_preset_id = None
     
     # 找到激活的预设
     active_preset_id = next(
@@ -1177,7 +1199,8 @@ async def get_presets(
         "presets": presets,
         "total": len(presets),
         "active_preset_id": active_preset_id,
-        "chapter_analysis_preset_id": chapter_analysis_preset_id
+        "chapter_analysis_preset_id": chapter_analysis_preset_id,
+        "polish_preset_id": polish_preset_id
     }
 
 
@@ -1313,6 +1336,8 @@ async def delete_preset(
     presets = [p for p in presets if p['id'] != preset_id]
     if prefs.get('chapter_analysis_preset_id') == preset_id:
         prefs.pop('chapter_analysis_preset_id', None)
+    if prefs.get('polish_preset_id') == preset_id:
+        prefs.pop('polish_preset_id', None)
     
     # 保存回preferences
     api_presets['presets'] = presets
@@ -1411,6 +1436,41 @@ async def set_chapter_analysis_preset_selection(
     return {
         "message": "章节内容分析API配置已更新",
         "chapter_analysis_preset_id": preset_id,
+        "preset_name": preset_name
+    }
+
+
+@router.put("/presets/usage/polish")
+async def set_polish_preset_selection(
+    data: PolishPresetSelectionRequest,
+    user: User = Depends(require_login),
+    db: AsyncSession = Depends(get_db)
+):
+    """设置AI润色/优化专用API预设；为空则使用默认API配置。"""
+    settings = await get_user_settings(user.user_id, db)
+    prefs = _safe_load_preferences(settings.preferences)
+    api_presets = _get_api_presets_payload(prefs)
+    presets = api_presets.get('presets', [])
+
+    preset_id = data.preset_id.strip() if data.preset_id else None
+    preset_name = None
+    if preset_id:
+        target_preset = next((p for p in presets if p.get('id') == preset_id), None)
+        if not target_preset:
+            raise HTTPException(status_code=404, detail="预设不存在")
+        prefs['polish_preset_id'] = preset_id
+        preset_name = target_preset.get('name')
+    else:
+        prefs.pop('polish_preset_id', None)
+
+    prefs['api_presets'] = api_presets
+    settings.preferences = json.dumps(prefs, ensure_ascii=False)
+    await db.commit()
+
+    logger.info(f"用户 {user.user_id} 设置AI润色/优化API预设: {preset_id or '默认配置'}")
+    return {
+        "message": "AI润色/优化API配置已更新",
+        "polish_preset_id": preset_id,
         "preset_name": preset_name
     }
 

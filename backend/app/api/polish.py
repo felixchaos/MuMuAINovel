@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.common import verify_project_access
-from app.api.settings import get_user_ai_service, get_user_ai_service_from_db
+from app.api.settings import get_user_ai_service_from_db_by_usage
 from app.database import get_db, get_engine
 from app.models.generation_history import GenerationHistory
 from app.models.character import Character
@@ -39,6 +39,17 @@ logger = get_logger(__name__)
 POLISH_MAX_TOKENS_CEILING = 32000
 POLISH_DEFAULT_MIN_TOKENS = 8192
 POLISH_INSTRUCTION_MIN_TOKENS = 12000
+
+
+async def _get_polish_ai_service(
+    *,
+    request: Request,
+    db: AsyncSession,
+) -> AIService:
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+    return await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
 
 
 def _extract_generated_text(response) -> str:
@@ -269,7 +280,6 @@ async def polish_text(
     request: PolishRequest,
     http_request: Request,
     db: AsyncSession = Depends(get_db),
-    user_ai_service: AIService = Depends(get_user_ai_service)
 ):
     """
     AI去味 - 将AI生成的文本改写得更像人类作家的手笔
@@ -285,6 +295,7 @@ async def polish_text(
     try:
         # 获取用户ID
         user_id = getattr(http_request.state, 'user_id', None)
+        user_ai_service = await _get_polish_ai_service(request=http_request, db=db)
 
         if request.project_id:
             await verify_project_access(request.project_id, user_id, db)
@@ -349,7 +360,6 @@ async def polish_text_stream(
     request: PolishRequest,
     http_request: Request,
     db: AsyncSession = Depends(get_db),
-    user_ai_service: AIService = Depends(get_user_ai_service)
 ):
     """
     AI去味/润色流式接口。
@@ -358,6 +368,7 @@ async def polish_text_stream(
     前端可边生成边预览，完成后再决定是否应用。
     """
     user_id = getattr(http_request.state, 'user_id', None)
+    user_ai_service = await _get_polish_ai_service(request=http_request, db=db)
 
     if request.project_id:
         await verify_project_access(request.project_id, user_id, db)
@@ -398,16 +409,17 @@ async def polish_text_stream(
                     yield await tracker.heartbeat()
                     continue
 
-                if not chunk:
+                content = chunk.get("content", "") if isinstance(chunk, dict) else str(chunk or "")
+                if not content:
                     continue
 
-                accumulated += str(chunk)
+                accumulated += content
                 yield await tracker.generating(
                     current_chars=len(accumulated),
                     estimated_total=estimated_total,
                     message="AI润色中..."
                 )
-                yield await tracker.generating_chunk(str(chunk))
+                yield await tracker.generating_chunk(content)
 
             polished_text = accumulated.strip()
             if not polished_text:
@@ -566,7 +578,7 @@ async def _run_outline_optimize_background(task_id: str, user_id: str, data: Dic
             if not outlines:
                 raise ValueError("没有可优化的大纲")
 
-            ai_service = await get_user_ai_service_from_db(user_id, bg_db)
+            ai_service = await get_user_ai_service_from_db_by_usage(user_id, bg_db, usage="polish")
             total = len(outlines)
             succeeded = 0
             failed: list[Dict[str, str]] = []
@@ -667,7 +679,7 @@ async def _run_character_optimize_background(task_id: str, user_id: str, data: D
             if not characters:
                 raise ValueError("没有可优化的角色或组织")
 
-            ai_service = await get_user_ai_service_from_db(user_id, bg_db)
+            ai_service = await get_user_ai_service_from_db_by_usage(user_id, bg_db, usage="polish")
             total = len(characters)
             succeeded = 0
             failed: list[Dict[str, str]] = []
@@ -762,7 +774,6 @@ async def polish_batch(
     model: Optional[str] = None,
     http_request: Request = None,
     db: AsyncSession = Depends(get_db),
-    user_ai_service: AIService = Depends(get_user_ai_service)
 ):
     """
     批量处理多个文本的AI去味
@@ -772,6 +783,9 @@ async def polish_batch(
     try:
         # 获取用户ID
         user_id = getattr(http_request.state, 'user_id', None) if http_request else None
+        if not user_id:
+            raise HTTPException(status_code=401, detail="未登录")
+        user_ai_service = await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
 
         if isinstance(payload, dict):
             texts = payload.get("texts") or []
