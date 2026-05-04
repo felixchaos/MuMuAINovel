@@ -1,5 +1,5 @@
 """章节管理API"""
-from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -8,6 +8,7 @@ import asyncio
 from typing import Any, Optional
 from datetime import datetime
 from asyncio import Queue, Lock
+from pathlib import Path
 
 from app.database import get_db
 from app.api.common import verify_project_access
@@ -33,6 +34,7 @@ from app.schemas.chapter import (
     ChapterUpdate,
     ChapterResponse,
     ChapterListResponse,
+    ChapterImportResponse,
     AnalysisTaskStatusResponse,
     BatchAnalysisStatusRequest,
     BatchAnalysisStatusResponse,
@@ -56,6 +58,7 @@ from app.services.plot_analyzer import PlotAnalyzer
 from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
+from app.services.txt_parser_service import txt_parser_service
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import (
@@ -137,6 +140,237 @@ async def create_chapter(
     await db.commit()
     await db.refresh(db_chapter)
     return db_chapter
+
+
+def _guess_import_title_and_content(filename: str, cleaned_text: str) -> tuple[str, str]:
+    """把单文件导入整理为“标题 + 正文”。"""
+    fallback_title = Path(filename or "").stem.strip() or "未命名章节"
+    lines = cleaned_text.split("\n")
+    first_idx: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if line.strip():
+            first_idx = idx
+            break
+
+    if first_idx is None:
+        return fallback_title, ""
+
+    first_line = lines[first_idx].strip()
+    body_lines = lines[first_idx + 1 :]
+    body = "\n".join(body_lines).strip()
+    looks_like_title = (
+        0 < len(first_line) <= 80
+        and len(body) >= 20
+        and not first_line.endswith(("。", "！", "？", "；", "，", ".", "!", "?", ";", ","))
+    )
+    if looks_like_title:
+        return first_line[:200], body
+
+    return fallback_title[:200], cleaned_text.strip()
+
+
+async def _clear_chapter_derived_data(
+    *,
+    db: AsyncSession,
+    user_id: str,
+    project_id: str,
+    chapter_id: str,
+) -> None:
+    """覆盖导入章节时清理过期分析、记忆和自动伏笔。"""
+    for model in (AnalysisTask, PlotAnalysis, StoryMemory):
+        result = await db.execute(select(model).where(model.chapter_id == chapter_id))
+        for item in result.scalars().all():
+            await db.delete(item)
+
+    try:
+        await memory_service.delete_chapter_memories(
+            user_id=user_id,
+            project_id=project_id,
+            chapter_id=chapter_id,
+        )
+    except Exception as exc:
+        logger.warning(f"导入覆盖章节时清理向量记忆失败: {exc}")
+
+    try:
+        await foreshadow_service.delete_chapter_foreshadows(
+            db=db,
+            project_id=project_id,
+            chapter_id=chapter_id,
+            only_analysis_source=True,
+        )
+    except Exception as exc:
+        logger.warning(f"导入覆盖章节时清理章节伏笔失败: {exc}")
+
+
+@router.post(
+    "/project/{project_id}/import",
+    response_model=ChapterImportResponse,
+    summary="导入章节文件"
+)
+async def import_project_chapters(
+    project_id: str,
+    request: Request,
+    files: list[UploadFile] = File(...),
+    import_mode: str = Form("auto_split"),
+    start_chapter_number: Optional[int] = Form(None),
+    conflict_strategy: str = Form("skip"),
+    status: str = Form("draft"),
+    db: AsyncSession = Depends(get_db)
+):
+    """从 TXT/Markdown 文件导入章节，支持智能拆分或每个文件作为一章。"""
+    user_id = getattr(request.state, 'user_id', None)
+    project = await verify_project_access(project_id, user_id, db)
+
+    if import_mode not in {"auto_split", "file_as_chapter"}:
+        raise HTTPException(status_code=400, detail="导入模式无效")
+    if conflict_strategy not in {"skip", "overwrite"}:
+        raise HTTPException(status_code=400, detail="冲突处理方式无效")
+    if status not in {"draft", "pending", "writing", "completed"}:
+        raise HTTPException(status_code=400, detail="章节状态无效")
+    if not files:
+        raise HTTPException(status_code=400, detail="请至少上传一个文件")
+
+    parsed_items: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for upload in files:
+        filename = upload.filename or "未命名文件.txt"
+        suffix = Path(filename).suffix.lower()
+        if suffix and suffix not in {".txt", ".md", ".markdown"}:
+            warnings.append(f"{filename}：文件类型不是 TXT/Markdown，已尝试按文本解析")
+
+        raw = await upload.read()
+        if not raw:
+            warnings.append(f"{filename}：文件为空，已跳过")
+            continue
+
+        text, encoding = txt_parser_service.decode_bytes(raw)
+        cleaned = txt_parser_service.clean_text(text)
+        if not cleaned:
+            warnings.append(f"{filename}：清洗后没有有效文本，已跳过")
+            continue
+
+        if import_mode == "file_as_chapter":
+            title, content = _guess_import_title_and_content(filename, cleaned)
+            if content:
+                parsed_items.append({"title": title, "content": content, "source": filename})
+            else:
+                warnings.append(f"{filename}：正文为空，已跳过")
+            continue
+
+        chapters_data = txt_parser_service.split_chapters(cleaned)
+        if not chapters_data:
+            warnings.append(f"{filename}：未识别到有效章节，已跳过")
+            continue
+
+        for item in chapters_data:
+            title = str(item.get("title") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            if len(chapters_data) == 1 and title in {"第1章", "第1章：第1章", "第1章: 第1章"}:
+                title, content = _guess_import_title_and_content(filename, cleaned)
+            parsed_items.append({
+                "title": (title or Path(filename).stem or "未命名章节")[:200],
+                "content": content,
+                "source": filename,
+                "encoding": encoding,
+            })
+
+    if not parsed_items:
+        raise HTTPException(status_code=400, detail="没有可导入的有效章节")
+
+    max_result = await db.execute(
+        select(func.max(Chapter.chapter_number)).where(Chapter.project_id == project_id)
+    )
+    max_chapter_number = max_result.scalar_one() or 0
+    current_number = start_chapter_number if start_chapter_number and start_chapter_number > 0 else max_chapter_number + 1
+
+    existing_result = await db.execute(
+        select(Chapter).where(Chapter.project_id == project_id)
+    )
+    existing_by_number = {
+        chapter.chapter_number: chapter
+        for chapter in existing_result.scalars().all()
+    }
+
+    response_items: list[dict[str, Any]] = []
+    imported = 0
+    updated = 0
+    skipped = 0
+    words_delta = 0
+
+    for item in parsed_items:
+        chapter_number = current_number
+        current_number += 1
+        content = str(item["content"])
+        word_count = len(content)
+        existing = existing_by_number.get(chapter_number)
+
+        if existing and conflict_strategy == "skip":
+            skipped += 1
+            response_items.append({
+                "chapter_number": chapter_number,
+                "title": item["title"],
+                "word_count": word_count,
+                "action": "skipped",
+            })
+            continue
+
+        if existing and conflict_strategy == "overwrite":
+            old_word_count = existing.word_count or 0
+            existing.title = item["title"]
+            existing.content = content
+            existing.word_count = word_count
+            existing.status = status
+            existing.updated_at = datetime.now()
+            await _clear_chapter_derived_data(
+                db=db,
+                user_id=user_id,
+                project_id=project_id,
+                chapter_id=existing.id,
+            )
+            words_delta += word_count - old_word_count
+            updated += 1
+            action = "updated"
+        else:
+            chapter = Chapter(
+                project_id=project_id,
+                chapter_number=chapter_number,
+                title=item["title"],
+                content=content,
+                word_count=word_count,
+                status=status,
+            )
+            db.add(chapter)
+            existing_by_number[chapter_number] = chapter
+            words_delta += word_count
+            imported += 1
+            action = "imported"
+
+        response_items.append({
+            "chapter_number": chapter_number,
+            "title": item["title"],
+            "word_count": word_count,
+            "action": action,
+        })
+
+    project.current_words = max(0, (project.current_words or 0) + words_delta)
+    project.chapter_count = len(existing_by_number)
+    project.updated_at = datetime.now()
+
+    await db.commit()
+
+    return {
+        "project_id": project_id,
+        "total_detected": len(parsed_items),
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "total_words": sum(item["word_count"] for item in response_items if item["action"] != "skipped"),
+        "items": response_items,
+        "warnings": warnings,
+    }
 
 
 @router.get("/project/{project_id}", response_model=ChapterListResponse, summary="获取项目的所有章节")

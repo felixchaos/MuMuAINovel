@@ -21,6 +21,7 @@ import type {
   CharacterUpdate,
   Chapter,
   ChapterCreate,
+  ChapterImportResponse,
   ChapterUpdate,
   GenerateOutlineRequest,
   GenerateCharacterRequest,
@@ -741,6 +742,11 @@ export const chapterApi = {
   getChapter: (id: string) => api.get<unknown, Chapter>(`/chapters/${id}`),
 
   createChapter: (data: ChapterCreate) => api.post<unknown, Chapter>('/chapters', data),
+
+  importChapters: (projectId: string, formData: FormData) =>
+    api.post<unknown, ChapterImportResponse>(`/chapters/project/${projectId}/import`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
 
   updateChapter: (id: string, data: ChapterUpdate) =>
     api.put<unknown, Chapter>(`/chapters/${id}`, data),

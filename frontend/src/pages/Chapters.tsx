@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge, Tag, Card, InputNumber, Alert, Radio, Descriptions, Collapse, Popconfirm, Pagination, theme } from 'antd';
-import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined } from '@ant-design/icons';
+import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge, Tag, Card, InputNumber, Alert, Radio, Descriptions, Collapse, Popconfirm, Pagination, theme, Upload } from 'antd';
+import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined, UploadOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
@@ -8,6 +8,7 @@ import { generateChapterBackground } from '../services/backgroundTaskService';
 import { projectApi, writingStyleApi, chapterApi } from '../services/api';
 import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
+import type { UploadFile } from 'antd/es/upload/interface';
 import ChapterAnalysis from '../components/ChapterAnalysis';
 import ExpansionPlanEditor from '../components/ExpansionPlanEditor';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
@@ -16,6 +17,7 @@ import PartialRegenerateToolbar from '../components/PartialRegenerateToolbar';
 import PartialRegenerateModal from '../components/PartialRegenerateModal';
 
 const { TextArea } = Input;
+const { Dragger } = Upload;
 
 // localStorage 缓存键名
 const WORD_COUNT_CACHE_KEY = 'chapter_default_word_count';
@@ -95,6 +97,14 @@ export default function Chapters() {
   const [exportRangeType, setExportRangeType] = useState<'all' | 'custom'>('all');
   const [exporting, setExporting] = useState(false);
   const [exportForm] = Form.useForm();
+
+  // 导入状态
+  const [importModalVisible, setImportModalVisible] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importMode, setImportMode] = useState<'auto_split' | 'file_as_chapter'>('auto_split');
+  const [importPosition, setImportPosition] = useState<'append' | 'custom'>('append');
+  const [importFileList, setImportFileList] = useState<UploadFile[]>([]);
+  const [importForm] = Form.useForm();
 
   // 阅读器状态
   const [readerVisible, setReaderVisible] = useState(false);
@@ -1149,6 +1159,76 @@ export default function Chapters() {
     }
   };
 
+  const getNextChapterNumber = () => (
+    chapters.length > 0
+      ? Math.max(...chapters.map(c => c.chapter_number)) + 1
+      : 1
+  );
+
+  const handleOpenImportModal = () => {
+    const nextChapterNumber = getNextChapterNumber();
+    setImportMode('auto_split');
+    setImportPosition('append');
+    setImportFileList([]);
+    importForm.setFieldsValue({
+      import_mode: 'auto_split',
+      import_position: 'append',
+      start_chapter_number: nextChapterNumber,
+      conflict_strategy: 'skip',
+      status: 'draft',
+    });
+    setImportModalVisible(true);
+  };
+
+  const handleImportSubmit = async () => {
+    try {
+      const values = await importForm.validateFields();
+      const files = importFileList
+        .map(file => file.originFileObj)
+        .filter(Boolean) as File[];
+
+      if (files.length === 0) {
+        message.warning('请先选择要导入的 TXT 或 Markdown 文件');
+        return;
+      }
+
+      const formData = new FormData();
+      files.forEach(file => formData.append('files', file));
+      formData.append('import_mode', values.import_mode);
+      formData.append('status', values.status || 'draft');
+      formData.append(
+        'conflict_strategy',
+        values.import_position === 'custom' ? (values.conflict_strategy || 'skip') : 'skip'
+      );
+      if (values.import_position === 'custom' && values.start_chapter_number) {
+        formData.append('start_chapter_number', String(values.start_chapter_number));
+      }
+
+      setImporting(true);
+      const result = await chapterApi.importChapters(currentProject.id, formData);
+      await refreshChapters();
+      const updatedProject = await projectApi.getProject(currentProject.id);
+      setCurrentProject(updatedProject);
+
+      if (result.warnings?.length) {
+        message.warning(`导入完成，但有 ${result.warnings.length} 条提醒`);
+      } else {
+        message.success(`导入完成：新增 ${result.imported} 章，覆盖 ${result.updated} 章，跳过 ${result.skipped} 章`);
+      }
+      setImportModalVisible(false);
+      setImportFileList([]);
+      importForm.resetFields();
+    } catch (error) {
+      if (isAntdValidationError(error)) {
+        return;
+      }
+      const err = error as Error;
+      message.error(`导入失败：${err.message || '未知错误'}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleShowAnalysis = (chapterId: string) => {
     setAnalysisChapterId(chapterId);
     setAnalysisVisible(true);
@@ -1453,25 +1533,23 @@ export default function Chapters() {
     setBatchGenerateVisible(true);
   };
 
-  // 手动创建章节(仅one-to-many模式)
+  // 手动新建章节，支持直接粘贴正文
   const showManualCreateChapterModal = () => {
-    // 计算下一个章节号
-    const nextChapterNumber = chapters.length > 0
-      ? Math.max(...chapters.map(c => c.chapter_number)) + 1
-      : 1;
+    const nextChapterNumber = getNextChapterNumber();
+    manualCreateForm.resetFields();
+    manualCreateForm.setFieldsValue({
+      chapter_number: nextChapterNumber,
+      status: 'draft',
+    });
 
     modal.confirm({
-      title: '手动创建章节',
-      width: 600,
+      title: '新建章节',
+      width: isMobile ? 'calc(100vw - 32px)' : 720,
       centered: true,
       content: (
         <Form
           form={manualCreateForm}
           layout="vertical"
-          initialValues={{
-            chapter_number: nextChapterNumber,
-            status: 'draft'
-          }}
           style={{ marginTop: 16 }}
         >
           <Form.Item
@@ -1494,10 +1572,9 @@ export default function Chapters() {
           <Form.Item
             label="关联大纲"
             name="outline_id"
-            rules={[{ required: true, message: '请选择关联的大纲' }]}
-            tooltip="one-to-many模式下，章节必须关联到大纲"
+            tooltip="可选。不关联大纲时会作为独立章节保存。"
           >
-            <Select placeholder="请选择所属大纲">
+            <Select allowClear placeholder="可选：选择所属大纲">
               {/* 直接使用 store 中的 outlines 数据，而不是从现有章节中提取 */}
               {[...outlines]
                 .sort((a, b) => a.order_index - b.order_index)
@@ -1507,6 +1584,18 @@ export default function Chapters() {
                   </Select.Option>
                 ))}
             </Select>
+          </Form.Item>
+
+          <Form.Item
+            label="章节正文"
+            name="content"
+            tooltip="可以直接从外部文档复制粘贴整章正文"
+          >
+            <TextArea
+              rows={10}
+              placeholder="粘贴或输入章节正文..."
+              showCount
+            />
           </Form.Item>
 
           <Form.Item
@@ -2105,15 +2194,20 @@ export default function Chapters() {
               onChange={(e) => setChapterSearchKeyword(e.target.value)}
               style={{ width: isMobile ? '100%' : 300 }}
             />
-            {currentProject.outline_mode === 'one-to-many' && (
-              <Button
-                icon={<PlusOutlined />}
-                onClick={showManualCreateChapterModal}
-                block={isMobile}
-              >
-                手动创建
-              </Button>
-            )}
+            <Button
+              icon={<PlusOutlined />}
+              onClick={showManualCreateChapterModal}
+              block={isMobile}
+            >
+              新建章节
+            </Button>
+            <Button
+              icon={<UploadOutlined />}
+              onClick={handleOpenImportModal}
+              block={isMobile}
+            >
+              导入章节
+            </Button>
             <Button
               type="primary"
               icon={<ThunderboltOutlined />}
@@ -2646,6 +2740,120 @@ export default function Chapters() {
           />
         </div>
       )}
+
+      <Modal
+        title="导入章节"
+        open={importModalVisible}
+        onCancel={() => {
+          setImportModalVisible(false);
+          setImportFileList([]);
+        }}
+        onOk={handleImportSubmit}
+        confirmLoading={importing}
+        okText="开始导入"
+        cancelText="取消"
+        centered
+        width={isMobile ? 'calc(100vw - 32px)' : 680}
+      >
+        <Form
+          form={importForm}
+          layout="vertical"
+          initialValues={{
+            import_mode: 'auto_split',
+            import_position: 'append',
+            conflict_strategy: 'skip',
+            status: 'draft',
+          }}
+        >
+          <Form.Item label="导入文件" required>
+            <Dragger
+              multiple
+              accept=".txt,.md,.markdown,text/plain,text/markdown"
+              fileList={importFileList}
+              beforeUpload={() => false}
+              onChange={({ fileList }) => setImportFileList(fileList)}
+              onRemove={(file) => {
+                setImportFileList(prev => prev.filter(item => item.uid !== file.uid));
+              }}
+            >
+              <p className="ant-upload-drag-icon">
+                <UploadOutlined />
+              </p>
+              <p className="ant-upload-text">点击或拖拽 TXT / Markdown 文件到这里</p>
+              <p className="ant-upload-hint">单文件可智能拆分多章；多文件可按文件逐章导入。</p>
+            </Dragger>
+          </Form.Item>
+
+          <Form.Item label="导入方式" name="import_mode">
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
+              onChange={(event) => setImportMode(event.target.value)}
+              options={[
+                { value: 'auto_split', label: '智能拆分章节' },
+                { value: 'file_as_chapter', label: '每个文件一章' },
+              ]}
+            />
+          </Form.Item>
+
+          {importMode === 'auto_split' && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="会复用拆书导入的章节识别规则，适合整卷 TXT 或一个文件内包含多章的文本。"
+            />
+          )}
+
+          {importMode === 'file_as_chapter' && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="每个文件会作为独立章节导入，优先使用文件首行或文件名作为章节标题。"
+            />
+          )}
+
+          <Form.Item label="导入位置" name="import_position">
+            <Radio.Group
+              optionType="button"
+              buttonStyle="solid"
+              onChange={(event) => setImportPosition(event.target.value)}
+              options={[
+                { value: 'append', label: '追加到末尾' },
+                { value: 'custom', label: '指定起始章' },
+              ]}
+            />
+          </Form.Item>
+
+          {importPosition === 'custom' && (
+            <Space size={12} align="start" style={{ width: '100%' }}>
+              <Form.Item
+                label="起始章节"
+                name="start_chapter_number"
+                rules={[{ required: true, message: '请输入起始章节号' }]}
+              >
+                <InputNumber min={1} precision={0} style={{ width: 160 }} addonBefore="第" addonAfter="章" />
+              </Form.Item>
+              <Form.Item label="遇到同序号章节" name="conflict_strategy">
+                <Select style={{ width: 160 }}>
+                  <Select.Option value="skip">跳过导入</Select.Option>
+                  <Select.Option value="overwrite">覆盖旧章</Select.Option>
+                </Select>
+              </Form.Item>
+            </Space>
+          )}
+
+          <Form.Item label="导入后状态" name="status">
+            <Select>
+              <Select.Option value="draft">草稿</Select.Option>
+              <Select.Option value="pending">待处理</Select.Option>
+              <Select.Option value="writing">创作中</Select.Option>
+              <Select.Option value="completed">已完成</Select.Option>
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title="导出项目章节"

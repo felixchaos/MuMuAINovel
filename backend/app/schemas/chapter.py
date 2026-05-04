@@ -67,6 +67,26 @@ class ChapterListResponse(BaseModel):
     items: list[ChapterResponse]
 
 
+class ChapterImportItem(BaseModel):
+    """章节导入结果项"""
+    chapter_number: int
+    title: str
+    word_count: int = 0
+    action: str
+
+
+class ChapterImportResponse(BaseModel):
+    """章节导入响应"""
+    project_id: str
+    total_detected: int = 0
+    imported: int = 0
+    updated: int = 0
+    skipped: int = 0
+    total_words: int = 0
+    items: List[ChapterImportItem] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class AnalysisTaskStatusResponse(BaseModel):
     """单章节分析任务状态响应"""
     has_task: bool
