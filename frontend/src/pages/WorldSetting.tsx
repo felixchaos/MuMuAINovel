@@ -1,13 +1,237 @@
 import { Card, Descriptions, Empty, Typography, Button, Modal, Form, Input, message, Flex, InputNumber, Select, theme } from 'antd';
-import { GlobalOutlined, EditOutlined, SyncOutlined, FormOutlined } from '@ant-design/icons';
-import { useState } from 'react';
+import { GlobalOutlined, EditOutlined, SyncOutlined, FormOutlined, HighlightOutlined } from '@ant-design/icons';
+import { useState, type ChangeEvent, type CSSProperties } from 'react';
+import type { FormInstance } from 'antd/es/form';
 import { useStore } from '../store';
 import { worldSettingCardStyles } from '../components/CardStyles';
-import { projectApi, wizardStreamApi } from '../services/api';
+import { projectApi, wizardStreamApi, polishApi } from '../services/api';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 
 const { Title, Paragraph } = Typography;
 const { TextArea } = Input;
+type ModalApi = ReturnType<typeof Modal.useModal>[0];
+
+interface PolishableWorldTextAreaProps {
+  form: FormInstance;
+  modalApi: ModalApi;
+  projectId?: string;
+  name: string;
+  label: string;
+  rows: number;
+  placeholder: string;
+  maxLength?: number;
+  showCount?: boolean;
+  value?: string;
+  onChange?: (event: ChangeEvent<HTMLTextAreaElement>) => void;
+}
+
+function PolishableWorldTextArea({
+  form,
+  modalApi,
+  projectId,
+  name,
+  label,
+  rows,
+  placeholder,
+  maxLength,
+  showCount,
+  value,
+  onChange,
+}: PolishableWorldTextAreaProps) {
+  const [isPolishing, setIsPolishing] = useState(false);
+  const { token } = theme.useToken();
+
+  const runPolish = async (currentValue: string, instruction: string) => {
+    const closeLoading = message.loading(`正在润色${label}...`, 0);
+    try {
+      setIsPolishing(true);
+      const trimmedInstruction = instruction.trim();
+      const result = await polishApi.polishText({
+        original_text: currentValue,
+        project_id: projectId,
+        temperature: 0.7,
+        instruction: trimmedInstruction || undefined,
+      });
+
+      const polishedText = result.polished_text?.trim();
+      if (!polishedText) {
+        message.warning('润色结果为空，请稍后重试');
+        return;
+      }
+
+      modalApi.confirm({
+        title: `${label}润色结果`,
+        icon: <HighlightOutlined />,
+        width: 720,
+        centered: true,
+        okText: '应用润色结果',
+        cancelText: '保留原文',
+        content: (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 14, color: token.colorTextSecondary }}>
+              AI 已完成润色，确认后才会替换文本框内容。
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              {trimmedInstruction && (
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>本次要求</div>
+                  <div
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.6,
+                      padding: '8px 10px',
+                      border: `1px solid ${token.colorInfoBorder}`,
+                      borderRadius: token.borderRadius,
+                      background: token.colorInfoBg,
+                    }}
+                  >
+                    {trimmedInstruction}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>原文</div>
+                <div
+                  style={{
+                    maxHeight: 160,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,
+                    padding: '8px 10px',
+                    border: `1px solid ${token.colorBorderSecondary}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorFillQuaternary,
+                  }}
+                >
+                  {currentValue}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>润色结果</div>
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,
+                    padding: '8px 10px',
+                    border: `1px solid ${token.colorPrimaryBorder}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorBgContainer,
+                  }}
+                >
+                  {polishedText}
+                </div>
+              </div>
+            </div>
+          </div>
+        ),
+        onOk: () => {
+          form.setFieldsValue({ [name]: polishedText });
+          message.success(`${label}已应用润色结果`);
+        },
+      });
+    } catch (error) {
+      console.error(`${label}润色失败:`, error);
+      message.error(`${label}润色失败`);
+    } finally {
+      closeLoading();
+      setIsPolishing(false);
+    }
+  };
+
+  const handlePolish = () => {
+    const currentValue = String(form.getFieldValue(name) || '').trim();
+    if (!currentValue) {
+      message.warning(`请先填写${label}`);
+      return;
+    }
+
+    let instruction = '';
+    modalApi.confirm({
+      title: `${label}润色要求`,
+      icon: <HighlightOutlined />,
+      width: 640,
+      centered: true,
+      okText: '开始润色',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            输入本次希望 AI 如何处理这段内容；留空则使用默认去 AI 味润色。
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：保留原意，只让表达更自然；压缩到两句话；强化时代感；不要新增设定..."
+            autoFocus
+            onChange={(event) => {
+              instruction = event.target.value;
+            }}
+          />
+          <div
+            style={{
+              marginTop: 12,
+              maxHeight: 120,
+              overflowY: 'auto',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.6,
+              padding: '8px 10px',
+              border: `1px solid ${token.colorBorderSecondary}`,
+              borderRadius: token.borderRadius,
+              background: token.colorFillQuaternary,
+              color: token.colorTextSecondary,
+            }}
+          >
+            {currentValue}
+          </div>
+        </div>
+      ),
+      onOk: () => runPolish(currentValue, instruction),
+    });
+  };
+
+  const textAreaStyle: CSSProperties = {
+    paddingRight: 44,
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <TextArea
+        rows={rows}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        showCount={showCount}
+        maxLength={maxLength}
+        style={textAreaStyle}
+      />
+      <Button
+        type="text"
+        shape="circle"
+        size="small"
+        icon={<HighlightOutlined />}
+        loading={isPolishing}
+        aria-label={`润色${label}`}
+        title={`润色${label}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void handlePolish();
+        }}
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 1,
+          color: token.colorPrimary,
+          background: token.colorBgElevated,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          boxShadow: token.boxShadowTertiary,
+        }}
+      />
+    </div>
+  );
+}
 
 export default function WorldSetting() {
   const { currentProject, setCurrentProject } = useStore();
@@ -523,7 +747,12 @@ export default function WorldSetting() {
               { max: 1000, message: '简介不能超过1000字' }
             ]}
           >
-            <TextArea
+            <PolishableWorldTextArea
+              form={editProjectForm}
+              modalApi={modal}
+              projectId={currentProject?.id}
+              name="description"
+              label="小说简介"
               rows={4}
               placeholder="请输入小说简介（选填）"
               showCount
@@ -538,7 +767,12 @@ export default function WorldSetting() {
               { max: 500, message: '主题不能超过500字' }
             ]}
           >
-            <TextArea
+            <PolishableWorldTextArea
+              form={editProjectForm}
+              modalApi={modal}
+              projectId={currentProject?.id}
+              name="theme"
+              label="小说主题"
               rows={3}
               placeholder="请输入小说主题（选填）"
               showCount

@@ -117,6 +117,14 @@ class CharacterGenerateRequest(BaseModel):
     enable_mcp: bool = Field(True, description="是否启用MCP工具增强（搜索人物原型参考）")
 
 
+class CharacterAnalyzeFromTextRequest(BaseModel):
+    """从已有大纲/章节分析并生成角色卡的请求模型"""
+    project_id: str = Field(..., description="项目ID")
+    requirements: Optional[str] = Field(None, description="额外分析要求")
+    overwrite_existing: bool = Field(True, description="是否用分析结果更新已有角色卡")
+    max_characters: int = Field(40, ge=1, le=80, description="最多生成/更新的角色数量")
+
+
 class CharacterListResponse(BaseModel):
     """角色列表响应模型"""
     total: int

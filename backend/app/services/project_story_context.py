@@ -28,6 +28,8 @@ async def build_project_story_context(
     max_chars: int = 12000,
     outline_limit: int = 80,
     chapter_limit: int = 80,
+    prefer_chapter_content: bool = False,
+    chapter_excerpt_chars: int = 320,
 ) -> str:
     """Build a bounded context from existing outlines and chapters for AI generation."""
     lines: list[str] = []
@@ -63,8 +65,8 @@ async def build_project_story_context(
             lines.append("")
         lines.append("【已有章节摘要】")
         for chapter in chapters:
-            source = chapter.summary or chapter.content or ""
-            content = _compact_text(source, 320)
+            source = chapter.content if prefer_chapter_content else (chapter.summary or chapter.content or "")
+            content = _compact_text(source or "", chapter_excerpt_chars)
             if not content:
                 continue
             line = f"- 第{chapter.chapter_number}章 {chapter.title}: {content}"

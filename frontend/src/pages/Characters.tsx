@@ -227,6 +227,7 @@ export default function Characters() {
   const [activeTab, setActiveTab] = useState<'all' | 'character' | 'organization'>('all');
   const [generateForm] = Form.useForm();
   const [generateOrgForm] = Form.useForm();
+  const [analyzeCharactersForm] = Form.useForm();
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -379,6 +380,64 @@ export default function Characters() {
       await refreshCharacters();
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'AI生成失败';
+      message.error(errorMessage);
+    } finally {
+      setTimeout(() => {
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage('');
+      }, 500);
+    }
+  };
+
+  const handleAnalyzeCharactersFromText = async (values: {
+    requirements?: string;
+    overwrite_existing?: boolean;
+    max_characters?: number;
+  }) => {
+    try {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage('准备分析全文角色...');
+
+      let resultSummary: {
+        created_count?: number;
+        updated_count?: number;
+        skipped_count?: number;
+      } | null = null;
+
+      const summary = await characterApi.analyzeCharactersFromTextStream(
+        {
+          project_id: currentProject.id,
+          requirements: values.requirements,
+          overwrite_existing: values.overwrite_existing !== false,
+          max_characters: values.max_characters || 40,
+        },
+        {
+          onProgress: (msg, prog) => {
+            setProgress(prog);
+            setProgressMessage(msg);
+          },
+          onResult: (data) => {
+            resultSummary = data;
+          },
+          onError: (error) => {
+            message.error(`全文角色分析失败: ${error}`);
+          },
+          onComplete: () => {
+            setProgress(100);
+            setProgressMessage('分析完成！');
+          },
+        }
+      );
+
+      const finalSummary = resultSummary || summary || {};
+      message.success(
+        `全文角色分析完成：新增 ${finalSummary.created_count || 0} 个，更新 ${finalSummary.updated_count || 0} 个`
+      );
+      await refreshCharacters();
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : '全文角色分析失败';
       message.error(errorMessage);
     } finally {
       setTimeout(() => {
@@ -890,6 +949,56 @@ export default function Characters() {
     });
   };
 
+  const showAnalyzeCharactersModal = () => {
+    analyzeCharactersForm.resetFields();
+    analyzeCharactersForm.setFieldsValue({
+      overwrite_existing: true,
+      max_characters: 40,
+    });
+
+    modal.confirm({
+      title: 'AI分析全文角色',
+      width: 560,
+      centered: true,
+      okText: '开始分析',
+      cancelText: '取消',
+      content: (
+        <Form
+          form={analyzeCharactersForm}
+          layout="vertical"
+          style={{ marginTop: 16 }}
+        >
+          <Form.Item
+            name="requirements"
+            label="分析要求（可选）"
+          >
+            <TextArea
+              rows={3}
+              placeholder="例如：只分析已登场的重要角色；保留舰娘/拟人单位为角色；不要把国家和舰队当角色..."
+            />
+          </Form.Item>
+          <Form.Item
+            name="max_characters"
+            label="最多写入角色数"
+          >
+            <InputNumber min={1} max={80} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="overwrite_existing"
+            valuePropName="checked"
+            style={{ marginBottom: 0 }}
+          >
+            <Checkbox>用正文分析结果更新已有角色卡</Checkbox>
+          </Form.Item>
+        </Form>
+      ),
+      onOk: async () => {
+        const values = await analyzeCharactersForm.validateFields();
+        await handleAnalyzeCharactersFromText(values);
+      },
+    });
+  };
+
   const characterList = characters.filter(c => !c.is_organization);
   const organizationList = characters.filter(c => c.is_organization);
 
@@ -946,6 +1055,15 @@ export default function Characters() {
             size={isMobile ? 'small' : 'middle'}
           >
             创建组织
+          </Button>
+          <Button
+            type="dashed"
+            icon={<ThunderboltOutlined />}
+            onClick={showAnalyzeCharactersModal}
+            loading={isGenerating}
+            size={isMobile ? 'small' : 'middle'}
+          >
+            AI分析角色
           </Button>
           <Button
             type="dashed"

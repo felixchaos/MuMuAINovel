@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 import json
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.database import get_db
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker, wrap_stream_with_heartbeat, HEARTBEAT
@@ -17,12 +17,14 @@ from app.schemas.character import (
     CharacterUpdate,
     CharacterResponse,
     CharacterListResponse,
+    CharacterAnalyzeFromTextRequest,
     CharacterGenerateRequest
 )
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
+from app.services.project_story_context import build_project_story_context
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
@@ -30,6 +32,104 @@ from app.api.common import verify_project_access
 
 router = APIRouter(prefix="/characters", tags=["角色管理"])
 logger = get_logger(__name__)
+
+
+def _compact_character_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _normalize_role_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    mapping = {
+        "protagonist": "protagonist",
+        "main": "protagonist",
+        "主角": "protagonist",
+        "核心主角": "protagonist",
+        "supporting": "supporting",
+        "secondary": "supporting",
+        "配角": "supporting",
+        "重要配角": "supporting",
+        "antagonist": "antagonist",
+        "villain": "antagonist",
+        "反派": "antagonist",
+        "敌对": "antagonist",
+    }
+    return mapping.get(raw, "supporting")
+
+
+def _normalize_traits(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return json.dumps(items[:12], ensure_ascii=False) if items else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return _normalize_traits(parsed)
+        except Exception:
+            pass
+        items = [item.strip() for item in text.replace("，", ",").split(",") if item.strip()]
+        return json.dumps(items[:12], ensure_ascii=False) if items else None
+    return None
+
+
+def _extract_character_items(ai_data: Any) -> List[Dict[str, Any]]:
+    if isinstance(ai_data, list):
+        return [item for item in ai_data if isinstance(item, dict)]
+    if isinstance(ai_data, dict):
+        for key in ("characters", "items", "roles"):
+            items = ai_data.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def _apply_character_analysis(
+    character: Character,
+    data: Dict[str, Any],
+    *,
+    overwrite_existing: bool,
+) -> bool:
+    changed = False
+    field_map = {
+        "age": "age",
+        "gender": "gender",
+        "personality": "personality",
+        "background": "background",
+        "appearance": "appearance",
+    }
+
+    role_type = _normalize_role_type(data.get("role_type"))
+    if role_type and (overwrite_existing or not character.role_type):
+        if character.role_type != role_type:
+            character.role_type = role_type
+            changed = True
+
+    for source_key, attr in field_map.items():
+        value = _compact_character_text(data.get(source_key), 2000 if attr in {"background", "personality"} else 1200)
+        if not value:
+            continue
+        current = str(getattr(character, attr) or "").strip()
+        if overwrite_existing or not current:
+            if current != value:
+                setattr(character, attr, value)
+                changed = True
+
+    traits = _normalize_traits(data.get("traits"))
+    if traits and (overwrite_existing or not character.traits):
+        if character.traits != traits:
+            character.traits = traits
+            changed = True
+
+    return changed
 
 
 async def _build_relationships_summary(character_id: str, project_id: str, db: AsyncSession) -> str:
@@ -1371,6 +1471,230 @@ async def generate_character_stream(
             logger.error(f"生成角色失败: {str(e)}")
             yield await tracker.error(f"生成角色失败: {str(e)}")
     
+    return create_sse_response(generate())
+
+
+@router.post("/analyze-from-text-stream", summary="从已有全文分析并编排角色卡（流式）")
+async def analyze_characters_from_text_stream(
+    request: CharacterAnalyzeFromTextRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+    user_ai_service: AIService = Depends(get_user_ai_service)
+):
+    """
+    从项目现有大纲和章节内容中识别角色，并创建/更新角色卡。
+
+    这是角色管理页的全文分析入口，不替代章节分析中的状态/关系更新：
+    - 章节分析负责随章节推进更新角色状态、关系、职业与伏笔；
+    - 本接口负责从已有正文中发现角色并整理基础角色设定。
+    """
+    async def generate() -> AsyncGenerator[str, None]:
+        tracker = WizardProgressTracker("全文角色分析")
+        try:
+            user_id = getattr(http_request.state, 'user_id', None)
+            project = await verify_project_access(request.project_id, user_id, db)
+
+            yield await tracker.start("开始分析全文角色...")
+            yield await tracker.loading("加载已有角色与章节上下文...", 0.35)
+
+            existing_result = await db.execute(
+                select(Character)
+                .where(Character.project_id == request.project_id)
+                .order_by(Character.created_at.asc())
+            )
+            existing_entities = existing_result.scalars().all()
+            existing_characters = [item for item in existing_entities if not item.is_organization]
+            existing_by_name = {item.name.strip(): item for item in existing_characters if item.name}
+
+            existing_info = "暂无已有角色卡"
+            if existing_characters:
+                lines = []
+                for char in existing_characters[:80]:
+                    lines.append(
+                        f"- {char.name}（{char.role_type or '未定位'}）"
+                        f" 性格:{_compact_character_text(char.personality, 120)}"
+                        f" 背景:{_compact_character_text(char.background, 120)}"
+                    )
+                existing_info = "\n".join(lines)
+
+            story_context = await build_project_story_context(
+                db,
+                request.project_id,
+                max_chars=52000,
+                outline_limit=160,
+                chapter_limit=180,
+                prefer_chapter_content=True,
+                chapter_excerpt_chars=520,
+            )
+
+            if "暂无可用内容" in story_context and not existing_characters:
+                yield await tracker.error("项目没有可分析的大纲或章节内容")
+                return
+
+            yield await tracker.preparing("构建角色分析提示词...")
+
+            extra_requirements = (request.requirements or "").strip() or "无"
+            prompt = f"""你是小说角色设定整理助手。请从项目已有大纲与章节内容中，识别所有重要“角色”，并按文内已有事实整理成角色卡。
+
+【项目基础信息】
+- 书名：{project.title}
+- 类型：{project.genre or '未设定'}
+- 主题：{project.theme or '未设定'}
+- 简介：{project.description or '未设定'}
+
+【已有角色卡】
+{existing_info}
+
+【已有大纲与章节内容】
+{story_context}
+
+【额外要求】
+{extra_requirements}
+
+【识别规则】
+1. 只输出“角色/人物/具备行动主体的拟人个体”，不要把国家、城市、舰队、组织、地点、物品、能力体系当成角色。
+2. 角色信息必须来自已有文本，不要为了补全字段编造年龄、性别、外貌、关系或背景。
+3. 已有角色卡如果在正文里出现，请根据正文事实补强和校正；没有出现的新角色可以新增。
+4. role_type 只能是 protagonist、supporting、antagonist 之一。
+5. traits 是短标签数组，最多 8 个。
+6. 最多输出 {request.max_characters} 个角色，按重要性排序。
+
+【输出格式】
+严格只输出 JSON，不要 Markdown，不要解释：
+{{
+  "characters": [
+    {{
+      "name": "角色名",
+      "role_type": "protagonist/supporting/antagonist",
+      "age": "",
+      "gender": "",
+      "personality": "基于正文的性格与行为方式",
+      "appearance": "正文明确出现的外貌，不明确则留空",
+      "background": "身份、出场章节、关键行为、与主线关系",
+      "traits": ["标签1", "标签2"]
+    }}
+  ]
+}}"""
+
+            yield await tracker.generating(0, max(6000, len(prompt) * 4), "调用AI分析全文角色...")
+            ai_response = ""
+            chunk_count = 0
+
+            async for chunk in wrap_stream_with_heartbeat(
+                user_ai_service.generate_text_stream(
+                    prompt=prompt,
+                    temperature=0.45,
+                    max_tokens=24000,
+                    auto_mcp=False,
+                ),
+                heartbeat_interval=15.0,
+            ):
+                if chunk is HEARTBEAT:
+                    yield await tracker.heartbeat()
+                    continue
+
+                content = chunk.get("content", "") if isinstance(chunk, dict) else chunk
+                if not content:
+                    continue
+
+                ai_response += content
+                yield await SSEResponse.send_chunk(content)
+
+                current_len = len(ai_response)
+                if current_len >= chunk_count * 800:
+                    chunk_count += 1
+                    yield await tracker.generating(current_len, max(6000, len(prompt) * 4))
+
+            if not ai_response.strip():
+                yield await tracker.error("AI服务返回空响应")
+                return
+
+            yield await tracker.parsing("解析角色分析结果...", 0.55)
+            try:
+                cleaned_response = user_ai_service._clean_json_response(ai_response)
+                parsed_data = loads_json(cleaned_response)
+                character_items = _extract_character_items(parsed_data)[:request.max_characters]
+            except Exception as parse_error:
+                logger.error(f"❌ 全文角色分析JSON解析失败: {parse_error}")
+                logger.error(f"   原始响应预览: {ai_response[:300]}")
+                yield await tracker.error(f"AI返回的角色分析无法解析为JSON：{parse_error}")
+                return
+
+            if not character_items:
+                yield await tracker.error("AI没有识别到可写入的角色")
+                return
+
+            yield await tracker.saving("写入角色卡...", 0.45)
+
+            created: List[str] = []
+            updated: List[str] = []
+            skipped: List[str] = []
+
+            for item in character_items:
+                name = _compact_character_text(item.get("name"), 100)
+                if not name:
+                    continue
+
+                # 明显是组织/地点的条目交给组织管理，不在角色卡入口混写。
+                if item.get("is_organization") is True:
+                    skipped.append(name)
+                    continue
+
+                existing = existing_by_name.get(name)
+                if existing:
+                    if _apply_character_analysis(
+                        existing,
+                        item,
+                        overwrite_existing=request.overwrite_existing,
+                    ):
+                        updated.append(name)
+                    else:
+                        skipped.append(name)
+                    continue
+
+                character = Character(
+                    project_id=request.project_id,
+                    name=name,
+                    age=_compact_character_text(item.get("age"), 50),
+                    gender=_compact_character_text(item.get("gender"), 50),
+                    is_organization=False,
+                    role_type=_normalize_role_type(item.get("role_type")),
+                    personality=_compact_character_text(item.get("personality"), 2000),
+                    background=_compact_character_text(item.get("background"), 2000),
+                    appearance=_compact_character_text(item.get("appearance"), 1200),
+                    traits=_normalize_traits(item.get("traits")),
+                )
+                db.add(character)
+                existing_by_name[name] = character
+                created.append(name)
+
+            history = GenerationHistory(
+                project_id=request.project_id,
+                prompt=prompt[:8000],
+                generated_content=ai_response,
+                model=user_ai_service.default_model,
+            )
+            db.add(history)
+            await db.commit()
+
+            yield await tracker.complete("全文角色分析完成")
+            yield await tracker.result({
+                "created_count": len(created),
+                "updated_count": len(updated),
+                "skipped_count": len(skipped),
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+            })
+            yield await tracker.done()
+
+        except HTTPException as he:
+            logger.error(f"全文角色分析HTTP异常: {he.detail}")
+            yield await tracker.error(he.detail, he.status_code)
+        except Exception as exc:
+            logger.error(f"全文角色分析失败: {exc}", exc_info=True)
+            yield await tracker.error(f"全文角色分析失败: {exc}")
+
     return create_sse_response(generate())
 
 

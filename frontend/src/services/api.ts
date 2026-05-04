@@ -733,6 +733,24 @@ export const characterApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+
+  analyzeCharactersFromTextStream: (
+    data: {
+      project_id: string;
+      requirements?: string;
+      overwrite_existing?: boolean;
+      max_characters?: number;
+    },
+    options?: SSEClientOptions
+  ) =>
+    ssePost<{
+      created_count: number;
+      updated_count: number;
+      skipped_count: number;
+      created: string[];
+      updated: string[];
+      skipped: string[];
+    }>('/api/characters/analyze-from-text-stream', data, options),
 };
 
 export const chapterApi = {
