@@ -30,6 +30,7 @@ from app.api.common import verify_project_access
 from app.api.settings import get_user_ai_service
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.name_authority_service import build_name_authority
 from app.services.project_story_context import build_project_story_context
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
@@ -208,13 +209,17 @@ async def generate_relationships_stream(
             existing_relationships = relationships_result.scalars().all()
 
             character_by_id = {character.id: character for character in characters}
+            name_authority = build_name_authority(characters, include_organizations=False)
             character_name_counts: dict[str, int] = {}
             for character in characters:
-                character_name_counts[character.name] = character_name_counts.get(character.name, 0) + 1
+                canonical_name = name_authority.resolve_name(character.name, keep_unknown=False)
+                if canonical_name:
+                    character_name_counts[canonical_name] = character_name_counts.get(canonical_name, 0) + 1
             unique_character_by_name = {
-                character.name: character
+                canonical_name: character
                 for character in characters
-                if character_name_counts.get(character.name, 0) == 1
+                for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+                if canonical_name and character_name_counts.get(canonical_name, 0) == 1
             }
             existing_pairs = {
                 frozenset((relationship.character_from_id, relationship.character_to_id))
@@ -332,7 +337,9 @@ async def generate_relationships_stream(
                     return character_by_id.get(character_id)
                 character_name = str(item.get(name_key) or "").strip()
                 if character_name:
-                    return unique_character_by_name.get(character_name)
+                    canonical_name = name_authority.resolve_name(character_name, keep_unknown=False)
+                    if canonical_name:
+                        return unique_character_by_name.get(canonical_name)
                 return None
 
             yield await tracker.saving("保存关系到数据库...", 0.8)

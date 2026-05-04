@@ -706,7 +706,13 @@ class CharacterStateUpdateService:
             )
         )
         org_chars = all_chars_result.scalars().all()
-        org_char_by_name: Dict[str, Character] = {c.name: c for c in org_chars}
+        name_authority = build_name_authority(org_chars)
+        org_char_by_name: Dict[str, Character] = {
+            canonical_name: c
+            for c in org_chars
+            for canonical_name in [name_authority.resolve_name(c.name, keep_unknown=False)]
+            if canonical_name
+        }
         
         # 预加载组织详情
         char_ids = [c.id for c in org_chars]
@@ -726,7 +732,12 @@ class CharacterStateUpdateService:
                 if not org_name:
                     continue
                 
-                org_char = org_char_by_name.get(org_name)
+                canonical_org_name = name_authority.resolve_name(org_name, keep_unknown=False)
+                if not canonical_org_name:
+                    logger.info(f"  ⏭️ 非稳定组织引用: {org_name}，跳过状态更新")
+                    continue
+
+                org_char = org_char_by_name.get(canonical_org_name)
                 if not org_char:
                     logger.warning(f"  ⚠️ 组织不存在: {org_name}，跳过状态更新")
                     continue
@@ -769,7 +780,7 @@ class CharacterStateUpdateService:
                     key_event = org_state.get('key_event', '')
                     event_desc = f"：{key_event[:40]}" if key_event else ""
                     result["updated_count"] += 1
-                    change_summary = f"💀 {org_name} 覆灭{event_desc}，{len(active_members)}名成员受影响"
+                    change_summary = f"💀 {canonical_org_name} 覆灭{event_desc}，{len(active_members)}名成员受影响"
                     result["changes"].append(change_summary)
                     logger.info(f"  💀 {change_summary}")
                     continue  # 覆灭后不再更新其他属性
@@ -812,7 +823,7 @@ class CharacterStateUpdateService:
                 if updated:
                     result["updated_count"] += 1
                     key_event = org_state.get('key_event', '')
-                    change_summary = f"🏛️ {org_name} 状态变化: {', '.join(change_parts)}"
+                    change_summary = f"🏛️ {canonical_org_name} 状态变化: {', '.join(change_parts)}"
                     if key_event:
                         change_summary += f" (因:{key_event[:40]})"
                     result["changes"].append(change_summary)
