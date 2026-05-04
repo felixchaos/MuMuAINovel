@@ -47,6 +47,14 @@ def is_generic_reference(value: Any) -> bool:
         return True
     if len(text) <= 1:
         return True
+    if re.fullmatch(
+        r"(?:这|那|某)?(?:个|位|名)?"
+        r"(?:年轻|年长|中年|老年|高大|瘦弱|矮小|陌生|神秘|普通|黑衣|白衣|红衣|蓝衣|灰衣|青衣|"
+        r"黑袍|白袍|青袍|蒙面|戴帽|戴面具|披斗篷)?"
+        r"(?:男子|女子|少年|少女|青年|老人|老者|修士|人影|身影)",
+        text,
+    ):
+        return True
     return bool(
         re.fullmatch(
             r"(?:这|那|某)?(?:个|位|名|些)?"

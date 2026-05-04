@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Optional, Callable, Awaitable
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.name_authority_service import is_generic_reference
 from app.services.prompt_service import prompt_service, PromptService
 from app.logger import get_logger
 import json
@@ -462,6 +463,8 @@ class PlotAnalyzer:
             # 4. 提取角色状态变化
             for i, char_state in enumerate(analysis.get('character_states', [])):
                 char_name = char_state.get('character_name', '未知角色')
+                if is_generic_reference(char_name) or str(char_name).strip() in {"未知角色", "未知人物"}:
+                    continue
                 memories.append({
                     'type': 'character_event',
                     'content': f"{char_name}的状态变化: {char_state.get('state_before', '')} → {char_state.get('state_after', '')}。{char_state.get('psychological_change', '')}",
@@ -519,6 +522,8 @@ class PlotAnalyzer:
                 if not isinstance(org_state, dict):
                     continue
                 org_name = str(org_state.get('organization_name') or '未知组织').strip()
+                if is_generic_reference(org_name) or org_name in {"未知组织", "未知势力"}:
+                    continue
                 key_event = str(org_state.get('key_event') or '').strip()
                 status_description = str(org_state.get('status_description') or '').strip()
                 keyword = key_event or org_name

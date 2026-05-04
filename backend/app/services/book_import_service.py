@@ -48,7 +48,7 @@ from app.schemas.book_import import (
 )
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
 from app.services.background_task_service import background_task_service
-from app.services.name_authority_service import is_generic_reference
+from app.services.name_authority_service import build_name_authority, is_generic_reference
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 
@@ -2775,6 +2775,7 @@ class BookImportService:
         # 预加载角色/组织，便于去重和兼容 append 场景的名称引用
         existing_chars_result = await db.execute(select(Character).where(Character.project_id == project.id))
         existing_chars = existing_chars_result.scalars().all()
+        existing_authority = build_name_authority(existing_chars)
         existing_names = {c.name for c in existing_chars}
         character_name_to_obj: dict[str, Character] = {c.name: c for c in existing_chars}
 
@@ -2816,7 +2817,12 @@ class BookImportService:
                 continue
 
             raw_name = (item.get("name") or "").strip()
-            if not raw_name or raw_name in existing_names:
+            if (
+                not raw_name
+                or is_generic_reference(raw_name)
+                or raw_name in existing_names
+                or existing_authority.resolve_name(raw_name, keep_unknown=False)
+            ):
                 continue
 
             is_organization = bool(item.get("is_organization", False))
@@ -2859,6 +2865,20 @@ class BookImportService:
             character_name_to_obj[character.name] = character
             existing_names.add(raw_name)
             created += 1
+
+        name_authority = build_name_authority(character_name_to_obj.values())
+        character_name_to_obj = {
+            canonical_name: character
+            for character in character_name_to_obj.values()
+            for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+            if canonical_name
+        }
+        organization_name_to_obj = {
+            canonical_name: organization
+            for raw_name, organization in organization_name_to_obj.items()
+            for canonical_name in [name_authority.resolve_name(raw_name, keep_unknown=False)]
+            if canonical_name
+        }
 
         # 第二阶段：创建职业关联（CharacterCareer + 冗余字段）
         if created_items and (main_career_map or sub_career_map):
@@ -2962,7 +2982,11 @@ class BookImportService:
                 if not target_name:
                     continue
 
-                target_char = character_name_to_obj.get(target_name)
+                canonical_target_name = name_authority.resolve_name(target_name, keep_unknown=False)
+                if not canonical_target_name:
+                    continue
+
+                target_char = character_name_to_obj.get(canonical_target_name)
                 if not target_char or target_char.is_organization:
                     continue
                 if target_char.id == character.id:
@@ -3011,7 +3035,11 @@ class BookImportService:
                 if not org_name:
                     continue
 
-                org = organization_name_to_obj.get(org_name)
+                canonical_org_name = name_authority.resolve_name(org_name, keep_unknown=False)
+                if not canonical_org_name:
+                    continue
+
+                org = organization_name_to_obj.get(canonical_org_name)
                 if not org:
                     continue
 
@@ -3039,7 +3067,8 @@ class BookImportService:
             if not character.is_organization:
                 continue
 
-            org = organization_name_to_obj.get(character.name)
+            canonical_org_name = name_authority.resolve_name(character.name, keep_unknown=False)
+            org = organization_name_to_obj.get(canonical_org_name or character.name)
             if not org:
                 continue
 
@@ -3051,7 +3080,11 @@ class BookImportService:
                 member_names = [member_names_raw.strip()]
 
             for member_name in member_names:
-                member_char = character_name_to_obj.get(member_name)
+                canonical_member_name = name_authority.resolve_name(member_name, keep_unknown=False)
+                if not canonical_member_name:
+                    continue
+
+                member_char = character_name_to_obj.get(canonical_member_name)
                 if not member_char or member_char.is_organization:
                     continue
 

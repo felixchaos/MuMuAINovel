@@ -13,7 +13,10 @@ def test_filters_generic_references():
     assert is_generic_reference("那个人")
     assert is_generic_reference("前辈")
     assert is_generic_reference("青年男子")
+    assert is_generic_reference("黑衣男子")
+    assert is_generic_reference("戴面具少女")
     assert is_generic_reference("掌柜")
+    assert not is_generic_reference("魔法少女晓卡")
     assert not is_generic_reference("晓卡")
 
 
