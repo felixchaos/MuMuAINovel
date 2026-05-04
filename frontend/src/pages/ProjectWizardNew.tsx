@@ -2,16 +2,292 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Form, Input, InputNumber, Select, Button, Card,
-  Row, Col, Typography, Space, message, Radio, theme
+  Row, Col, Typography, Space, message, Radio, theme, Modal
 } from 'antd';
+import type { FormInstance } from 'antd/es/form';
 import {
-  RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined
+  RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined, EditOutlined, HighlightOutlined
 } from '@ant-design/icons';
 import { AIProjectGenerator, type GenerationConfig } from '../components/AIProjectGenerator';
+import { projectApi, polishApi } from '../services/api';
 import type { WizardBasicInfo } from '../types';
 
 const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
+type ModalApi = ReturnType<typeof Modal.useModal>[0];
+
+const wizardFieldLabels: Partial<Record<keyof WizardBasicInfo, string>> = {
+  title: '书名',
+  description: '小说简介',
+  theme: '主题',
+  genre: '类型',
+  world_time_period: '时间背景',
+  world_location: '地理位置',
+  world_atmosphere: '氛围基调',
+  world_rules: '世界规则',
+};
+
+const stringifyGenre = (genre?: string | string[]) => {
+  if (Array.isArray(genre)) return genre.join('、');
+  return genre || '';
+};
+
+const buildWizardContext = (values: Partial<WizardBasicInfo>, activeLabel: string) => {
+  const lines: string[] = [];
+  const append = (name: keyof WizardBasicInfo, value?: unknown) => {
+    if (value === undefined || value === null) return;
+    const text = Array.isArray(value) ? value.join('、') : String(value).trim();
+    if (text) {
+      lines.push(`${wizardFieldLabels[name] || String(name)}：${text}`);
+    }
+  };
+
+  append('title', values.title);
+  append('description', values.description);
+  append('theme', values.theme);
+  append('genre', values.genre);
+  append('world_time_period', values.world_time_period);
+  append('world_location', values.world_location);
+  append('world_atmosphere', values.world_atmosphere);
+  append('world_rules', values.world_rules);
+  append('narrative_perspective', values.narrative_perspective);
+
+  return lines.length > 0
+    ? `当前项目上下文：\n${lines.join('\n')}\n\n需要处理的字段：${activeLabel}`
+    : `需要为新小说生成或润色字段：${activeLabel}`;
+};
+
+const parseTagResult = (text: string) => (
+  text
+    .replace(/[《》「」【】]/g, '')
+    .split(/[,，、\n;；]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+    .slice(0, 5)
+);
+
+interface WizardAIFieldButtonProps {
+  form: FormInstance<WizardBasicInfo>;
+  modalApi: ModalApi;
+  name: keyof WizardBasicInfo;
+  label: string;
+  resultType?: 'text' | 'tags';
+  maxLength?: number;
+}
+
+function WizardAIFieldButton({
+  form,
+  modalApi,
+  name,
+  label,
+  resultType = 'text',
+  maxLength,
+}: WizardAIFieldButtonProps) {
+  const [loading, setLoading] = useState(false);
+  const { token } = theme.useToken();
+
+  const readFieldText = () => {
+    const value = form.getFieldValue(name);
+    if (Array.isArray(value)) return value.join('、');
+    return String(value || '').trim();
+  };
+
+  const applyResult = (text: string) => {
+    if (resultType === 'tags') {
+      const tags = parseTagResult(text);
+      if (!tags.length) {
+        message.warning('AI未返回可用标签');
+        return;
+      }
+      form.setFieldsValue({ [name]: tags } as Partial<WizardBasicInfo>);
+      message.success(`${label}已应用AI结果`);
+      return;
+    }
+
+    const nextText = maxLength ? text.slice(0, maxLength) : text;
+    form.setFieldsValue({ [name]: nextText } as Partial<WizardBasicInfo>);
+    message.success(`${label}已应用AI结果`);
+  };
+
+  const runAI = async (sourceText: string, instruction: string, currentValue: string) => {
+    const trimmedInstruction = instruction.trim();
+    const defaultInstruction = currentValue
+      ? `请润色「${label}」。保留原意和设定，不新增无依据内容，不输出解释，只输出处理后的${resultType === 'tags' ? '标签列表' : '文本'}。`
+      : `请根据上下文补全「${label}」。不要输出解释、标题或前后缀，只输出可直接填入该字段的${resultType === 'tags' ? '标签列表，使用顿号分隔' : '文本'}。`;
+    const closeLoading = message.loading(`正在处理${label}...`, 0);
+
+    try {
+      setLoading(true);
+      const result = await polishApi.polishText({
+        original_text: sourceText,
+        temperature: currentValue ? 0.65 : 0.8,
+        instruction: trimmedInstruction || defaultInstruction,
+      });
+
+      const aiText = (result.polished_text || '').trim();
+      if (!aiText) {
+        message.warning('AI结果为空，请稍后重试');
+        return;
+      }
+
+      modalApi.confirm({
+        title: `${label} AI结果`,
+        icon: <HighlightOutlined />,
+        width: 720,
+        centered: true,
+        okText: '应用结果',
+        cancelText: currentValue ? '保留原文' : '暂不应用',
+        content: (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+              AI 结果需要确认后才会写入字段。
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              {trimmedInstruction && (
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>本次要求</div>
+                  <div style={{
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,
+                    padding: '8px 10px',
+                    border: `1px solid ${token.colorInfoBorder}`,
+                    borderRadius: token.borderRadius,
+                    background: token.colorInfoBg,
+                  }}>
+                    {trimmedInstruction}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>{currentValue ? '当前内容' : '生成依据'}</div>
+                <div style={{
+                  maxHeight: 150,
+                  overflowY: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: 1.6,
+                  padding: '8px 10px',
+                  border: `1px solid ${token.colorBorderSecondary}`,
+                  borderRadius: token.borderRadius,
+                  background: token.colorFillQuaternary,
+                  color: token.colorTextSecondary,
+                }}>
+                  {currentValue || sourceText}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果</div>
+                <div style={{
+                  maxHeight: 220,
+                  overflowY: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: 1.6,
+                  padding: '8px 10px',
+                  border: `1px solid ${token.colorPrimaryBorder}`,
+                  borderRadius: token.borderRadius,
+                  background: token.colorBgContainer,
+                }}>
+                  {aiText}
+                </div>
+              </div>
+            </div>
+          </div>
+        ),
+        onOk: () => applyResult(aiText),
+      });
+    } catch (error) {
+      console.error(`${label} AI处理失败:`, error);
+      message.error(`${label} AI处理失败`);
+    } finally {
+      closeLoading();
+      setLoading(false);
+    }
+  };
+
+  const handleClick = () => {
+    const currentValue = readFieldText();
+    const context = buildWizardContext(form.getFieldsValue(true), label);
+    const sourceText = currentValue || context;
+    let instruction = '';
+
+    modalApi.confirm({
+      title: `${label} AI处理要求`,
+      icon: <HighlightOutlined />,
+      width: 640,
+      centered: true,
+      okText: currentValue ? '开始润色' : '开始补全',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            {currentValue
+              ? '输入希望 AI 如何润色这段内容；留空则只做自然表达优化。'
+              : '当前字段为空，AI会参考已填写的项目上下文补全；也可以输入更具体的生成要求。'}
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：更口语一点；压缩到一句话；强化世界观冲突；保留关键词但改得更自然..."
+            autoFocus
+            onChange={(event) => {
+              instruction = event.target.value;
+            }}
+          />
+          <div style={{
+            marginTop: 12,
+            maxHeight: 120,
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.6,
+            padding: '8px 10px',
+            border: `1px solid ${token.colorBorderSecondary}`,
+            borderRadius: token.borderRadius,
+            background: token.colorFillQuaternary,
+            color: token.colorTextSecondary,
+          }}>
+            {sourceText}
+          </div>
+        </div>
+      ),
+      onOk: () => runAI(sourceText, instruction, currentValue),
+    });
+  };
+
+  return (
+    <Button
+      type="link"
+      size="small"
+      icon={<HighlightOutlined />}
+      loading={loading}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        handleClick();
+      }}
+      style={{ paddingInline: 4 }}
+    >
+      AI辅助
+    </Button>
+  );
+}
+
+const makeAIFieldLabel = (
+  form: FormInstance<WizardBasicInfo>,
+  modalApi: ModalApi,
+  name: keyof WizardBasicInfo,
+  label: string,
+  options?: Pick<WizardAIFieldButtonProps, 'resultType' | 'maxLength'>,
+) => (
+  <Space size={6}>
+    <span>{label}</span>
+    <WizardAIFieldButton
+      form={form}
+      modalApi={modalApi}
+      name={name}
+      label={label}
+      resultType={options?.resultType}
+      maxLength={options?.maxLength}
+    />
+  </Space>
+);
 
 export default function ProjectWizardNew() {
   const navigate = useNavigate();
@@ -24,6 +300,9 @@ export default function ProjectWizardNew() {
   const [currentStep, setCurrentStep] = useState<'form' | 'generating'>('form');
   const [generationConfig, setGenerationConfig] = useState<GenerationConfig | null>(null);
   const [resumeProjectId, setResumeProjectId] = useState<string | null>(null);
+  const [creationMode, setCreationMode] = useState<'ai' | 'manual'>('ai');
+  const [isCreatingManual, setIsCreatingManual] = useState(false);
+  const [modal, contextHolder] = Modal.useModal();
 
   useEffect(() => {
     const handleResize = () => {
@@ -78,10 +357,10 @@ export default function ProjectWizardNew() {
   const handleAutoGenerate = async (values: WizardBasicInfo) => {
     const config: GenerationConfig = {
       title: values.title,
-      description: values.description,
-      theme: values.theme,
-      genre: values.genre,
-      narrative_perspective: values.narrative_perspective,
+      description: values.description || '',
+      theme: values.theme || '',
+      genre: values.genre || '',
+      narrative_perspective: values.narrative_perspective || '第三人称',
       target_words: values.target_words || 100000,
       chapter_count: 3, // 默认生成3章大纲
       character_count: values.character_count || 5,
@@ -90,6 +369,47 @@ export default function ProjectWizardNew() {
 
     setGenerationConfig(config);
     setCurrentStep('generating');
+  };
+
+  // 纯手动建书：只创建项目基础数据，不触发AI向导生成
+  const handleManualCreate = async (values: WizardBasicInfo) => {
+    setIsCreatingManual(true);
+    try {
+      const project = await projectApi.createProject({
+        title: values.title,
+        description: values.description?.trim() || '',
+        theme: values.theme?.trim() || '',
+        genre: stringifyGenre(values.genre),
+        target_words: values.target_words || 100000,
+        outline_mode: values.outline_mode || 'one-to-one',
+        wizard_status: 'completed',
+        wizard_step: 4,
+        world_time_period: values.world_time_period?.trim() || '',
+        world_location: values.world_location?.trim() || '',
+        world_atmosphere: values.world_atmosphere?.trim() || '',
+        world_rules: values.world_rules?.trim() || '',
+        chapter_count: values.chapter_count || 0,
+        narrative_perspective: values.narrative_perspective || '第三人称',
+        character_count: 0,
+      });
+
+      message.success(`《${project.title}》已创建，可开始手动搭建设定`);
+      navigate(`/project/${project.id}/world-setting`);
+    } catch (error) {
+      console.error('手动创建项目失败:', error);
+      message.error('创建项目失败，请稍后重试');
+    } finally {
+      setIsCreatingManual(false);
+    }
+  };
+
+  const handleSubmit = async (values: WizardBasicInfo) => {
+    if ((values.creation_mode || creationMode) === 'manual') {
+      await handleManualCreate(values);
+      return;
+    }
+
+    await handleAutoGenerate(values);
   };
 
   // 生成完成回调
@@ -110,14 +430,15 @@ export default function ProjectWizardNew() {
         创建新项目
       </Title>
       <Paragraph type="secondary" style={{ marginBottom: 32 }}>
-        填写基本信息后，AI将自动为您生成世界观、角色和大纲节点（大纲可在项目内手动展开为章节）
+        可以选择让AI自动搭建基础内容，也可以纯手动创建空白项目，先自己定好框架再逐步使用AI补全。
       </Paragraph>
 
       <Form
         form={form}
         layout="vertical"
-        onFinish={handleAutoGenerate}
+        onFinish={handleSubmit}
         initialValues={{
+          creation_mode: 'ai',
           genre: ['玄幻'],
           chapter_count: 30,
           narrative_perspective: '第三人称',
@@ -127,7 +448,67 @@ export default function ProjectWizardNew() {
         }}
       >
         <Form.Item
-          label="书名"
+          label="创建模式"
+          name="creation_mode"
+          rules={[{ required: true, message: '请选择创建模式' }]}
+        >
+          <Radio.Group
+            size="large"
+            onChange={(event) => setCreationMode(event.target.value)}
+            style={{ width: '100%' }}
+          >
+            <Row gutter={[16, 16]}>
+              <Col xs={24} sm={12}>
+                <Card
+                  hoverable
+                  style={{ borderWidth: 2, height: '100%' }}
+                  onClick={() => {
+                    form.setFieldValue('creation_mode', 'ai');
+                    setCreationMode('ai');
+                  }}
+                >
+                  <Radio value="ai" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <div style={{ fontSize: 16, fontWeight: 'bold' }}>
+                        <RocketOutlined style={{ marginRight: 8, color: token.colorPrimary }} />
+                        AI自动搭建
+                      </div>
+                      <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                        自动生成世界观、职业体系、角色和大纲节点
+                      </div>
+                    </Space>
+                  </Radio>
+                </Card>
+              </Col>
+
+              <Col xs={24} sm={12}>
+                <Card
+                  hoverable
+                  style={{ borderWidth: 2, height: '100%' }}
+                  onClick={() => {
+                    form.setFieldValue('creation_mode', 'manual');
+                    setCreationMode('manual');
+                  }}
+                >
+                  <Radio value="manual" style={{ width: '100%' }}>
+                    <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                      <div style={{ fontSize: 16, fontWeight: 'bold' }}>
+                        <EditOutlined style={{ marginRight: 8, color: token.colorSuccess }} />
+                        纯手动建书
+                      </div>
+                      <div style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                        只创建项目和基础设定，不强制进入AI生成步骤
+                      </div>
+                    </Space>
+                  </Radio>
+                </Card>
+              </Col>
+            </Row>
+          </Radio.Group>
+        </Form.Item>
+
+        <Form.Item
+          label={makeAIFieldLabel(form, modal, 'title', '书名', { maxLength: 80 })}
           name="title"
           rules={[{ required: true, message: '请输入书名' }]}
         >
@@ -135,35 +516,35 @@ export default function ProjectWizardNew() {
         </Form.Item>
 
         <Form.Item
-          label="小说简介"
+          label={makeAIFieldLabel(form, modal, 'description', '小说简介', { maxLength: 300 })}
           name="description"
-          rules={[{ required: true, message: '请输入小说简介' }]}
+          rules={creationMode === 'ai' ? [{ required: true, message: '请输入小说简介' }] : []}
         >
           <TextArea
             rows={3}
-            placeholder="用一段话介绍你的小说..."
+            placeholder={creationMode === 'manual' ? '可先简单写，也可以留空进入项目后再补...' : '用一段话介绍你的小说...'}
             showCount
             maxLength={300}
           />
         </Form.Item>
 
         <Form.Item
-          label="主题"
+          label={makeAIFieldLabel(form, modal, 'theme', '主题', { maxLength: 500 })}
           name="theme"
-          rules={[{ required: true, message: '请输入主题' }]}
+          rules={creationMode === 'ai' ? [{ required: true, message: '请输入主题' }] : []}
         >
           <TextArea
             rows={4}
-            placeholder="描述你的小说主题..."
+            placeholder={creationMode === 'manual' ? '写下你想先固定的核心主题、卷名、卖点或约束...' : '描述你的小说主题...'}
             showCount
             maxLength={500}
           />
         </Form.Item>
 
         <Form.Item
-          label="类型"
+          label={makeAIFieldLabel(form, modal, 'genre', '类型', { resultType: 'tags' })}
           name="genre"
-          rules={[{ required: true, message: '请选择小说类型' }]}
+          rules={creationMode === 'ai' ? [{ required: true, message: '请选择小说类型' }] : []}
         >
           <Select
             mode="tags"
@@ -184,6 +565,63 @@ export default function ProjectWizardNew() {
             <Select.Option value="修仙">修仙</Select.Option>
           </Select>
         </Form.Item>
+
+        {creationMode === 'manual' && (
+          <Card
+            size="small"
+            title="手动框架设定"
+            style={{ marginBottom: 24 }}
+            styles={{ body: { paddingBottom: 8 } }}
+          >
+            <Form.Item
+              label={makeAIFieldLabel(form, modal, 'world_time_period', '时间背景')}
+              name="world_time_period"
+            >
+              <TextArea
+                rows={2}
+                placeholder="例如：近未来、架空王朝、1916年北海、末日后第七年..."
+                showCount
+                maxLength={500}
+              />
+            </Form.Item>
+
+            <Form.Item
+              label={makeAIFieldLabel(form, modal, 'world_location', '地理位置')}
+              name="world_location"
+            >
+              <TextArea
+                rows={2}
+                placeholder="故事主要发生地点、势力版图、空间结构..."
+                showCount
+                maxLength={500}
+              />
+            </Form.Item>
+
+            <Form.Item
+              label={makeAIFieldLabel(form, modal, 'world_atmosphere', '氛围基调')}
+              name="world_atmosphere"
+            >
+              <TextArea
+                rows={3}
+                placeholder="整体气质、叙事风味、冲突强度、读者预期..."
+                showCount
+                maxLength={800}
+              />
+            </Form.Item>
+
+            <Form.Item
+              label={makeAIFieldLabel(form, modal, 'world_rules', '世界规则')}
+              name="world_rules"
+            >
+              <TextArea
+                rows={4}
+                placeholder="力量体系、科技水平、社会规则、禁忌、核心矛盾..."
+                showCount
+                maxLength={1200}
+              />
+            </Form.Item>
+          </Card>
+        )}
 
         <Form.Item
           label="大纲章节模式"
@@ -265,20 +703,35 @@ export default function ProjectWizardNew() {
             </Form.Item>
           </Col>
           <Col xs={24} sm={12}>
-            <Form.Item
-              label="角色数量"
-              name="character_count"
-              rules={[{ required: true, message: '请输入角色数量' }]}
-            >
-              <InputNumber
-                min={3}
-                max={20}
-                style={{ width: '100%' }}
-                size="large"
-                addonAfter="个"
-                placeholder="AI生成的角色数量"
-              />
-            </Form.Item>
+            {creationMode === 'ai' ? (
+              <Form.Item
+                label="角色数量"
+                name="character_count"
+                rules={[{ required: true, message: '请输入角色数量' }]}
+              >
+                <InputNumber
+                  min={3}
+                  max={20}
+                  style={{ width: '100%' }}
+                  size="large"
+                  addonAfter="个"
+                  placeholder="AI生成的角色数量"
+                />
+              </Form.Item>
+            ) : (
+              <Form.Item
+                label="计划章节数"
+                name="chapter_count"
+              >
+                <InputNumber
+                  min={0}
+                  style={{ width: '100%' }}
+                  size="large"
+                  addonAfter="章"
+                  placeholder="可选，后续可调整"
+                />
+              </Form.Item>
+            )}
           </Col>
         </Row>
 
@@ -304,8 +757,9 @@ export default function ProjectWizardNew() {
               size="large"
               block
               icon={<RocketOutlined />}
+              loading={isCreatingManual}
             >
-              开始创建项目
+              {creationMode === 'manual' ? '创建空白项目' : '开始创建项目'}
             </Button>
             <Button
               size="large"
@@ -325,6 +779,7 @@ export default function ProjectWizardNew() {
       minHeight: '100dvh',
       background: token.colorBgBase,
     }}>
+      {contextHolder}
       {/* 顶部标题栏 - 固定不滚动 */}
       <div style={{
         position: 'sticky',

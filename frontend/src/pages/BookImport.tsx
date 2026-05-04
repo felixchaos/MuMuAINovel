@@ -11,8 +11,10 @@ import {
   InputNumber,
   List,
   message,
+  Modal,
   Popconfirm,
   Progress,
+  Radio,
   Row,
   Select,
   Space,
@@ -24,12 +26,14 @@ import {
   theme,
 } from 'antd';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined } from '@ant-design/icons';
-import { bookImportApi } from '../services/api';
+import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined, HighlightOutlined } from '@ant-design/icons';
+import { bookImportApi, polishApi } from '../services/api';
 import type {
   BookImportApplyPayload,
   BookImportExtractMode,
   BookImportPreview,
+  BookImportProjectSuggestion,
+  BookImportSetupMode,
   BookImportStepFailure,
   BookImportTask,
 } from '../types';
@@ -50,6 +54,8 @@ type BookImportPageCache = {
   isApplyComplete: boolean;
   extractMode: BookImportExtractMode;
   tailChapterCount: number;
+  setupMode: BookImportSetupMode;
+  postImportGeneration: 'auto' | 'manual';
   cachedAt: number;
 };
 
@@ -109,6 +115,43 @@ function isNotFoundError(error: unknown): boolean {
   return maybeError.response?.status === 404;
 }
 
+type ImportSuggestionField = keyof BookImportProjectSuggestion;
+
+const importSuggestionFieldLabels: Partial<Record<ImportSuggestionField, string>> = {
+  title: '标题',
+  genre: '类型',
+  theme: '主题',
+  description: '简介',
+  world_time_period: '时间背景',
+  world_location: '地理位置',
+  world_atmosphere: '氛围基调',
+  world_rules: '世界规则',
+};
+
+function buildImportSuggestionContext(suggestion: BookImportProjectSuggestion, activeLabel: string) {
+  const lines = Object.entries(importSuggestionFieldLabels)
+    .map(([field, label]) => {
+      const value = suggestion[field as ImportSuggestionField];
+      const text = value === undefined || value === null ? '' : String(value).trim();
+      return text ? `${label}：${text}` : '';
+    })
+    .filter(Boolean);
+
+  return lines.length > 0
+    ? `当前拆书项目信息：\n${lines.join('\n')}\n\n需要处理的字段：${activeLabel}`
+    : `需要为拆书项目生成或润色字段：${activeLabel}`;
+}
+
+function projectSuggestionPatch(
+  field: ImportSuggestionField,
+  value: string,
+): Partial<BookImportProjectSuggestion> {
+  if (field === 'target_words') {
+    return { target_words: Number(value || 100000) };
+  }
+  return { [field]: value } as Partial<BookImportProjectSuggestion>;
+}
+
 export default function BookImport() {
   const navigate = useNavigate();
   const { token } = theme.useToken();
@@ -116,6 +159,9 @@ export default function BookImport() {
   const [file, setFile] = useState<File | null>(null);
   const [extractMode, setExtractMode] = useState<BookImportExtractMode>('tail');
   const [tailChapterCount, setTailChapterCount] = useState(10);
+  const [setupMode, setSetupMode] = useState<BookImportSetupMode>('auto');
+  const [postImportGeneration, setPostImportGeneration] = useState<'auto' | 'manual'>('auto');
+  const [modal, contextHolder] = Modal.useModal();
 
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<BookImportTask | null>(null);
@@ -212,6 +258,8 @@ export default function BookImport() {
         setIsApplyComplete(cache.isApplyComplete);
         setExtractMode(cache.extractMode ?? 'tail');
         setTailChapterCount(cache.tailChapterCount ?? 10);
+        setSetupMode(cache.setupMode ?? 'auto');
+        setPostImportGeneration(cache.postImportGeneration ?? 'auto');
         setApplyMessage(
           cache.applyMessage || (cache.applyProgress > 0 && !cache.isApplyComplete
             ? '已恢复页面缓存，请重新点击“确认导入”继续。'
@@ -258,6 +306,8 @@ export default function BookImport() {
       isApplyComplete,
       extractMode,
       tailChapterCount,
+      setupMode,
+      postImportGeneration,
       cachedAt: Date.now(),
     });
   }, [
@@ -271,6 +321,8 @@ export default function BookImport() {
     isApplyComplete,
     extractMode,
     tailChapterCount,
+    setupMode,
+    postImportGeneration,
   ]);
 
   useEffect(() => {
@@ -350,6 +402,7 @@ export default function BookImport() {
         file,
         extract_mode: effectiveExtractMode,
         tail_chapter_count: normalizedTailChapterCount,
+        setup_mode: setupMode,
       });
 
       setTaskId(response.task_id);
@@ -403,6 +456,7 @@ export default function BookImport() {
       chapters: preview.chapters,
       outlines: preview.outlines,
       import_mode: 'append',
+      post_import_generation: postImportGeneration,
     };
 
     try {
@@ -437,6 +491,9 @@ export default function BookImport() {
             importedProjectId.current = result.project_id;
             const generatedCareers = result.statistics?.generated_careers ?? 0;
             const generatedEntities = result.statistics?.generated_entities ?? 0;
+            const successText = postImportGeneration === 'manual'
+              ? '导入成功：已跳过AI生成，可手动完善设定'
+              : `导入成功：已生成职业${generatedCareers}个，角色/组织${generatedEntities}个`;
 
             // 检查最终是否有失败步骤
             setIsApplyComplete(true);
@@ -446,7 +503,7 @@ export default function BookImport() {
             setTimeout(() => {
               setFailedSteps(prev => {
                 if (prev.length === 0) {
-                  message.success(`导入成功：已生成职业${generatedCareers}个，角色/组织${generatedEntities}个`);
+                  message.success(successText);
                   clearBookImportCache();
                   setTimeout(() => {
                     navigate(`/project/${result.project_id}/chapters`);
@@ -574,6 +631,8 @@ export default function BookImport() {
     setRetryMessage('');
     setExtractMode('tail');
     setTailChapterCount(10);
+    setSetupMode('auto');
+    setPostImportGeneration('auto');
 
     message.success('已重新开始，请重新上传 TXT 并解析');
   }, []);
@@ -587,6 +646,131 @@ export default function BookImport() {
     });
   };
 
+  const updateProjectSuggestion = (patch: Partial<BookImportProjectSuggestion>) => {
+    setPreview(prev => prev ? ({
+      ...prev,
+      project_suggestion: { ...prev.project_suggestion, ...patch },
+    }) : prev);
+  };
+
+  const runProjectSuggestionAI = async (field: ImportSuggestionField, label: string) => {
+    if (!preview) return;
+
+    const suggestion = preview.project_suggestion;
+    const currentValue = String(suggestion[field] || '').trim();
+    const contextText = buildImportSuggestionContext(suggestion, label);
+    const sourceText = currentValue || contextText;
+    let instruction = '';
+
+    modal.confirm({
+      title: `${label} AI处理要求`,
+      icon: <HighlightOutlined />,
+      width: 640,
+      centered: true,
+      okText: currentValue ? '开始润色' : '开始补全',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            {currentValue
+              ? '输入希望 AI 如何润色该字段；留空则只做自然表达优化。'
+              : '当前字段为空，AI会参考已填写的拆书项目信息补全。'}
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：保持原设定但更清晰；强化时代感；压缩成一句话；不要新增未出现的设定..."
+            autoFocus
+            onChange={(event) => {
+              instruction = event.target.value;
+            }}
+          />
+          <div style={{
+            marginTop: 12,
+            maxHeight: 120,
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.6,
+            padding: '8px 10px',
+            border: `1px solid ${token.colorBorderSecondary}`,
+            borderRadius: token.borderRadius,
+            background: token.colorFillQuaternary,
+            color: token.colorTextSecondary,
+          }}>
+            {sourceText}
+          </div>
+        </div>
+      ),
+      onOk: async () => {
+        const closeLoading = message.loading(`正在处理${label}...`, 0);
+        try {
+          const defaultInstruction = currentValue
+            ? `请润色「${label}」。保留原意和原文设定，不新增无依据内容，不输出解释，只输出处理后的文本。`
+            : `请根据拆书项目信息补全「${label}」。不要输出解释、标题或前后缀，只输出可直接填入字段的文本。`;
+          const result = await polishApi.polishText({
+            original_text: sourceText,
+            temperature: currentValue ? 0.65 : 0.8,
+            instruction: instruction.trim() || defaultInstruction,
+          });
+          const aiText = (result.polished_text || '').trim();
+          if (!aiText) {
+            message.warning('AI结果为空，请稍后重试');
+            return;
+          }
+
+          modal.confirm({
+            title: `${label} AI结果`,
+            icon: <HighlightOutlined />,
+            width: 720,
+            centered: true,
+            okText: '应用结果',
+            cancelText: currentValue ? '保留原文' : '暂不应用',
+            content: (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+                  AI结果需要确认后才会写入拆书预览。
+                </div>
+                <div style={{
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: 1.6,
+                  padding: '8px 10px',
+                  border: `1px solid ${token.colorPrimaryBorder}`,
+                  borderRadius: token.borderRadius,
+                  background: token.colorBgContainer,
+                }}>
+                  {aiText}
+                </div>
+              </div>
+            ),
+            onOk: () => {
+              updateProjectSuggestion(projectSuggestionPatch(field, aiText));
+              message.success(`${label}已应用AI结果`);
+            },
+          });
+        } catch (error) {
+          console.error(`${label} AI处理失败:`, error);
+          message.error(`${label} AI处理失败`);
+        } finally {
+          closeLoading();
+        }
+      },
+    });
+  };
+
+  const renderSuggestionLabel = (field: ImportSuggestionField, label: string) => (
+    <Space size={6}>
+      <Text>{label}</Text>
+      <Button
+        type="link"
+        size="small"
+        icon={<HighlightOutlined />}
+        style={{ paddingInline: 0 }}
+        onClick={() => runProjectSuggestionAI(field, label)}
+      >
+        AI辅助
+      </Button>
+    </Space>
+  );
+
   return (
     <div
       style={{
@@ -596,6 +780,7 @@ export default function BookImport() {
         padding: isMobile ? '20px 16px 70px' : '24px 24px 70px',
       }}
     >
+      {contextHolder}
       <div style={{ maxWidth: 1400, margin: '0 auto', width: '100%' }}>
         <Card
           variant="borderless"
@@ -757,6 +942,60 @@ export default function BookImport() {
             </Space>
           </Card>
 
+          <Card size="small" title="设定填写方式">
+            <Radio.Group
+              value={setupMode}
+              disabled={rangeLocked}
+              onChange={(event) => {
+                const nextMode = event.target.value as BookImportSetupMode;
+                setSetupMode(nextMode);
+                setPostImportGeneration(nextMode === 'manual' ? 'manual' : 'auto');
+              }}
+              style={{ width: '100%' }}
+            >
+              <Row gutter={[12, 12]}>
+                <Col xs={24} md={12}>
+                  <Card
+                    hoverable={!rangeLocked}
+                    size="small"
+                    style={{ height: '100%', borderWidth: 2 }}
+                    onClick={() => {
+                      if (rangeLocked) return;
+                      setSetupMode('auto');
+                      setPostImportGeneration('auto');
+                    }}
+                  >
+                    <Radio value="auto">
+                      <Space direction="vertical" size={4}>
+                        <Text strong>AI反向生成预览设定</Text>
+                        <Text type="secondary">解析章节后，自动推断项目信息和章节大纲，可在预览页修改。</Text>
+                      </Space>
+                    </Radio>
+                  </Card>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Card
+                    hoverable={!rangeLocked}
+                    size="small"
+                    style={{ height: '100%', borderWidth: 2 }}
+                    onClick={() => {
+                      if (rangeLocked) return;
+                      setSetupMode('manual');
+                      setPostImportGeneration('manual');
+                    }}
+                  >
+                    <Radio value="manual">
+                      <Space direction="vertical" size={4}>
+                        <Text strong>手动填写预览设定</Text>
+                        <Text type="secondary">只拆章节并生成可编辑预览，不强制等待AI生成项目信息和后续设定。</Text>
+                      </Space>
+                    </Radio>
+                  </Card>
+                </Col>
+              </Row>
+            </Radio.Group>
+          </Card>
+
           <Alert
             type="info"
             showIcon
@@ -881,59 +1120,80 @@ export default function BookImport() {
                 />
               )}
 
+              <Card size="small" title="导入后设定处理">
+                <Radio.Group
+                  value={postImportGeneration}
+                  onChange={(event) => setPostImportGeneration(event.target.value)}
+                  style={{ width: '100%' }}
+                >
+                  <Row gutter={[12, 12]}>
+                    <Col xs={24} md={12}>
+                      <Card
+                        hoverable
+                        size="small"
+                        style={{ height: '100%', borderWidth: 2 }}
+                        onClick={() => setPostImportGeneration('auto')}
+                      >
+                        <Radio value="auto">
+                          <Space direction="vertical" size={4}>
+                            <Text strong>AI自动补全设定</Text>
+                            <Text type="secondary">导入章节和大纲后，继续生成世界观、职业体系、角色与组织。</Text>
+                          </Space>
+                        </Radio>
+                      </Card>
+                    </Col>
+                    <Col xs={24} md={12}>
+                      <Card
+                        hoverable
+                        size="small"
+                        style={{ height: '100%', borderWidth: 2 }}
+                        onClick={() => setPostImportGeneration('manual')}
+                      >
+                        <Radio value="manual">
+                          <Space direction="vertical" size={4}>
+                            <Text strong>手动填写设定</Text>
+                            <Text type="secondary">只导入项目、大纲和章节，跳过强制AI生成，后续逐项手动或用AI辅助补全。</Text>
+                          </Space>
+                        </Radio>
+                      </Card>
+                    </Col>
+                  </Row>
+                </Radio.Group>
+              </Card>
+
               <Card
                 size="small"
                 title="项目信息"
               >
                 <Row gutter={12}>
                   <Col xs={24} md={12}>
-                    <Text>标题</Text>
+                    {renderSuggestionLabel('title', '标题')}
                     <Input
                       value={preview.project_suggestion.title}
-                      onChange={(e) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: { ...prev.project_suggestion, title: e.target.value },
-                        }) : prev)
-                      }
+                      onChange={(e) => updateProjectSuggestion({ title: e.target.value })}
                     />
                   </Col>
                   <Col xs={24} md={12}>
-                    <Text>类型</Text>
+                    {renderSuggestionLabel('genre', '类型')}
                     <Input
                       value={preview.project_suggestion.genre}
-                      onChange={(e) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: { ...prev.project_suggestion, genre: e.target.value },
-                        }) : prev)
-                      }
+                      onChange={(e) => updateProjectSuggestion({ genre: e.target.value })}
                     />
                   </Col>
                   <Col xs={24}>
-                    <Text>主题</Text>
+                    {renderSuggestionLabel('theme', '主题')}
                     <TextArea
                       rows={3}
                       value={preview.project_suggestion.theme}
-                      onChange={(e) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: { ...prev.project_suggestion, theme: e.target.value },
-                        }) : prev)
-                      }
+                      onChange={(e) => updateProjectSuggestion({ theme: e.target.value })}
                     />
                   </Col>
                   <Col xs={24}>
-                    <Text>简介</Text>
+                    {renderSuggestionLabel('description', '简介')}
                     <TextArea
                       rows={3}
                       value={preview.project_suggestion.description}
-                      onChange={(e) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: { ...prev.project_suggestion, description: e.target.value },
-                        }) : prev)
-                      }
+                      onChange={(e) => updateProjectSuggestion({ description: e.target.value })}
                     />
                   </Col>
                   <Col xs={24} md={12}>
@@ -941,12 +1201,7 @@ export default function BookImport() {
                     <Select
                       style={{ width: '100%' }}
                       value={preview.project_suggestion.narrative_perspective}
-                      onChange={(v) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: { ...prev.project_suggestion, narrative_perspective: v },
-                        }) : prev)
-                      }
+                      onChange={(v) => updateProjectSuggestion({ narrative_perspective: v })}
                       options={[
                         { value: '第一人称', label: '第一人称' },
                         { value: '第三人称', label: '第三人称' },
@@ -961,17 +1216,49 @@ export default function BookImport() {
                       min={1000}
                       step={1000}
                       value={preview.project_suggestion.target_words}
-                      onChange={(v) =>
-                        setPreview(prev => prev ? ({
-                          ...prev,
-                          project_suggestion: {
-                            ...prev.project_suggestion,
-                            target_words: Number(v || 100000),
-                          },
-                        }) : prev)
-                      }
+                      onChange={(v) => updateProjectSuggestion({ target_words: Number(v || 100000) })}
                     />
                   </Col>
+                  {postImportGeneration === 'manual' && (
+                    <>
+                      <Col xs={24}>
+                        {renderSuggestionLabel('world_time_period', '时间背景')}
+                        <TextArea
+                          rows={2}
+                          value={preview.project_suggestion.world_time_period}
+                          placeholder="可选：导入时直接写入世界设定"
+                          onChange={(e) => updateProjectSuggestion({ world_time_period: e.target.value })}
+                        />
+                      </Col>
+                      <Col xs={24}>
+                        {renderSuggestionLabel('world_location', '地理位置')}
+                        <TextArea
+                          rows={2}
+                          value={preview.project_suggestion.world_location}
+                          placeholder="可选：故事主要发生地点、势力范围、空间结构..."
+                          onChange={(e) => updateProjectSuggestion({ world_location: e.target.value })}
+                        />
+                      </Col>
+                      <Col xs={24}>
+                        {renderSuggestionLabel('world_atmosphere', '氛围基调')}
+                        <TextArea
+                          rows={3}
+                          value={preview.project_suggestion.world_atmosphere}
+                          placeholder="可选：整体气质、叙事风味、冲突强度..."
+                          onChange={(e) => updateProjectSuggestion({ world_atmosphere: e.target.value })}
+                        />
+                      </Col>
+                      <Col xs={24}>
+                        {renderSuggestionLabel('world_rules', '世界规则')}
+                        <TextArea
+                          rows={4}
+                          value={preview.project_suggestion.world_rules}
+                          placeholder="可选：力量体系、社会规则、禁忌、核心矛盾..."
+                          onChange={(e) => updateProjectSuggestion({ world_rules: e.target.value })}
+                        />
+                      </Col>
+                    </>
+                  )}
                 </Row>
               </Card>
 
@@ -1141,11 +1428,23 @@ export default function BookImport() {
               marginTop: 32
             }}>
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                导入过程中，AI会自动帮您补全：<br />
-                • 世界观设定（时间、地点、氛围、规则）<br />
-                • 职业体系（主职业与副职业）<br />
-                • 核心角色与相关组织<br />
-                {isApplyComplete ? '所有步骤已完成，即将自动跳转。' : '请耐心等待，完成后将自动跳转。'}
+                {postImportGeneration === 'manual' ? (
+                  <>
+                    当前为手动设定模式：<br />
+                    • 仅导入项目基础信息、大纲和章节<br />
+                    • 跳过世界观、职业体系、角色与组织的强制AI生成<br />
+                    • 进入项目后可在各页面手动填写或使用AI辅助工具补全<br />
+                    {isApplyComplete ? '导入已完成，即将自动跳转。' : '请耐心等待，完成后将自动跳转。'}
+                  </>
+                ) : (
+                  <>
+                    导入过程中，AI会自动帮您补全：<br />
+                    • 世界观设定（时间、地点、氛围、规则）<br />
+                    • 职业体系（主职业与副职业）<br />
+                    • 核心角色与相关组织<br />
+                    {isApplyComplete ? '所有步骤已完成，即将自动跳转。' : '请耐心等待，完成后将自动跳转。'}
+                  </>
+                )}
               </Typography.Text>
             </div>
           )}

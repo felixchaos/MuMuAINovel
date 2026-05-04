@@ -195,6 +195,9 @@ export interface ProjectCreate {
   world_location?: string;
   world_atmosphere?: string;
   world_rules?: string;
+  chapter_count?: number;
+  narrative_perspective?: string;
+  character_count?: number;
 }
 
 export interface ProjectUpdate {
@@ -690,15 +693,20 @@ export interface PaginationResponse<T> {
 
 // 向导表单数据类型
 export interface WizardBasicInfo {
+  creation_mode?: 'ai' | 'manual';
   title: string;
-  description: string;
-  theme: string;
-  genre: string | string[];
-  chapter_count: number;
-  narrative_perspective: string;
+  description?: string;
+  theme?: string;
+  genre?: string | string[];
+  chapter_count?: number;
+  narrative_perspective?: string;
   character_count?: number;
   target_words?: number;
   outline_mode?: 'one-to-one' | 'one-to-many';  // 大纲章节模式
+  world_time_period?: string;
+  world_location?: string;
+  world_atmosphere?: string;
+  world_rules?: string;
 }
 
 // API 错误响应类型
@@ -1109,6 +1117,7 @@ export interface ForeshadowContextResponse {
 export type BookImportTaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type BookImportWarningLevel = 'info' | 'warning' | 'error';
 export type BookImportExtractMode = 'tail' | 'full';
+export type BookImportSetupMode = 'auto' | 'manual';
 
 export interface BookImportWarning {
   code: string;
@@ -1123,6 +1132,10 @@ export interface BookImportProjectSuggestion {
   genre?: string;
   narrative_perspective: string;
   target_words: number;
+  world_time_period?: string;
+  world_location?: string;
+  world_atmosphere?: string;
+  world_rules?: string;
 }
 
 export interface BookImportChapter {
@@ -1163,12 +1176,14 @@ export interface BookImportApplyPayload {
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
   import_mode?: 'append' | 'overwrite';
+  post_import_generation?: 'auto' | 'manual';
 }
 
 export interface BookImportCreateTaskPayload {
   file: File;
   extract_mode?: BookImportExtractMode;
   tail_chapter_count?: number;
+  setup_mode?: BookImportSetupMode;
 }
 
 export interface BookImportResult {

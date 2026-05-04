@@ -36,6 +36,7 @@ async def create_book_import_task(
     import_mode: str = Form(default="append", description="导入模式：append/overwrite"),
     extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
     tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
+    setup_mode: str = Form(default="auto", description="预览设定生成方式：auto=AI反向生成，manual=手动填写"),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -53,6 +54,8 @@ async def create_book_import_task(
         raise HTTPException(status_code=400, detail="tail_chapter_count 不能小于 5")
     if tail_chapter_count % 5 != 0:
         raise HTTPException(status_code=400, detail="tail_chapter_count 必须是 5 的倍数")
+    if setup_mode not in {"auto", "manual"}:
+        raise HTTPException(status_code=400, detail="setup_mode 仅支持 auto 或 manual")
 
     if tail_chapter_count > 50:
         extract_mode = "full"
@@ -65,6 +68,7 @@ async def create_book_import_task(
     create_payload = BookImportTaskCreateRequest(
         extract_mode=extract_mode,
         tail_chapter_count=tail_chapter_count,
+        setup_mode=setup_mode,
     )
 
     content = await file.read()
@@ -80,6 +84,7 @@ async def create_book_import_task(
         import_mode=import_mode,
         extract_mode=create_payload.extract_mode,
         tail_chapter_count=create_payload.tail_chapter_count,
+        setup_mode=create_payload.setup_mode,
     )
     return task
 

@@ -19,7 +19,18 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     """创建项目的请求模型"""
-    pass
+    wizard_status: Optional[Literal["incomplete", "completed"]] = Field(
+        default="incomplete",
+        description="向导完成状态；手动建书可直接标记为completed"
+    )
+    wizard_step: Optional[int] = Field(default=0, ge=0, le=4, description="向导当前步骤")
+    world_time_period: Optional[str] = Field(None, description="时间背景")
+    world_location: Optional[str] = Field(None, description="地理位置")
+    world_atmosphere: Optional[str] = Field(None, description="氛围基调")
+    world_rules: Optional[str] = Field(None, description="世界规则")
+    chapter_count: Optional[int] = Field(None, ge=0, description="计划章节数量")
+    narrative_perspective: Optional[str] = Field(None, description="叙事视角")
+    character_count: Optional[int] = Field(None, ge=0, description="角色数量")
 
 
 class ProjectUpdate(BaseModel):

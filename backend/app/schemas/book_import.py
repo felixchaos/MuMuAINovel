@@ -10,6 +10,7 @@ ImportMode = Literal["append", "overwrite"]
 ExtractLevel = Literal["basic", "standard", "deep"]
 WarningLevel = Literal["info", "warning", "error"]
 BookImportExtractMode = Literal["tail", "full"]
+BookImportSetupMode = Literal["auto", "manual"]
 
 
 class BookImportWarning(BaseModel):
@@ -27,6 +28,10 @@ class ProjectSuggestion(BaseModel):
     genre: Optional[str] = Field(None, description="类型")
     narrative_perspective: str = Field(default="第三人称", description="叙事视角")
     target_words: int = Field(default=100000, ge=1000, description="目标字数（默认10万字）")
+    world_time_period: Optional[str] = Field(None, description="时间背景")
+    world_location: Optional[str] = Field(None, description="地理位置")
+    world_atmosphere: Optional[str] = Field(None, description="氛围基调")
+    world_rules: Optional[str] = Field(None, description="世界规则")
 
 
 class BookImportChapter(BaseModel):
@@ -50,6 +55,10 @@ class BookImportTaskCreateRequest(BaseModel):
     """创建拆书任务请求"""
     extract_mode: BookImportExtractMode = Field(default="tail", description="提取范围：tail=截取末章，full=整本")
     tail_chapter_count: int = Field(default=10, ge=5, le=9999, description="当 extract_mode=tail 时，截取末尾章节数；需为5的倍数，超过50将按整本处理")
+    setup_mode: BookImportSetupMode = Field(
+        default="auto",
+        description="预览设定生成方式：auto=AI反向生成项目信息/大纲，manual=跳过AI反向生成由用户手动填写"
+    )
 
 
 class BookImportTaskCreateResponse(BaseModel):
@@ -84,6 +93,10 @@ class BookImportApplyRequest(BaseModel):
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline] = Field(default_factory=list)
     import_mode: ImportMode = Field(default="append", description="导入模式")
+    post_import_generation: Literal["auto", "manual"] = Field(
+        default="auto",
+        description="导入后设定处理：auto=继续AI生成世界观/职业/角色，manual=跳过AI生成由用户手动填写"
+    )
 
 
 class BookImportApplyResponse(BaseModel):

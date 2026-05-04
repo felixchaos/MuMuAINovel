@@ -60,7 +60,7 @@ async def create_project(
         logger.info(f"创建新项目: {project.title}, user_id={user_id}")
         
         # 创建项目时自动设置user_id
-        project_data = project.model_dump()
+        project_data = project.model_dump(exclude_none=True)
         project_data['user_id'] = user_id
         db_project = Project(**project_data)
         

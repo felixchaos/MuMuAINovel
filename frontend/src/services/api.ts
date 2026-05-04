@@ -508,6 +508,7 @@ export const bookImportApi = {
     const tailChapterCount = params.tail_chapter_count ?? 10;
     formData.append('extract_mode', params.extract_mode ?? 'tail');
     formData.append('tail_chapter_count', String(tailChapterCount));
+    formData.append('setup_mode', params.setup_mode ?? 'auto');
 
     return api.post<unknown, { task_id: string; status: BookImportTask['status'] }>(
       '/book-import/tasks',

@@ -37,6 +37,7 @@ from app.schemas.book_import import (
     BookImportExtractMode,
     BookImportOutline,
     BookImportPreviewResponse,
+    BookImportSetupMode,
     BookImportTaskCreateResponse,
     BookImportTaskStatusResponse,
     BookImportWarning,
@@ -68,6 +69,7 @@ class _BookImportTask:
     import_mode: str
     extract_mode: BookImportExtractMode = "tail"
     tail_chapter_count: int = 10
+    setup_mode: BookImportSetupMode = "auto"
     status: str = "pending"
     progress: int = 0
     message: Optional[str] = "任务已创建"
@@ -100,6 +102,7 @@ class BookImportService:
         import_mode: str,
         extract_mode: BookImportExtractMode = "tail",
         tail_chapter_count: int = 10,
+        setup_mode: BookImportSetupMode = "auto",
     ) -> BookImportTaskCreateResponse:
         normalized_tail_count = max(5, int(tail_chapter_count))
         normalized_extract_mode = extract_mode
@@ -118,6 +121,7 @@ class BookImportService:
             import_mode=import_mode,
             extract_mode=normalized_extract_mode,
             tail_chapter_count=normalized_tail_count,
+            setup_mode=setup_mode,
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
@@ -211,17 +215,25 @@ class BookImportService:
             else:
                 project.current_words = (project.current_words or 0) + words_delta
 
-            # 基于基础信息执行"向导前3步"（先生成世界观 -> 生成职业 -> 生成角色/组织），不生成大纲
-            generated_world, generated_careers, generated_entities = await self._run_post_import_wizard_generation(
-                db=db,
-                user_id=user_id,
-                project=project,
-                character_count=max(project.character_count or 0, 5),
-                chapters=chapters_to_import,
-            )
-            statistics["generated_world_building"] = generated_world
-            statistics["generated_careers"] = generated_careers
-            statistics["generated_entities"] = generated_entities
+            if payload.post_import_generation == "manual":
+                project.wizard_step = 3
+                project.wizard_status = "completed"
+                project.status = "writing"
+                statistics["generated_world_building"] = 0
+                statistics["generated_careers"] = 0
+                statistics["generated_entities"] = 0
+            else:
+                # 基于基础信息执行"向导前3步"（先生成世界观 -> 生成职业 -> 生成角色/组织），不生成大纲
+                generated_world, generated_careers, generated_entities = await self._run_post_import_wizard_generation(
+                    db=db,
+                    user_id=user_id,
+                    project=project,
+                    character_count=max(project.character_count or 0, 5),
+                    chapters=chapters_to_import,
+                )
+                statistics["generated_world_building"] = generated_world
+                statistics["generated_careers"] = generated_careers
+                statistics["generated_entities"] = generated_entities
 
             await db.commit()
 
@@ -324,6 +336,29 @@ class BookImportService:
             else:
                 project.current_words = (project.current_words or 0) + words_delta
             await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）", 20)
+
+            if payload.post_import_generation == "manual":
+                statistics["generated_world_building"] = 0
+                statistics["generated_careers"] = 0
+                statistics["generated_entities"] = 0
+                project.wizard_step = 3
+                project.wizard_status = "completed"
+                project.status = "writing"
+
+                await _notify("已选择手动设定模式，跳过AI生成世界观/职业/角色", 92, "info")
+                await _notify("正在保存到数据库...", 95)
+                await db.commit()
+                await _notify("数据保存完成", 98)
+
+                task.imported_project_id = project.id
+                task.failed_steps = []
+
+                return BookImportApplyResponse(
+                    success=True,
+                    project_id=project.id,
+                    statistics=statistics,
+                    warnings=warnings,
+                )
 
             # -- 步骤4: 生成世界观 (20-40%)
             failed_steps: list[_StepFailure] = []
@@ -658,6 +693,10 @@ class BookImportService:
             suggestion=suggestion,
             chapters=chapters,
         )
+        world_time_period = (suggestion.world_time_period or world_time_period or "").strip()
+        world_location = (suggestion.world_location or world_location or "").strip()
+        world_atmosphere = (suggestion.world_atmosphere or world_atmosphere or "").strip()
+        world_rules = (suggestion.world_rules or world_rules or "").strip()
 
         if task.create_new_project:
             project = Project(
@@ -1102,6 +1141,22 @@ class BookImportService:
                 )
             )
 
+        if task.setup_mode == "manual":
+            self._set_task_state(
+                task,
+                status="running",
+                progress=95,
+                message="已选择手动设定模式，跳过AI反向生成项目信息与大纲...",
+            )
+            outlines = self._build_fallback_import_outlines(chapters)
+            return BookImportPreviewResponse(
+                task_id=task_id,
+                project_suggestion=suggestion,
+                chapters=chapters,
+                outlines=outlines,
+                warnings=warnings,
+            )
+
         # AI 反向生成项目信息：进度 20% -> 95%
         self._set_task_state(
             task,
@@ -1130,6 +1185,17 @@ class BookImportService:
             outlines=outlines,
             warnings=warnings,
         )
+
+    def _build_fallback_import_outlines(self, chapters: list[BookImportChapter]) -> list[BookImportOutline]:
+        return [
+            BookImportOutline(
+                title=chapter.title,
+                content=self._build_fallback_outline_summary(chapter),
+                order_index=chapter.chapter_number,
+                structure=self._build_fallback_outline_structure(chapter),
+            )
+            for chapter in chapters
+        ]
 
     async def _generate_reverse_project_suggestion(
         self,
@@ -1262,15 +1328,7 @@ class BookImportService:
         if not chapters:
             return []
 
-        fallback_outlines = [
-            BookImportOutline(
-                title=chapter.title,
-                content=self._build_fallback_outline_summary(chapter),
-                order_index=chapter.chapter_number,
-                structure=self._build_fallback_outline_structure(chapter),
-            )
-            for chapter in chapters
-        ]
+        fallback_outlines = self._build_fallback_import_outlines(chapters)
 
         try:
             if task:
