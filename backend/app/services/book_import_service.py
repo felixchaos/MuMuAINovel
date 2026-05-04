@@ -48,7 +48,7 @@ from app.schemas.book_import import (
 )
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
 from app.services.background_task_service import background_task_service
-from app.services.name_authority_service import build_name_authority, is_generic_reference
+from app.services.name_authority_service import build_name_authority, is_generic_reference, normalize_name
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 
@@ -2621,6 +2621,16 @@ class BookImportService:
             for item in normalized_items
             if bool(item.get("is_organization", False))
         }
+        organization_name_map = {
+            normalize_name(name): name
+            for name in organization_names
+            if name
+        }
+        kept_name_map = {
+            normalize_name(name): name
+            for name in kept_names
+            if name
+        }
 
         for item in normalized_items:
             relationships = item.get("relationships_array")
@@ -2643,18 +2653,27 @@ class BookImportService:
 
             memberships = item.get("organization_memberships")
             if isinstance(memberships, list):
-                item["organization_memberships"] = [
-                    membership
-                    for membership in memberships
-                    if isinstance(membership, dict)
-                    and str(membership.get("organization_name") or "").strip() in organization_names
-                ]
+                normalized_memberships: list[dict[str, Any]] = []
+                for membership in memberships:
+                    if not isinstance(membership, dict):
+                        continue
+                    org_name = organization_name_map.get(
+                        normalize_name(membership.get("organization_name"))
+                    )
+                    if not org_name:
+                        continue
+                    normalized_membership = dict(membership)
+                    normalized_membership["organization_name"] = org_name
+                    normalized_memberships.append(normalized_membership)
+                item["organization_memberships"] = normalized_memberships
 
             org_members = item.get("organization_members")
             if isinstance(org_members, list):
                 item["organization_members"] = [
-                    name for name in org_members
-                    if str(name or "").strip() in kept_names
+                    canonical_name
+                    for name in org_members
+                    for canonical_name in [kept_name_map.get(normalize_name(name))]
+                    if canonical_name
                 ]
 
         if dropped_names:

@@ -22,6 +22,7 @@ from app.schemas.character import (
 )
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.name_authority_service import build_name_authority
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.import_export_service import ImportExportService
 from app.services.project_story_context import build_project_story_context
@@ -1287,6 +1288,26 @@ async def generate_character_stream(
                     db.add(organization)
                     await db.flush()
             
+            project_characters_result = await db.execute(
+                select(Character).where(Character.project_id == request.project_id)
+            )
+            project_characters = project_characters_result.scalars().all()
+            name_authority = build_name_authority(project_characters)
+            character_by_name = {
+                canonical_name: item
+                for item in project_characters
+                if not item.is_organization
+                for canonical_name in [name_authority.resolve_name(item.name, keep_unknown=False)]
+                if canonical_name
+            }
+            organization_char_by_name = {
+                canonical_name: item
+                for item in project_characters
+                if item.is_organization
+                for canonical_name in [name_authority.resolve_name(item.name, keep_unknown=False)]
+                if canonical_name
+            }
+
             # 处理结构化关系数据（仅针对非组织角色）
             if not is_organization:
                 relationships_data = character_data.get("relationships", [])
@@ -1300,16 +1321,18 @@ async def generate_character_stream(
                             if not target_name:
                                 logger.debug(f"  ⚠️  关系缺少target_character_name，跳过")
                                 continue
-                            
-                            target_result = await db.execute(
-                                select(Character).where(
-                                    Character.project_id == request.project_id,
-                                    Character.name == target_name
-                                )
-                            )
-                            target_char = target_result.scalar_one_or_none()
+
+                            canonical_target_name = name_authority.resolve_name(target_name, keep_unknown=False)
+                            if not canonical_target_name:
+                                logger.debug(f"  ⚠️  关系目标不是稳定角色名，跳过：{target_name}")
+                                continue
+
+                            target_char = character_by_name.get(canonical_target_name)
                             
                             if target_char:
+                                if target_char.id == character.id:
+                                    logger.debug(f"  ℹ️  跳过自指关系：{character.name} -> {canonical_target_name}")
+                                    continue
                                 # 检查是否已存在相同关系
                                 existing_rel = await db.execute(
                                     select(CharacterRelationship).where(
@@ -1319,7 +1342,7 @@ async def generate_character_stream(
                                     )
                                 )
                                 if existing_rel.scalar_one_or_none():
-                                    logger.debug(f"  ℹ️  关系已存在：{character.name} -> {target_name}")
+                                    logger.debug(f"  ℹ️  关系已存在：{character.name} -> {canonical_target_name}")
                                     continue
                                 
                                 relationship = CharacterRelationship(
@@ -1345,7 +1368,7 @@ async def generate_character_stream(
                                 
                                 db.add(relationship)
                                 created_rels += 1
-                                logger.info(f"  ✅ 创建关系：{character.name} -> {target_name} ({rel.get('relationship_type')})")
+                                logger.info(f"  ✅ 创建关系：{character.name} -> {canonical_target_name} ({rel.get('relationship_type')})")
                             else:
                                 logger.warning(f"  ⚠️  目标角色不存在：{target_name}")
                                 
@@ -1368,15 +1391,13 @@ async def generate_character_stream(
                             if not org_name:
                                 logger.debug(f"  ⚠️  组织成员关系缺少organization_name，跳过")
                                 continue
-                            
-                            org_char_result = await db.execute(
-                                select(Character).where(
-                                    Character.project_id == request.project_id,
-                                    Character.name == org_name,
-                                    Character.is_organization == True
-                                )
-                            )
-                            org_char = org_char_result.scalar_one_or_none()
+
+                            canonical_org_name = name_authority.resolve_name(org_name, keep_unknown=False)
+                            if not canonical_org_name:
+                                logger.debug(f"  ⚠️  组织引用不是稳定组织名，跳过：{org_name}")
+                                continue
+
+                            org_char = organization_char_by_name.get(canonical_org_name)
                             
                             if org_char:
                                 # 获取或创建Organization记录
@@ -1394,7 +1415,7 @@ async def generate_character_stream(
                                     )
                                     db.add(org)
                                     await db.flush()
-                                    logger.info(f"  ℹ️  自动创建缺失的组织详情：{org_name}")
+                                    logger.info(f"  ℹ️  自动创建缺失的组织详情：{canonical_org_name}")
                                 
                                 # 检查是否已存在成员关系
                                 existing_member = await db.execute(
@@ -1404,7 +1425,7 @@ async def generate_character_stream(
                                     )
                                 )
                                 if existing_member.scalar_one_or_none():
-                                    logger.debug(f"  ℹ️  成员关系已存在：{character.name} -> {org_name}")
+                                    logger.debug(f"  ℹ️  成员关系已存在：{character.name} -> {canonical_org_name}")
                                     continue
                                 
                                 # 创建成员关系
@@ -1424,7 +1445,7 @@ async def generate_character_stream(
                                 org.member_count += 1
                                 
                                 created_members += 1
-                                logger.info(f"  ✅ 添加成员：{character.name} -> {org_name} ({membership.get('position')})")
+                                logger.info(f"  ✅ 添加成员：{character.name} -> {canonical_org_name} ({membership.get('position')})")
                             else:
                                 logger.warning(f"  ⚠️  组织不存在：{org_name}")
                                 

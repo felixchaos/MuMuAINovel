@@ -280,6 +280,13 @@ class AutoCharacterService:
             return []
         
         relationships = []
+        name_authority = build_name_authority(existing_characters, include_organizations=False)
+        character_by_name = {
+            canonical_name: character
+            for character in existing_characters
+            for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+            if canonical_name
+        }
         
         for rel_spec in relationship_specs:
             try:
@@ -287,14 +294,19 @@ class AutoCharacterService:
                 if not target_name:
                     continue
                 
+                canonical_target_name = name_authority.resolve_name(target_name, keep_unknown=False)
+                if not canonical_target_name:
+                    logger.warning(f"    ⚠️ 目标角色不是稳定名称: {target_name}")
+                    continue
+
                 # 查找目标角色
-                target_char = next(
-                    (c for c in existing_characters if c.name == target_name),
-                    None
-                )
+                target_char = character_by_name.get(canonical_target_name)
                 
                 if not target_char:
                     logger.warning(f"    ⚠️ 目标角色不存在: {target_name}")
+                    continue
+                if target_char.id == new_character.id:
+                    logger.debug(f"    ℹ️ 跳过自指关系: {new_character.name} -> {canonical_target_name}")
                     continue
                 
                 # 检查关系是否已存在
@@ -306,7 +318,7 @@ class AutoCharacterService:
                     )
                 )
                 if existing_rel.scalar_one_or_none():
-                    logger.debug(f"    ℹ️ 关系已存在: {new_character.name} -> {target_name}")
+                    logger.debug(f"    ℹ️ 关系已存在: {new_character.name} -> {canonical_target_name}")
                     continue
                 
                 # 创建关系
@@ -337,7 +349,7 @@ class AutoCharacterService:
                 relationships.append(relationship)
                 
                 logger.info(
-                    f"    ✅ 创建关系: {new_character.name} -> {target_name} "
+                    f"    ✅ 创建关系: {new_character.name} -> {canonical_target_name} "
                     f"({rel_spec.get('relationship_type', '未知')})"
                 )
                 

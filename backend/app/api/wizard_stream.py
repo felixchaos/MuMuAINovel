@@ -17,6 +17,7 @@ from app.models.writing_style import WritingStyle
 from app.models.project_default_style import ProjectDefaultStyle
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.name_authority_service import build_name_authority, is_generic_reference, normalize_name
 from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
 from app.logger import get_logger
@@ -821,15 +822,15 @@ async def characters_generator(
         yield await tracker.parsing("验证角色数据...")
         
         # 预处理：构建本批次所有实体的名称集合
-        valid_entity_names = set()
-        valid_organization_names = set()
+        valid_entity_name_map = {}
+        valid_organization_name_map = {}
         
         for char_data in all_characters:
             entity_name = char_data.get("name", "")
-            if entity_name:
-                valid_entity_names.add(entity_name)
+            if entity_name and not is_generic_reference(entity_name):
+                valid_entity_name_map[normalize_name(entity_name)] = entity_name
                 if char_data.get("is_organization", False):
-                    valid_organization_names.add(entity_name)
+                    valid_organization_name_map[normalize_name(entity_name)] = entity_name
         
         # 清理幻觉引用
         cleaned_count = 0
@@ -840,8 +841,11 @@ async def characters_generator(
                 valid_rels = []
                 for rel in original_rels:
                     target_name = rel.get("target_character_name", "")
-                    if target_name in valid_entity_names:
-                        valid_rels.append(rel)
+                    canonical_target = valid_entity_name_map.get(normalize_name(target_name))
+                    if canonical_target:
+                        normalized_rel = dict(rel)
+                        normalized_rel["target_character_name"] = canonical_target
+                        valid_rels.append(normalized_rel)
                     else:
                         cleaned_count += 1
                         logger.debug(f"  🧹 清理无效关系引用：{char_data.get('name')} -> {target_name}")
@@ -853,8 +857,11 @@ async def characters_generator(
                 valid_orgs = []
                 for org_mem in original_orgs:
                     org_name = org_mem.get("organization_name", "")
-                    if org_name in valid_organization_names:
-                        valid_orgs.append(org_mem)
+                    canonical_org = valid_organization_name_map.get(normalize_name(org_name))
+                    if canonical_org:
+                        normalized_membership = dict(org_mem)
+                        normalized_membership["organization_name"] = canonical_org
+                        valid_orgs.append(normalized_membership)
                     else:
                         cleaned_count += 1
                         logger.debug(f"  🧹 清理无效组织引用：{char_data.get('name')} -> {org_name}")
@@ -1005,6 +1012,13 @@ async def characters_generator(
             await db.refresh(character)
             character_name_to_obj[character.name] = character
             logger.info(f"向导创建角色：{character.name} (ID: {character.id}, 是否组织: {character.is_organization})")
+        name_authority = build_name_authority([character for character, _ in created_characters])
+        character_name_to_obj = {
+            canonical_name: character
+            for character, _ in created_characters
+            for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+            if canonical_name
+        }
         
         # 第三阶段：为is_organization=True的角色创建Organization记录
         yield await tracker.saving("创建组织记录...", 0.5)
@@ -1038,6 +1052,12 @@ async def characters_generator(
                 organization_name_to_obj[character.name] = org
         
         await db.flush()  # 确保Organization记录有ID
+        organization_name_to_obj = {
+            canonical_name: organization
+            for raw_name, organization in organization_name_to_obj.items()
+            for canonical_name in [name_authority.resolve_name(raw_name, keep_unknown=False)]
+            if canonical_name
+        }
         
         # 刷新角色以获取ID
         for character, _ in created_characters:
@@ -1065,10 +1085,18 @@ async def characters_generator(
                             logger.debug(f"  ⚠️  {character.name}的关系缺少target_character_name，跳过")
                             continue
                         
-                        # 使用名称映射快速查找
-                        target_char = character_name_to_obj.get(target_name)
+                        canonical_target_name = name_authority.resolve_name(target_name, keep_unknown=False)
+                        if not canonical_target_name:
+                            logger.debug(f"  ⚠️  {character.name}的关系目标不是稳定角色名，跳过：{target_name}")
+                            continue
+
+                        # 使用名称权威表解析后的名称映射快速查找
+                        target_char = character_name_to_obj.get(canonical_target_name)
                         
                         if target_char:
+                            if target_char.id == character.id:
+                                logger.debug(f"  ℹ️  跳过自指关系：{character.name} -> {canonical_target_name}")
+                                continue
                             # 避免创建重复关系
                             existing_rel = await db.execute(
                                 select(CharacterRelationship).where(
@@ -1078,7 +1106,7 @@ async def characters_generator(
                                 )
                             )
                             if existing_rel.scalar_one_or_none():
-                                logger.debug(f"  ℹ️  关系已存在：{character.name} -> {target_name}")
+                                logger.debug(f"  ℹ️  关系已存在：{character.name} -> {canonical_target_name}")
                                 continue
                             
                             relationship = CharacterRelationship(
@@ -1104,9 +1132,9 @@ async def characters_generator(
                             
                             db.add(relationship)
                             relationships_created += 1
-                            logger.info(f"  ✅ 向导创建关系：{character.name} -> {target_name} ({rel.get('relationship_type')})")
+                            logger.info(f"  ✅ 向导创建关系：{character.name} -> {canonical_target_name} ({rel.get('relationship_type')})")
                         else:
-                            logger.warning(f"  ⚠️  目标角色不存在：{character.name} -> {target_name}（可能是AI幻觉）")
+                            logger.warning(f"  ⚠️  目标角色不存在：{character.name} -> {target_name}（可能是AI幻觉或泛称）")
                     except Exception as e:
                         logger.warning(f"  ❌ 向导创建关系失败：{character.name} - {str(e)}")
                         continue
@@ -1130,8 +1158,13 @@ async def characters_generator(
                             logger.debug(f"  ⚠️  {character.name}的组织成员关系缺少organization_name，跳过")
                             continue
                         
-                        # 使用映射快速查找组织
-                        org = organization_name_to_obj.get(org_name)
+                        canonical_org_name = name_authority.resolve_name(org_name, keep_unknown=False)
+                        if not canonical_org_name:
+                            logger.debug(f"  ⚠️  {character.name}的组织引用不是稳定组织名，跳过：{org_name}")
+                            continue
+
+                        # 使用名称权威表解析后的映射快速查找组织
+                        org = organization_name_to_obj.get(canonical_org_name)
                         
                         if org:
                             # 检查是否已存在成员关系
@@ -1142,7 +1175,7 @@ async def characters_generator(
                                 )
                             )
                             if existing_member.scalar_one_or_none():
-                                logger.debug(f"  ℹ️  成员关系已存在：{character.name} -> {org_name}")
+                                logger.debug(f"  ℹ️  成员关系已存在：{character.name} -> {canonical_org_name}")
                                 continue
                             
                             # 创建成员关系
@@ -1162,7 +1195,7 @@ async def characters_generator(
                             org.member_count += 1
                             
                             members_created += 1
-                            logger.info(f"  ✅ 向导添加成员：{character.name} -> {org_name} ({membership.get('position')})")
+                            logger.info(f"  ✅ 向导添加成员：{character.name} -> {canonical_org_name} ({membership.get('position')})")
                         else:
                             # 这种情况理论上已经被预处理清理了，但保留日志以防万一
                             logger.debug(f"  ℹ️  组织引用已被清理：{character.name} -> {org_name}")
