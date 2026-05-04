@@ -18,6 +18,7 @@ from app.models.foreshadow import Foreshadow
 from app.models.memory import PlotAnalysis, StoryMemory
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
 from app.schemas.story_engine import StoryEngineFact, StoryEngineFactsResponse
+from app.services.name_authority_service import NameAuthority, build_name_authority
 
 
 def _compact_text(text: Optional[str], max_len: int = 240) -> str:
@@ -71,16 +72,8 @@ def _created_at(value: Any) -> Optional[str]:
     return value.isoformat() if value else None
 
 
-def _entity_names(values: Any, character_names: dict[str, str]) -> list[str]:
-    names: list[str] = []
-    for value in _as_list(values):
-        text = str(value).strip()
-        if not text:
-            continue
-        text = character_names.get(text, text)
-        if text not in names:
-            names.append(text)
-    return names
+def _entity_names(values: Any, name_authority: NameAuthority) -> list[str]:
+    return name_authority.resolve_names(_as_list(values), keep_unknown=True)
 
 
 class StoryFactAdapter:
@@ -110,7 +103,8 @@ class StoryFactAdapter:
                 .order_by(Character.created_at.asc())
             )
         ).scalars().all()
-        character_names = {character.id: character.name for character in characters}
+        name_authority = build_name_authority(characters)
+        character_names = name_authority.id_to_name
 
         analyses = (
             await db.execute(
@@ -161,9 +155,9 @@ class StoryFactAdapter:
             ).scalars().all()
 
         facts: list[StoryEngineFact] = []
-        self._add_analysis_facts(facts, analyses, chapter_by_id)
-        self._add_memory_facts(facts, memories, chapter_by_id, character_names)
-        self._add_foreshadow_facts(facts, foreshadows)
+        self._add_analysis_facts(facts, analyses, chapter_by_id, name_authority)
+        self._add_memory_facts(facts, memories, chapter_by_id, name_authority)
+        self._add_foreshadow_facts(facts, foreshadows, name_authority)
         self._add_relationship_facts(facts, relationships, character_names)
         self._add_organization_member_facts(facts, organization_members, org_by_id, character_names)
 
@@ -190,6 +184,7 @@ class StoryFactAdapter:
         facts: list[StoryEngineFact],
         analyses: list[PlotAnalysis],
         chapter_by_id: dict[str, Chapter],
+        name_authority: NameAuthority,
     ) -> None:
         for analysis in analyses:
             chapter = chapter_by_id.get(analysis.chapter_id)
@@ -220,7 +215,9 @@ class StoryFactAdapter:
                 )
 
             for index, char_state in enumerate(_as_list(analysis.character_states)):
-                char_name = _json_text(char_state, "character_name", max_len=80) or "未知角色"
+                char_name = name_authority.resolve_name(_json_text(char_state, "character_name", max_len=80))
+                if not char_name:
+                    continue
                 content_parts = [
                     _json_text(char_state, "key_event"),
                     f"{_json_text(char_state, 'state_before')} -> {_json_text(char_state, 'state_after')}",
@@ -251,17 +248,20 @@ class StoryFactAdapter:
                     relationship_changes = char_state.get("relationship_changes") or {}
                     if isinstance(relationship_changes, dict):
                         for target_name, change in relationship_changes.items():
+                            canonical_target = name_authority.resolve_name(target_name)
+                            if not canonical_target:
+                                continue
                             facts.append(
                                 StoryEngineFact(
-                                    id=f"analysis:{analysis.id}:rel:{index}:{target_name}",
+                                    id=f"analysis:{analysis.id}:rel:{index}:{canonical_target}",
                                     fact_type="relationship",
                                     source_type="plot_analysis",
                                     source_id=analysis.id,
                                     chapter_id=analysis.chapter_id,
                                     chapter_number=chapter_number,
-                                    title=f"{char_name} 与 {target_name}",
+                                    title=f"{char_name} 与 {canonical_target}",
                                     content=_compact_text(str(change), 220),
-                                    entities=[char_name, str(target_name)],
+                                    entities=[char_name, canonical_target],
                                     tags=["关系", "变化"],
                                     importance=0.65,
                                     confidence=0.72,
@@ -310,7 +310,7 @@ class StoryFactAdapter:
                         chapter_number=chapter_number,
                         title=f"伏笔 - {_json_text(foreshadow, 'type', max_len=40) or 'planted'}",
                         content=content,
-                        entities=_string_list(foreshadow.get("related_characters")) if isinstance(foreshadow, dict) else [],
+                        entities=_entity_names(foreshadow.get("related_characters"), name_authority) if isinstance(foreshadow, dict) else [],
                         tags=[tag for tag in ["伏笔", _json_text(foreshadow, "type", max_len=40)] if tag],
                         importance=max(0.0, min(_json_number(foreshadow, "strength", 5) / 10, 1.0)),
                         evidence=_json_text(foreshadow, "keyword", max_len=100) or chapter_title,
@@ -323,7 +323,7 @@ class StoryFactAdapter:
         facts: list[StoryEngineFact],
         memories: list[StoryMemory],
         chapter_by_id: dict[str, Chapter],
-        character_names: dict[str, str],
+        name_authority: NameAuthority,
     ) -> None:
         type_map = {
             "plot_point": "event",
@@ -349,7 +349,7 @@ class StoryFactAdapter:
                     chapter_number=chapter.chapter_number if chapter else memory.story_timeline,
                     title=memory.title or memory.memory_type,
                     content=_compact_text(memory.content, 360),
-                    entities=_entity_names(memory.related_characters, character_names),
+                    entities=_entity_names(memory.related_characters, name_authority),
                     locations=_string_list(memory.related_locations),
                     tags=_string_list(memory.tags),
                     importance=max(0.0, min(float(memory.importance_score or 0.5), 1.0)),
@@ -363,6 +363,7 @@ class StoryFactAdapter:
         self,
         facts: list[StoryEngineFact],
         foreshadows: list[Foreshadow],
+        name_authority: NameAuthority,
     ) -> None:
         for foreshadow in foreshadows:
             facts.append(
@@ -375,7 +376,7 @@ class StoryFactAdapter:
                     chapter_number=foreshadow.plant_chapter_number,
                     title=foreshadow.title,
                     content=_compact_text(foreshadow.content, 360),
-                    entities=_string_list(foreshadow.related_characters),
+                    entities=_entity_names(foreshadow.related_characters, name_authority),
                     tags=_string_list(foreshadow.tags) + [tag for tag in [foreshadow.status, foreshadow.category] if tag],
                     importance=max(0.0, min(float(foreshadow.importance or 0.5), 1.0)),
                     confidence=0.86,

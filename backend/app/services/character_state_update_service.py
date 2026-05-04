@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_
 from app.models.character import Character
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember
+from app.services.name_authority_service import NameAuthority, build_name_authority
 from app.logger import get_logger
 import uuid
 
@@ -75,10 +76,15 @@ class CharacterStateUpdateService:
             select(Character).where(Character.project_id == project_id)
         )
         all_characters = all_characters_result.scalars().all()
+        name_authority = build_name_authority(all_characters)
         
         # 非组织角色按名称索引
         characters_by_name: Dict[str, Character] = {
-            c.name: c for c in all_characters if not c.is_organization
+            canonical_name: c
+            for c in all_characters
+            if not c.is_organization
+            for canonical_name in [name_authority.resolve_name(c.name, keep_unknown=False)]
+            if canonical_name
         }
         
         # 预加载组织信息（按组织角色名称索引）
@@ -94,13 +100,19 @@ class CharacterStateUpdateService:
         org_by_name: Dict[str, Organization] = {}
         for org in all_orgs:
             org_char_name = char_id_to_name.get(org.character_id)
-            if org_char_name:
-                org_by_name[org_char_name] = org
+            canonical_org_name = name_authority.resolve_name(org_char_name, keep_unknown=False)
+            if canonical_org_name:
+                org_by_name[canonical_org_name] = org
 
         for char_state in character_states:
-            char_name = char_state.get('character_name')
+            raw_char_name = char_state.get('character_name')
+            char_name = name_authority.resolve_name(raw_char_name, keep_unknown=False)
             if not char_name:
+                if raw_char_name:
+                    logger.info(f"  ⏭️ 非稳定角色引用: {raw_char_name}，跳过状态更新")
                 continue
+            if char_name != raw_char_name:
+                char_state = {**char_state, "character_name": char_name}
 
             character = characters_by_name.get(char_name)
             if not character:
@@ -144,6 +156,7 @@ class CharacterStateUpdateService:
                     chapter_number=chapter_number,
                     chapter_id=chapter_id,
                     characters_by_name=characters_by_name,
+                    name_authority=name_authority,
                     changes=result["changes"]
                 )
                 result["relationship_created_count"] += created
@@ -159,6 +172,7 @@ class CharacterStateUpdateService:
                     organization_changes=organization_changes,
                     chapter_number=chapter_number,
                     org_by_name=org_by_name,
+                    name_authority=name_authority,
                     changes=result["changes"]
                 )
                 result["org_updated_count"] += org_updated
@@ -322,6 +336,7 @@ class CharacterStateUpdateService:
         chapter_number: int,
         chapter_id: str,
         characters_by_name: Dict[str, Character],
+        name_authority: NameAuthority,
         changes: List[str]
     ) -> tuple[int, int]:
         """
@@ -348,6 +363,11 @@ class CharacterStateUpdateService:
 
         for target_name, change_info in relationship_changes.items():
             try:
+                canonical_target_name = name_authority.resolve_name(target_name, keep_unknown=False)
+                if not canonical_target_name:
+                    logger.info(f"  ⏭️ 非稳定关系目标引用: {target_name}，跳过")
+                    continue
+
                 # 解析变化信息（支持两种格式）
                 if isinstance(change_info, str):
                     change_desc = change_info
@@ -360,7 +380,7 @@ class CharacterStateUpdateService:
                     continue
 
                 # 查找目标角色
-                target_character = characters_by_name.get(target_name)
+                target_character = characters_by_name.get(canonical_target_name)
                 if not target_character:
                     logger.warning(f"  ⚠️ 关系目标角色不存在: {target_name}，跳过")
                     continue
@@ -410,15 +430,15 @@ class CharacterStateUpdateService:
                         new_intimacy = max(-100, min(100, old_intimacy + intimacy_delta))
                         existing_rel.intimacy_level = new_intimacy
                         logger.info(
-                            f"  📊 {character.name}↔{target_name} 亲密度: "
+                            f"  📊 {character.name}↔{canonical_target_name} 亲密度: "
                             f"{old_intimacy} → {new_intimacy} ({'+' if intimacy_delta > 0 else ''}{intimacy_delta})"
                         )
 
                     updated_count += 1
                     changes.append(
-                        f"🔄 {character.name}↔{target_name} 关系更新: {change_desc}"
+                        f"🔄 {character.name}↔{canonical_target_name} 关系更新: {change_desc}"
                     )
-                    logger.info(f"  ✅ 更新关系: {character.name}↔{target_name} - {change_desc}")
+                    logger.info(f"  ✅ 更新关系: {character.name}↔{canonical_target_name} - {change_desc}")
 
                 else:
                     # 创建新关系 — 关系名称直接使用AI的变化描述
@@ -441,10 +461,10 @@ class CharacterStateUpdateService:
 
                     created_count += 1
                     changes.append(
-                        f"✨ {character.name}→{target_name} 新关系: {change_desc}"
+                        f"✨ {character.name}→{canonical_target_name} 新关系: {change_desc}"
                     )
                     logger.info(
-                        f"  ✅ 创建关系: {character.name}→{target_name} "
+                        f"  ✅ 创建关系: {character.name}→{canonical_target_name} "
                         f"({change_desc}, 亲密度:{initial_intimacy})"
                     )
 
@@ -463,6 +483,7 @@ class CharacterStateUpdateService:
         organization_changes: List[Dict[str, Any]],
         chapter_number: int,
         org_by_name: Dict[str, Organization],
+        name_authority: NameAuthority,
         changes: List[str]
     ) -> int:
         """
@@ -499,9 +520,13 @@ class CharacterStateUpdateService:
                 
                 if not org_name:
                     continue
+                canonical_org_name = name_authority.resolve_name(org_name, keep_unknown=False)
+                if not canonical_org_name:
+                    logger.info(f"  ⏭️ 非稳定组织引用: {org_name}，跳过")
+                    continue
                 
                 # 查找组织
-                organization = org_by_name.get(org_name)
+                organization = org_by_name.get(canonical_org_name)
                 if not organization:
                     logger.warning(f"  ⚠️ 组织不存在: {org_name}，跳过组织变动更新")
                     continue

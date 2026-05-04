@@ -46,6 +46,7 @@ from app.schemas.book_import import (
 )
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
 from app.services.background_task_service import background_task_service
+from app.services.name_authority_service import is_generic_reference
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 
@@ -1269,7 +1270,7 @@ class BookImportService:
 
         def add_candidate(name: str, entity_type: str, bonus: int = 0) -> None:
             normalized = str(name or "").strip()
-            if not normalized or len(normalized) > 24:
+            if not normalized or len(normalized) > 24 or is_generic_reference(normalized):
                 return
             occurrence_count = source_text.count(normalized) + bonus
             if occurrence_count < 2:
@@ -1328,7 +1329,7 @@ class BookImportService:
             counter: Counter[str] = Counter()
             for match in re.finditer(pattern, source_text):
                 candidate = str(match.group(1) or "").strip()
-                if len(candidate) < 2 or len(candidate) > 24:
+                if len(candidate) < 2 or len(candidate) > 24 or is_generic_reference(candidate):
                     continue
                 counter[candidate] += 1
             for name, count in counter.most_common(20):
@@ -2149,7 +2150,7 @@ class BookImportService:
         for pattern in patterns:
             for match in re.finditer(pattern, source_text):
                 name = self._normalize_import_source_name_candidate(match.group(1))
-                if not name or name in stopwords:
+                if not name or name in stopwords or is_generic_reference(name):
                     continue
                 match_counter[name] += 1
 
@@ -2164,6 +2165,8 @@ class BookImportService:
         name = re.sub(r"^(但|而|可|又|便|于是|然后|如果|因为|只是|只有|那个|这个|她|他|它|你|我)+", "", name)
         name = re.sub(r"(轻声|猛地|慢慢|突然|尖|下|没|不|能|想|在)$", "", name)
         if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", name):
+            return ""
+        if is_generic_reference(name):
             return ""
         return name
 

@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.character import Character
 from app.models.career import Career, CharacterCareer
+from app.services.name_authority_service import build_name_authority
 from app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,10 +42,30 @@ class CareerUpdateService:
         changes_log = []
         
         logger.info(f"🔍 开始分析第{chapter_number}章的角色职业变化...")
+
+        characters_result = await db.execute(
+            select(Character).where(
+                Character.project_id == project_id,
+                Character.is_organization.is_(False)
+            )
+        )
+        characters = characters_result.scalars().all()
+        name_authority = build_name_authority(characters, include_organizations=False)
+        characters_by_name = {
+            canonical_name: character
+            for character in characters
+            for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+            if canonical_name
+        }
         
         for char_state in character_states:
-            char_name = char_state.get('character_name')
+            raw_char_name = char_state.get('character_name')
+            char_name = name_authority.resolve_name(raw_char_name, keep_unknown=False)
             career_changes = char_state.get('career_changes', {})
+            if not char_name:
+                if raw_char_name:
+                    logger.info(f"  ⏭️ 非稳定角色引用: {raw_char_name}，跳过职业更新")
+                continue
             
             # 如果没有职业变化信息，跳过
             if not career_changes or not isinstance(career_changes, dict):
@@ -60,14 +81,8 @@ class CareerUpdateService:
             
             logger.info(f"  👤 检测到角色 [{char_name}] 有职业变化")
             
-            # 1. 查询角色
-            char_result = await db.execute(
-                select(Character).where(
-                    Character.name == char_name,
-                    Character.project_id == project_id
-                )
-            )
-            character = char_result.scalar_one_or_none()
+            # 1. 匹配角色。名称权威 resolver 会处理别名并过滤泛称。
+            character = characters_by_name.get(char_name)
             
             if not character:
                 logger.warning(f"  ⚠️ 角色不存在: {char_name}，跳过")
