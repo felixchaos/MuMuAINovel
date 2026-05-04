@@ -21,8 +21,9 @@ def require_login(request: Request):
 
 # GitHub API配置
 GITHUB_API_BASE = "https://api.github.com"
-REPO_OWNER = "xiamuceer-j"
+REPO_OWNER = "felixchaos"
 REPO_NAME = "MuMuAINovel"
+REPO_BRANCH = "codex/official-compatible-story-engine"
 
 # 缓存配置
 _cache = {
@@ -81,7 +82,7 @@ async def fetch_github_commits(page: int = 1, per_page: int = 30) -> List[dict]:
     """从GitHub API获取提交历史"""
     url = f"{GITHUB_API_BASE}/repos/{REPO_OWNER}/{REPO_NAME}/commits"
     params = {
-        "author": REPO_OWNER,
+        "sha": REPO_BRANCH,
         "page": page,
         "per_page": per_page
     }

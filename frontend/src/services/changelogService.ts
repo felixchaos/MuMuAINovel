@@ -2,6 +2,7 @@
  * GitHub 提交日志获取服务
  * 用于从 GitHub API 获取项目的提交历史并转换为更新日志
  */
+import { VERSION_INFO } from '../config/version';
 
 export interface GitHubCommit {
   sha: string;
@@ -36,8 +37,12 @@ export interface ChangelogEntry {
 }
 
 const GITHUB_API_BASE = 'https://api.github.com';
-const REPO_OWNER = 'xiamuceer-j';
-const REPO_NAME = 'MuMuAINovel';
+const REPO_OWNER = VERSION_INFO.githubOwner;
+const REPO_NAME = VERSION_INFO.githubRepo;
+const REPO_BRANCH = VERSION_INFO.githubBranch;
+const CHANGELOG_CACHE_SCOPE = `${REPO_OWNER}/${REPO_NAME}:${REPO_BRANCH}`;
+const CHANGELOG_LAST_FETCH_KEY = `changelog_last_fetch:${CHANGELOG_CACHE_SCOPE}`;
+const CHANGELOG_CACHE_KEY = `changelog_cache:${CHANGELOG_CACHE_SCOPE}`;
 
 /**
  * 提交类型映射表
@@ -152,7 +157,12 @@ function parseCommitType(message: string): { type: ChangelogEntry['type']; scope
  */
 export async function fetchGitHubCommits(page: number = 1, perPage: number = 30): Promise<GitHubCommit[]> {
   try {
-    const url = `${GITHUB_API_BASE}/repos/${REPO_OWNER}/${REPO_NAME}/commits?author=${REPO_OWNER}&page=${page}&per_page=${perPage}`;
+    const params = new URLSearchParams({
+      sha: REPO_BRANCH,
+      page: String(page),
+      per_page: String(perPage),
+    });
+    const url = `${GITHUB_API_BASE}/repos/${REPO_OWNER}/${REPO_NAME}/commits?${params.toString()}`;
     
     const response = await fetch(url, {
       method: 'GET',
@@ -224,7 +234,7 @@ export function groupChangelogByDate(entries: ChangelogEntry[]): Map<string, Cha
  * 检查是否应该获取更新日志（避免频繁请求）
  */
 export function shouldFetchChangelog(): boolean {
-  const lastFetch = localStorage.getItem('changelog_last_fetch');
+  const lastFetch = localStorage.getItem(CHANGELOG_LAST_FETCH_KEY);
   
   if (!lastFetch) {
     return true;
@@ -241,14 +251,14 @@ export function shouldFetchChangelog(): boolean {
  * 记录更新日志获取时间
  */
 export function markChangelogFetched(): void {
-  localStorage.setItem('changelog_last_fetch', new Date().toISOString());
+  localStorage.setItem(CHANGELOG_LAST_FETCH_KEY, new Date().toISOString());
 }
 
 /**
  * 获取缓存的更新日志
  */
 export function getCachedChangelog(): ChangelogEntry[] | null {
-  const cached = localStorage.getItem('changelog_cache');
+  const cached = localStorage.getItem(CHANGELOG_CACHE_KEY);
   if (cached) {
     try {
       return JSON.parse(cached);
@@ -263,7 +273,7 @@ export function getCachedChangelog(): ChangelogEntry[] | null {
  * 缓存更新日志
  */
 export function cacheChangelog(entries: ChangelogEntry[]): void {
-  localStorage.setItem('changelog_cache', JSON.stringify(entries));
+  localStorage.setItem(CHANGELOG_CACHE_KEY, JSON.stringify(entries));
 }
 
 /**
@@ -271,6 +281,8 @@ export function cacheChangelog(entries: ChangelogEntry[]): void {
  * 用于强制刷新数据
  */
 export function clearChangelogCache(): void {
+  localStorage.removeItem(CHANGELOG_CACHE_KEY);
+  localStorage.removeItem(CHANGELOG_LAST_FETCH_KEY);
   localStorage.removeItem('changelog_cache');
   localStorage.removeItem('changelog_last_fetch');
 }

@@ -17,7 +17,10 @@ export const VERSION_INFO = {
   projectFullName: 'MuMu AI 小说创作助手',
   
   // 链接信息
-  githubUrl: 'https://github.com/xiamuceer-j/MuMuAINovel',
+  githubOwner: 'felixchaos',
+  githubRepo: 'MuMuAINovel',
+  githubBranch: 'codex/official-compatible-story-engine',
+  githubUrl: 'https://github.com/felixchaos/MuMuAINovel',
   linuxDoUrl: 'https://linux.do/t/topic/1106333',
   
   // 许可证
