@@ -15,7 +15,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.common import verify_project_access
-from app.config import settings as app_settings
+from app.config import PROJECT_ROOT, settings as app_settings
 from app.database import get_engine
 from app.logger import get_logger
 from app.models.chapter import Chapter
@@ -54,6 +54,8 @@ logger = get_logger(__name__)
 
 BOOK_IMPORT_TASK_TYPE = "book_import_parse"
 BOOK_IMPORT_PROJECT_PLACEHOLDER = "__book_import__"
+BOOK_IMPORT_PREVIEW_SCHEMA_VERSION = 1
+BOOK_IMPORT_PREVIEW_STORAGE_DIR = PROJECT_ROOT / "storage" / "book_import_previews"
 
 
 @dataclass
@@ -83,6 +85,7 @@ class _BookImportTask:
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     preview: Optional[BookImportPreviewResponse] = None
+    preview_storage_path: Optional[str] = None
     cancelled: bool = False
     background_task_id: Optional[str] = None
     # 导入后生成的 project_id，用于重试时定位项目
@@ -92,7 +95,7 @@ class _BookImportTask:
 
 
 class BookImportService:
-    """拆书导入服务（首版：内存任务 + 规则解析）"""
+    """拆书导入服务：BackgroundTask 管生命周期，预览结果落临时持久化。"""
 
     def __init__(self) -> None:
         self._tasks: dict[str, _BookImportTask] = {}
@@ -147,6 +150,7 @@ class BookImportService:
             tail_chapter_count=normalized_tail_count,
             setup_mode=setup_mode,
             background_task_id=background_task.id,
+            preview_storage_path=str(self._get_preview_storage_path(user_id=user_id, task_id=task_id)),
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
@@ -162,9 +166,10 @@ class BookImportService:
         task = await self._get_task(task_id=task_id, user_id=user_id)
         if task.status != "completed":
             raise HTTPException(status_code=400, detail="任务尚未完成，无法获取预览")
-        if not task.preview:
+        preview = await self._ensure_task_preview_loaded(task)
+        if not preview:
             raise HTTPException(status_code=410, detail="预览缓存已失效，请重新上传TXT解析")
-        return task.preview
+        return preview
 
     async def cancel_task(self, *, task_id: str, user_id: str) -> dict:
         task = await self._get_task(task_id=task_id, user_id=user_id)
@@ -193,7 +198,8 @@ class BookImportService:
             "outlines": 0,
         }
 
-        warnings = list(task.preview.warnings) if task.preview else []
+        preview = await self._ensure_task_preview_loaded(task)
+        warnings = list(preview.warnings) if preview else []
         chapters_to_import, outlines_to_import, was_trimmed = self._select_chapters_for_import(
             chapters=payload.chapters,
             outlines=payload.outlines,
@@ -302,7 +308,8 @@ class BookImportService:
             "outlines": 0,
         }
 
-        warnings = list(task.preview.warnings) if task.preview else []
+        preview = await self._ensure_task_preview_loaded(task)
+        warnings = list(preview.warnings) if preview else []
         chapters_to_import, outlines_to_import, was_trimmed = self._select_chapters_for_import(
             chapters=payload.chapters,
             outlines=payload.outlines,
@@ -540,6 +547,7 @@ class BookImportService:
         try:
             from app.api.common import verify_project_access
             project = await verify_project_access(project_id, user_id, db)
+            preview = await self._ensure_task_preview_loaded(task)
 
             retry_results: dict[str, Any] = {}
             still_failed: list[_StepFailure] = []
@@ -609,7 +617,7 @@ class BookImportService:
                             count=character_count_target,
                             progress_callback=progress_callback,
                             progress_range=(step_start_pct, step_end_pct),
-                            source_chapters=task.preview.chapters if task.preview else None,
+                            source_chapters=preview.chapters if preview else None,
                         )
                         retry_results["generated_entities"] = result
                         await _notify(f"✅ 角色/组织重试成功（{result}个）", step_end_pct)
@@ -703,6 +711,7 @@ class BookImportService:
 
             self._check_cancelled(task)
             task.preview = preview
+            await self._save_preview_to_storage(task, preview)
             self._set_task_state(task, status="completed", progress=100, message="解析完成，可预览并确认导入")
         except asyncio.CancelledError:
             self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消")
@@ -715,6 +724,10 @@ class BookImportService:
                 message="解析失败",
                 error=str(exc),
             )
+        finally:
+            if task.status in {"completed", "failed", "cancelled"}:
+                await self._persist_background_task_state(task)
+                await self._drop_task_from_hot_cache(task.task_id)
 
     async def _prepare_project(
         self,
@@ -2728,6 +2741,99 @@ class BookImportService:
             return normalized
         return normalized[:max_len] + "…"
 
+    def _get_preview_storage_path(self, *, user_id: str, task_id: str) -> Path:
+        safe_user_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(user_id or "anonymous"))
+        safe_task_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(task_id or "task"))
+        return BOOK_IMPORT_PREVIEW_STORAGE_DIR / safe_user_id / f"{safe_task_id}.json"
+
+    def _normalize_preview_storage_path(self, raw_path: Optional[str], *, user_id: str, task_id: str) -> Path:
+        if not raw_path:
+            return self._get_preview_storage_path(user_id=user_id, task_id=task_id)
+
+        try:
+            candidate = Path(raw_path).expanduser()
+            storage_root = BOOK_IMPORT_PREVIEW_STORAGE_DIR.resolve()
+            resolved = candidate.resolve()
+            if resolved == storage_root or storage_root in resolved.parents:
+                return candidate
+        except Exception:
+            pass
+
+        return self._get_preview_storage_path(user_id=user_id, task_id=task_id)
+
+    async def _save_preview_to_storage(
+        self,
+        task: _BookImportTask,
+        preview: BookImportPreviewResponse,
+    ) -> None:
+        preview_path = self._normalize_preview_storage_path(
+            task.preview_storage_path,
+            user_id=task.user_id,
+            task_id=task.task_id,
+        )
+
+        def _write() -> None:
+            preview_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = preview_path.with_suffix(f"{preview_path.suffix}.tmp")
+            payload = {
+                "schema_version": BOOK_IMPORT_PREVIEW_SCHEMA_VERSION,
+                "task_id": task.task_id,
+                "user_id": task.user_id,
+                "filename": task.filename,
+                "saved_at": datetime.utcnow().isoformat(),
+                "preview": preview.model_dump(mode="json"),
+            }
+            with tmp_path.open("w", encoding="utf-8") as fp:
+                json.dump(payload, fp, ensure_ascii=False)
+            tmp_path.replace(preview_path)
+
+        await asyncio.to_thread(_write)
+        task.preview_storage_path = str(preview_path)
+
+    async def _load_preview_from_storage(self, task: _BookImportTask) -> Optional[BookImportPreviewResponse]:
+        preview_path = self._normalize_preview_storage_path(
+            task.preview_storage_path,
+            user_id=task.user_id,
+            task_id=task.task_id,
+        )
+        if not preview_path.exists():
+            return None
+
+        def _read() -> Optional[BookImportPreviewResponse]:
+            with preview_path.open("r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+            if not isinstance(payload, dict):
+                return None
+
+            preview_payload = payload.get("preview") if "preview" in payload else payload
+            preview = BookImportPreviewResponse.model_validate(preview_payload)
+            if preview.task_id != task.task_id:
+                return None
+            return preview
+
+        try:
+            preview = await asyncio.to_thread(_read)
+        except Exception as exc:
+            logger.warning(f"读取拆书预览持久化文件失败 task_id={task.task_id}: {exc}")
+            return None
+
+        if preview:
+            task.preview_storage_path = str(preview_path)
+        return preview
+
+    async def _ensure_task_preview_loaded(self, task: _BookImportTask) -> Optional[BookImportPreviewResponse]:
+        if task.preview:
+            return task.preview
+
+        preview = await self._load_preview_from_storage(task)
+        if preview:
+            task.preview = preview
+        return preview
+
+    async def _drop_task_from_hot_cache(self, task_id: str) -> None:
+        async with self._tasks_lock:
+            self._tasks.pop(task_id, None)
+
     async def _get_task(self, *, task_id: str, user_id: str) -> _BookImportTask:
         async with self._tasks_lock:
             task = self._tasks.get(task_id)
@@ -2762,6 +2868,10 @@ class BookImportService:
     def _task_from_background_task(self, background_task: BackgroundTask) -> _BookImportTask:
         task_input = background_task.task_input or {}
         task_result = background_task.task_result or {}
+        preview_storage = task_result.get("preview_storage") if isinstance(task_result, dict) else None
+        preview_storage_path = None
+        if isinstance(preview_storage, dict):
+            preview_storage_path = preview_storage.get("path")
         return _BookImportTask(
             task_id=background_task.id,
             user_id=background_task.user_id,
@@ -2778,6 +2888,11 @@ class BookImportService:
             error=background_task.error_message,
             created_at=background_task.created_at or datetime.utcnow(),
             updated_at=background_task.updated_at or background_task.created_at or datetime.utcnow(),
+            preview_storage_path=str(self._normalize_preview_storage_path(
+                preview_storage_path,
+                user_id=background_task.user_id,
+                task_id=background_task.id,
+            )),
             cancelled=bool(background_task.cancel_requested),
             background_task_id=background_task.id,
             imported_project_id=task_result.get("imported_project_id"),
@@ -2867,17 +2982,29 @@ class BookImportService:
         split_report = None
         chapter_count = 0
         entity_candidate_count = 0
+        preview_storage_path = self._normalize_preview_storage_path(
+            task.preview_storage_path,
+            user_id=task.user_id,
+            task_id=task.task_id,
+        )
+        preview_storage_exists = preview_storage_path.exists()
         if task.preview:
             chapter_count = len(task.preview.chapters)
             entity_candidate_count = len(getattr(task.preview, "entity_candidates", []) or [])
             if task.preview.split_report:
                 dump = getattr(task.preview.split_report, "model_dump", None)
-                split_report = dump() if callable(dump) else dict(task.preview.split_report)
+                split_report = dump(mode="json") if callable(dump) else dict(task.preview.split_report)
 
         return {
             "task_id": task.task_id,
             "filename": task.filename,
-            "preview_available": bool(task.preview),
+            "preview_available": bool(task.preview) or preview_storage_exists,
+            "preview_storage": {
+                "type": "file",
+                "schema_version": BOOK_IMPORT_PREVIEW_SCHEMA_VERSION,
+                "path": str(preview_storage_path),
+                "exists": preview_storage_exists,
+            },
             "chapter_count": chapter_count,
             "entity_candidate_count": entity_candidate_count,
             "split_report": split_report,

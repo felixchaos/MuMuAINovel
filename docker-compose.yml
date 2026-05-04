@@ -63,6 +63,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./storage/generated_covers:/app/storage/generated_covers
+      - ./storage/book_import_previews:/app/storage/book_import_previews
       - ./.env:/app/.env:ro
     environment:
       # 时区配置
@@ -141,4 +142,3 @@ volumes:
 networks:
   ai-story-network:
     driver: bridge
-
