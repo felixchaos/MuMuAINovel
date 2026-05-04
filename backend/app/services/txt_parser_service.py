@@ -12,9 +12,15 @@ logger = get_logger(__name__)
 class TxtParserService:
     """TXT 解析服务（规则优先）"""
 
+    NUMBER_TOKEN = r"一二三四五六七八九十百千万零〇两\d"
+    SECTION_MARKER_PATTERN = re.compile(rf"^[（(]\s*([{NUMBER_TOKEN}]{{1,8}})\s*[）)]$")
+    ACT_HEADING_PATTERN = re.compile(
+        rf"^(?:.{{0,80}}?\s+)?(第[{NUMBER_TOKEN}]+[幕卷部集篇](?:\s*[：:、.．\-—]\s*.+|.+)?)$"
+    )
+
     STRONG_CHAPTER_PATTERNS = [
         re.compile(
-            r"^第[一二三四五六七八九十百千万零〇两\d]+"
+            rf"^第[{NUMBER_TOKEN}]+"
             r"(?:[章回卷集部篇].*|节(?:$|[\s　:：、.．\-—]).*)$"
         ),
         re.compile(r"^chapter\s*\d+.*$", re.IGNORECASE),
@@ -70,6 +76,15 @@ class TxtParserService:
             elif self._is_weak_heading(lines, idx):
                 weak_heading_indexes.append(idx)
 
+        # 有些正文使用“第一幕：xxx”作为篇章标题，真正的章节边界是独立行“（1）/（2）”。
+        # 这种格式不应走固定字数兜底，否则会把一节拆成多个 5000 字窗口。
+        if len(strong_heading_indexes) < 2:
+            section_heading_indexes = self._collect_numbered_section_headings(lines)
+            if section_heading_indexes:
+                section_chapters = self._split_numbered_sections(lines, section_heading_indexes)
+                if section_chapters:
+                    return section_chapters
+
         # 标准章节标题足够多时，弱标题只会增加对白/短句误判。
         heading_indexes = strong_heading_indexes if len(strong_heading_indexes) >= 2 else (
             strong_heading_indexes + weak_heading_indexes
@@ -124,6 +139,142 @@ class TxtParserService:
 
     def _is_strong_heading(self, line: str) -> bool:
         return any(pattern.match(line) for pattern in self.STRONG_CHAPTER_PATTERNS)
+
+    def _collect_numbered_section_headings(self, lines: list[str]) -> list[int]:
+        """识别“（1）/（2）”这类独立小节标题，并过滤普通列表项误判。"""
+        candidates: list[int] = []
+        for idx, line in enumerate(lines):
+            if self._is_numbered_section_heading(lines, idx):
+                candidates.append(idx)
+
+        if len(candidates) < 2:
+            return []
+
+        section_lengths: list[int] = []
+        for i, start_idx in enumerate(candidates):
+            next_idx = candidates[i + 1] if i + 1 < len(candidates) else len(lines)
+            end_idx = self._trim_trailing_act_heading(lines, start_idx + 1, next_idx)
+            section_text = "\n".join(lines[start_idx + 1 : end_idx]).strip()
+            if section_text:
+                section_lengths.append(len(section_text))
+
+        if len(section_lengths) < 2:
+            return []
+
+        # 正文小节通常会有成段内容；普通说明里的“（1）（2）”列表往往很短。
+        long_sections = sum(length >= 500 for length in section_lengths)
+        if long_sections < max(2, len(section_lengths) // 2):
+            return []
+
+        return candidates
+
+    def _is_numbered_section_heading(self, lines: list[str], idx: int) -> bool:
+        line = lines[idx].strip()
+        match = self.SECTION_MARKER_PATTERN.match(line)
+        if not match:
+            return False
+
+        next_idx = self._next_nonempty_line_index(lines, idx + 1)
+        if next_idx is None:
+            return False
+
+        next_line = lines[next_idx].strip()
+        if len(next_line) < 20:
+            return False
+        if self._is_strong_heading(next_line):
+            return False
+
+        return True
+
+    def _split_numbered_sections(self, lines: list[str], heading_indexes: list[int]) -> list[dict]:
+        chapters: list[dict] = []
+        chapter_no = 1
+        current_act_title: Optional[str] = None
+        scan_from = 0
+
+        first_heading = heading_indexes[0]
+        if first_heading > 0:
+            preface_lines: list[str] = []
+            for idx in range(first_heading):
+                stripped = lines[idx].strip()
+                act_title = self._extract_act_heading(stripped)
+                if act_title:
+                    current_act_title = act_title
+                elif stripped:
+                    preface_lines.append(lines[idx])
+
+            preface = "\n".join(preface_lines).strip()
+            if len(preface) >= 200:
+                chapters.append(
+                    {
+                        "title": "前言",
+                        "content": preface,
+                        "chapter_number": chapter_no,
+                    }
+                )
+                chapter_no += 1
+            scan_from = first_heading + 1
+
+        for i, start_idx in enumerate(heading_indexes):
+            for idx in range(scan_from, start_idx):
+                act_title = self._extract_act_heading(lines[idx].strip())
+                if act_title:
+                    current_act_title = act_title
+
+            raw_marker = lines[start_idx].strip()
+            marker = re.sub(r"\s+", "", raw_marker)
+            title = f"{current_act_title}{marker}" if current_act_title else marker
+
+            raw_end_idx = heading_indexes[i + 1] if i + 1 < len(heading_indexes) else len(lines)
+            end_idx = self._trim_trailing_act_heading(lines, start_idx + 1, raw_end_idx)
+            body = "\n".join(lines[start_idx + 1 : end_idx]).strip()
+
+            if body:
+                normalized_title = title[:200] or f"第{chapter_no}章"
+                if chapters:
+                    previous = chapters[-1]
+                    previous_body = re.sub(r"\s+", "", previous.get("content") or "")
+                    current_body = re.sub(r"\s+", "", body)
+                    if previous.get("title") == normalized_title and previous_body == current_body:
+                        scan_from = start_idx + 1
+                        continue
+
+                chapters.append(
+                    {
+                        "title": normalized_title,
+                        "content": body,
+                        "chapter_number": chapter_no,
+                    }
+                )
+                chapter_no += 1
+
+            scan_from = start_idx + 1
+
+        return chapters
+
+    def _extract_act_heading(self, line: str) -> Optional[str]:
+        if not line or len(line) > 120:
+            return None
+        if re.search(r"[。！？!?；;]", line):
+            return None
+        match = self.ACT_HEADING_PATTERN.match(line)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    def _next_nonempty_line_index(self, lines: list[str], start_idx: int) -> Optional[int]:
+        for idx in range(start_idx, len(lines)):
+            if lines[idx].strip():
+                return idx
+        return None
+
+    def _trim_trailing_act_heading(self, lines: list[str], start_idx: int, end_idx: int) -> int:
+        idx = end_idx - 1
+        while idx >= start_idx and not lines[idx].strip():
+            idx -= 1
+        if idx >= start_idx and self._extract_act_heading(lines[idx].strip()):
+            return idx
+        return end_idx
 
     def _is_weak_heading(self, lines: list[str], idx: int) -> bool:
         """
