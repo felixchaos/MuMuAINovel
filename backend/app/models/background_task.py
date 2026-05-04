@@ -14,7 +14,7 @@ class BackgroundTask(Base):
     project_id = Column(String(36), nullable=False, index=True, comment="项目ID")
     
     # 任务类型
-    task_type = Column(String(50), nullable=False, comment="任务类型: outline_new/outline_continue/outline_expand/chapter_generate/chapter_batch/wizard")
+    task_type = Column(String(50), nullable=False, comment="任务类型: outline_new/outline_continue/outline_expand/chapter_generate/chapter_batch/wizard/book_import_parse")
     
     # 任务状态
     status = Column(String(20), default="pending", comment="任务状态: pending/running/completed/failed/cancelled")

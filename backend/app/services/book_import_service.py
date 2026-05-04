@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +20,7 @@ from app.database import get_engine
 from app.logger import get_logger
 from app.models.chapter import Chapter
 from app.models.character import Character
+from app.models.background_task import BackgroundTask
 from app.models.career import Career, CharacterCareer
 from app.models.foreshadow import Foreshadow
 from app.models.mcp_plugin import MCPPlugin
@@ -45,10 +45,14 @@ from app.schemas.book_import import (
     ProjectSuggestion,
 )
 from app.services.ai_service import AIService, create_user_ai_service_with_mcp
+from app.services.background_task_service import background_task_service
 from app.services.prompt_service import PromptService
 from app.services.txt_parser_service import txt_parser_service
 
 logger = get_logger(__name__)
+
+BOOK_IMPORT_TASK_TYPE = "book_import_parse"
+BOOK_IMPORT_PROJECT_PLACEHOLDER = "__book_import__"
 
 
 @dataclass
@@ -79,6 +83,7 @@ class _BookImportTask:
     updated_at: datetime = field(default_factory=datetime.utcnow)
     preview: Optional[BookImportPreviewResponse] = None
     cancelled: bool = False
+    background_task_id: Optional[str] = None
     # 导入后生成的 project_id，用于重试时定位项目
     imported_project_id: Optional[str] = None
     # 步骤级失败记录
@@ -104,6 +109,7 @@ class BookImportService:
         extract_mode: BookImportExtractMode = "tail",
         tail_chapter_count: int = 10,
         setup_mode: BookImportSetupMode = "auto",
+        db: AsyncSession,
     ) -> BookImportTaskCreateResponse:
         normalized_tail_count = max(5, int(tail_chapter_count))
         normalized_extract_mode = extract_mode
@@ -112,7 +118,23 @@ class BookImportService:
         if normalized_tail_count > 50:
             normalized_extract_mode = "full"
 
-        task_id = str(uuid.uuid4())
+        background_task = await background_task_service.create_task(
+            user_id=user_id,
+            project_id=project_id or BOOK_IMPORT_PROJECT_PLACEHOLDER,
+            task_type=BOOK_IMPORT_TASK_TYPE,
+            task_input={
+                "filename": filename,
+                "project_id": project_id,
+                "create_new_project": create_new_project,
+                "import_mode": import_mode,
+                "extract_mode": normalized_extract_mode,
+                "tail_chapter_count": normalized_tail_count,
+                "setup_mode": setup_mode,
+            },
+            db=db,
+        )
+
+        task_id = background_task.id
         task = _BookImportTask(
             task_id=task_id,
             user_id=user_id,
@@ -123,12 +145,13 @@ class BookImportService:
             extract_mode=normalized_extract_mode,
             tail_chapter_count=normalized_tail_count,
             setup_mode=setup_mode,
+            background_task_id=background_task.id,
         )
         async with self._tasks_lock:
             self._tasks[task_id] = task
 
         asyncio.create_task(self._run_pipeline(task_id=task_id, file_content=file_content))
-        return BookImportTaskCreateResponse(task_id=task_id, status="pending")
+        return BookImportTaskCreateResponse(task_id=task_id, status=background_task.status or "pending")
 
     async def get_task_status(self, *, task_id: str, user_id: str) -> BookImportTaskStatusResponse:
         task = await self._get_task(task_id=task_id, user_id=user_id)
@@ -139,7 +162,7 @@ class BookImportService:
         if task.status != "completed":
             raise HTTPException(status_code=400, detail="任务尚未完成，无法获取预览")
         if not task.preview:
-            raise HTTPException(status_code=500, detail="预览数据不存在")
+            raise HTTPException(status_code=410, detail="预览缓存已失效，请重新上传TXT解析")
         return task.preview
 
     async def cancel_task(self, *, task_id: str, user_id: str) -> dict:
@@ -149,6 +172,7 @@ class BookImportService:
 
         task.cancelled = True
         self._set_task_state(task, status="cancelled", progress=task.progress, message="任务已取消")
+        await self._persist_background_task_state(task)
         return {"success": True, "message": "取消成功"}
 
     async def apply_import(
@@ -353,6 +377,8 @@ class BookImportService:
 
                 task.imported_project_id = project.id
                 task.failed_steps = []
+                task.updated_at = datetime.utcnow()
+                await self._persist_background_task_state(task)
 
                 return BookImportApplyResponse(
                     success=True,
@@ -443,6 +469,8 @@ class BookImportService:
             # 记录失败步骤和项目ID到任务中，供重试使用
             task.imported_project_id = project.id
             task.failed_steps = failed_steps
+            task.updated_at = datetime.utcnow()
+            await self._persist_background_task_state(task)
 
             # 如果有步骤失败，通过 SSE 推送失败步骤详情
             if failed_steps:
@@ -601,6 +629,8 @@ class BookImportService:
 
             # 更新任务的失败步骤记录
             task.failed_steps = still_failed
+            task.updated_at = datetime.utcnow()
+            await self._persist_background_task_state(task)
 
             if still_failed:
                 failed_info = [
@@ -2700,10 +2730,65 @@ class BookImportService:
             task = self._tasks.get(task_id)
 
         if not task:
-            raise HTTPException(status_code=404, detail="任务不存在")
+            background_task = await self._get_background_task(task_id=task_id, user_id=user_id)
+            if not background_task:
+                raise HTTPException(status_code=404, detail="任务不存在")
+            task = self._task_from_background_task(background_task)
+
         if task.user_id != user_id:
             raise HTTPException(status_code=403, detail="无权访问该任务")
         return task
+
+    async def _get_background_task(self, *, task_id: str, user_id: str) -> Optional[BackgroundTask]:
+        try:
+            engine = await get_engine(user_id)
+            SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with SessionLocal() as db:
+                background_task = await db.get(BackgroundTask, task_id)
+                if (
+                    not background_task
+                    or background_task.user_id != user_id
+                    or background_task.task_type != BOOK_IMPORT_TASK_TYPE
+                ):
+                    return None
+                return background_task
+        except Exception as exc:
+            logger.warning(f"读取拆书后台任务失败 task_id={task_id}: {exc}")
+            return None
+
+    def _task_from_background_task(self, background_task: BackgroundTask) -> _BookImportTask:
+        task_input = background_task.task_input or {}
+        task_result = background_task.task_result or {}
+        return _BookImportTask(
+            task_id=background_task.id,
+            user_id=background_task.user_id,
+            filename=str(task_input.get("filename") or ""),
+            project_id=task_input.get("project_id"),
+            create_new_project=bool(task_input.get("create_new_project", True)),
+            import_mode=str(task_input.get("import_mode") or "append"),
+            extract_mode=task_input.get("extract_mode") or "tail",
+            tail_chapter_count=int(task_input.get("tail_chapter_count") or 10),
+            setup_mode=task_input.get("setup_mode") or "auto",
+            status=background_task.status or "pending",
+            progress=int(background_task.progress or 0),
+            message=background_task.status_message,
+            error=background_task.error_message,
+            created_at=background_task.created_at or datetime.utcnow(),
+            updated_at=background_task.updated_at or background_task.created_at or datetime.utcnow(),
+            cancelled=bool(background_task.cancel_requested),
+            background_task_id=background_task.id,
+            imported_project_id=task_result.get("imported_project_id"),
+            failed_steps=[
+                _StepFailure(
+                    step_name=str(item.get("step_name") or ""),
+                    step_label=str(item.get("step_label") or ""),
+                    error_message=str(item.get("error") or item.get("error_message") or ""),
+                    retry_count=int(item.get("retry_count") or 0),
+                )
+                for item in task_result.get("failed_steps", [])
+                if isinstance(item, dict)
+            ],
+        )
 
     def _to_status(self, task: _BookImportTask) -> BookImportTaskStatusResponse:
         return BookImportTaskStatusResponse(
@@ -2730,6 +2815,80 @@ class BookImportService:
         task.message = message
         task.error = error
         task.updated_at = datetime.utcnow()
+        self._schedule_background_task_sync(task)
+
+    def _schedule_background_task_sync(self, task: _BookImportTask) -> None:
+        if not task.background_task_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._persist_background_task_state(task))
+
+    async def _persist_background_task_state(self, task: _BookImportTask) -> None:
+        if not task.background_task_id:
+            return
+
+        try:
+            engine = await get_engine(task.user_id)
+            SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with SessionLocal() as db:
+                background_task = await db.get(BackgroundTask, task.background_task_id)
+                if not background_task or background_task.user_id != task.user_id:
+                    return
+
+                background_task.status = task.status
+                background_task.progress = task.progress
+                background_task.status_message = task.message
+                background_task.error_message = task.error
+                background_task.cancel_requested = bool(task.cancelled)
+                background_task.progress_details = {
+                    "stage": "book_import",
+                    "message": task.message,
+                    "filename": task.filename,
+                    "extract_mode": task.extract_mode,
+                    "setup_mode": task.setup_mode,
+                }
+                if task.status == "running" and not background_task.started_at:
+                    background_task.started_at = task.updated_at
+                if task.status in {"completed", "failed", "cancelled"}:
+                    background_task.completed_at = task.updated_at
+                    background_task.task_result = self._build_background_task_result(task)
+
+                await db.commit()
+        except Exception as exc:
+            logger.warning(f"同步拆书后台任务状态失败 task_id={task.task_id}: {exc}")
+
+    def _build_background_task_result(self, task: _BookImportTask) -> dict[str, Any]:
+        split_report = None
+        chapter_count = 0
+        entity_candidate_count = 0
+        if task.preview:
+            chapter_count = len(task.preview.chapters)
+            entity_candidate_count = len(getattr(task.preview, "entity_candidates", []) or [])
+            if task.preview.split_report:
+                dump = getattr(task.preview.split_report, "model_dump", None)
+                split_report = dump() if callable(dump) else dict(task.preview.split_report)
+
+        return {
+            "task_id": task.task_id,
+            "filename": task.filename,
+            "preview_available": bool(task.preview),
+            "chapter_count": chapter_count,
+            "entity_candidate_count": entity_candidate_count,
+            "split_report": split_report,
+            "imported_project_id": task.imported_project_id,
+            "failed_steps": [
+                {
+                    "step_name": item.step_name,
+                    "step_label": item.step_label,
+                    "error": item.error_message,
+                    "retry_count": item.retry_count,
+                }
+                for item in task.failed_steps
+            ],
+        }
 
     def _check_cancelled(self, task: _BookImportTask) -> None:
         if task.cancelled or task.status == "cancelled":

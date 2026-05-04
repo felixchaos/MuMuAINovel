@@ -37,6 +37,7 @@ async def create_book_import_task(
     extract_mode: str = Form(default="tail", description="解析范围：tail=截取末章，full=整本"),
     tail_chapter_count: int = Form(default=10, description="当 extract_mode=tail 时，截取末尾章节数，需为5的倍数；超过50按整本拆处理"),
     setup_mode: str = Form(default="auto", description="预览设定生成方式：auto=AI反向生成，manual=手动填写"),
+    db: AsyncSession = Depends(get_db),
 ):
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -85,6 +86,7 @@ async def create_book_import_task(
         extract_mode=create_payload.extract_mode,
         tail_chapter_count=create_payload.tail_chapter_count,
         setup_mode=create_payload.setup_mode,
+        db=db,
     )
     return task
 
