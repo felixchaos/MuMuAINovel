@@ -879,67 +879,163 @@ export default function Chapters() {
       : baseInstructions[mode];
   };
 
-  const confirmApplyChapterAiResult = (
-    label: string,
+  const renderChapterAiStreamContent = (
     originalText: string,
     resultText: string,
-    onApply: () => void
+    progress: number,
+    progressMessage: string,
+    status: 'processing' | 'success' | 'error'
   ) => {
-    modal.confirm({
+    const isDone = status === 'success';
+    const isError = status === 'error';
+
+    return (
+      <div style={{ marginTop: 12 }}>
+        <Alert
+          type={isError ? 'error' : isDone ? 'success' : 'info'}
+          showIcon
+          message={progressMessage || (isDone ? 'AI 已生成完成，确认后才会替换当前内容。' : 'AI 正在生成，结果会实时显示。')}
+          description={isError ? undefined : `进度 ${progress}% · 已生成 ${resultText.length} 字`}
+          style={{ marginBottom: 12 }}
+        />
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>原文/上下文</div>
+            <div style={{
+              maxHeight: 150,
+              overflowY: 'auto',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.6,
+              padding: '8px 10px',
+              border: `1px solid ${token.colorBorderSecondary}`,
+              borderRadius: token.borderRadius,
+              background: token.colorFillQuaternary,
+              color: token.colorTextSecondary,
+            }}>
+              {originalText || '（空）'}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果（流式）</div>
+            <div style={{
+              minHeight: 120,
+              maxHeight: 260,
+              overflowY: 'auto',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.7,
+              padding: '8px 10px',
+              border: `1px solid ${isError ? token.colorErrorBorder : token.colorPrimaryBorder}`,
+              borderRadius: token.borderRadius,
+              background: token.colorBgContainer,
+            }}>
+              {resultText || '等待生成...'}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const runChapterAiStream = async (
+    label: string,
+    sourceText: string,
+    instruction: string,
+    temperature: number,
+    onApply: (resultText: string) => void
+  ) => {
+    let resultText = '';
+    let progress = 0;
+    let progressMessage = '准备连接AI...';
+    let status: 'processing' | 'success' | 'error' = 'processing';
+    let completed = false;
+    let lastRenderAt = 0;
+    const abortController = new AbortController();
+
+    const resultModal = modal.confirm({
       title: `${label} AI结果`,
       icon: <HighlightOutlined />,
       width: isMobile ? 'calc(100vw - 32px)' : 760,
       centered: true,
       okText: '应用结果',
-      cancelText: '保留原文',
-      content: (
-        <div style={{ marginTop: 12 }}>
-          <Alert
-            type="info"
-            showIcon
-            message="AI 已生成结果，确认后才会替换当前内容。"
-            style={{ marginBottom: 12 }}
-          />
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>原文/上下文</div>
-              <div style={{
-                maxHeight: 150,
-                overflowY: 'auto',
-                whiteSpace: 'pre-wrap',
-                lineHeight: 1.6,
-                padding: '8px 10px',
-                border: `1px solid ${token.colorBorderSecondary}`,
-                borderRadius: token.borderRadius,
-                background: token.colorFillQuaternary,
-                color: token.colorTextSecondary,
-              }}>
-                {originalText || '（空）'}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果</div>
-              <div style={{
-                maxHeight: 240,
-                overflowY: 'auto',
-                whiteSpace: 'pre-wrap',
-                lineHeight: 1.6,
-                padding: '8px 10px',
-                border: `1px solid ${token.colorPrimaryBorder}`,
-                borderRadius: token.borderRadius,
-                background: token.colorBgContainer,
-              }}>
-                {resultText}
-              </div>
-            </div>
-          </div>
-        </div>
-      ),
+      cancelText: '取消生成',
+      okButtonProps: { disabled: true, loading: true },
+      content: renderChapterAiStreamContent(sourceText, resultText, progress, progressMessage, status),
       onOk: () => {
-        onApply();
+        if (!completed || !resultText.trim()) {
+          return Promise.reject();
+        }
+        onApply(resultText.trim());
         message.success(`${label}已应用AI结果`);
       },
+      onCancel: () => {
+        if (!completed) {
+          abortController.abort();
+        }
+      },
     });
+
+    const updateResultModal = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastRenderAt < 120) return;
+      lastRenderAt = now;
+
+      resultModal.update({
+        content: renderChapterAiStreamContent(sourceText, resultText, progress, progressMessage, status),
+        okButtonProps: {
+          disabled: !completed || !resultText.trim() || status === 'error',
+          loading: !completed && status !== 'error',
+        },
+        cancelText: completed ? '保留原文' : '取消生成',
+      });
+    };
+
+    try {
+      const result = await polishApi.polishTextStream({
+        original_text: sourceText,
+        project_id: currentProject.id,
+        model: selectedModel || undefined,
+        temperature,
+        instruction,
+      }, {
+        signal: abortController.signal,
+        onProgress: (messageText, progressValue, streamStatus) => {
+          progress = progressValue;
+          progressMessage = messageText || progressMessage;
+          if (streamStatus === 'error') {
+            status = 'error';
+          }
+          updateResultModal();
+        },
+        onChunk: (content) => {
+          resultText += content;
+          updateResultModal();
+        },
+        onError: (error) => {
+          status = 'error';
+          progressMessage = error || 'AI处理失败';
+          completed = true;
+          updateResultModal(true);
+        },
+      });
+
+      resultText = (result.polished_text || resultText).trim();
+      progress = 100;
+      progressMessage = 'AI处理完成，确认后才会替换当前内容。';
+      status = 'success';
+      completed = true;
+      updateResultModal(true);
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') {
+        message.info(`${label}生成已取消`);
+        return;
+      }
+
+      console.error(`${label} AI流式处理失败:`, error);
+      status = 'error';
+      progressMessage = (error as Error).message || 'AI处理失败';
+      completed = true;
+      updateResultModal(true);
+    }
   };
 
   const runChapterAiTool = async (
@@ -972,32 +1068,15 @@ export default function Chapters() {
       return;
     }
 
-    const closeLoading = message.loading(`AI正在处理${label}...`, 0);
-    try {
-      const result = await polishApi.polishText({
-        original_text: sourceText,
-        project_id: currentProject.id,
-        model: selectedModel || undefined,
-        temperature: mode === 'polish' ? 0.7 : 0.55,
-        instruction: buildChapterAiInstruction(mode, label, extraInstruction),
-      });
-
-      const aiText = result.polished_text?.trim();
-      if (!aiText) {
-        message.warning('AI结果为空，请调整要求后重试');
-        return;
-      }
-
-      confirmApplyChapterAiResult(label, sourceText, aiText, () => {
+    await runChapterAiStream(
+      label,
+      sourceText,
+      buildChapterAiInstruction(mode, label, extraInstruction),
+      mode === 'polish' ? 0.7 : 0.55,
+      (aiText) => {
         targetForm.setFieldsValue({ [field]: aiText });
-      });
-    } catch (error) {
-      console.error(`${label} AI处理失败:`, error);
-      const err = error as Error;
-      message.error(`${label} AI处理失败：${err.message || '未知错误'}`);
-    } finally {
-      closeLoading();
-    }
+      }
+    );
   };
 
   const openChapterAiTool = (
@@ -1035,7 +1114,9 @@ export default function Chapters() {
           />
         </div>
       ),
-      onOk: () => runChapterAiTool(targetForm, field, label, mode, extraInstruction),
+      onOk: () => {
+        void runChapterAiTool(targetForm, field, label, mode, extraInstruction);
+      },
     });
   };
 
@@ -1095,29 +1176,18 @@ export default function Chapters() {
           </div>
         </div>
       ),
-      onOk: async () => {
-        const closeLoading = message.loading('AI正在编辑选中内容...', 0);
-        try {
-          const contextText = buildChapterFormContext(targetForm);
-          const result = await polishApi.polishText({
-            original_text: selectedText,
-            project_id: currentProject.id,
-            model: selectedModel || undefined,
-            temperature: 0.65,
-            instruction: [
-              '你是中文小说编辑。请只处理用户选中的片段，保持章节上下文、人设、事实和叙事视角一致。只输出处理后的选中片段，不要解释，不要补前后缀。',
-              extraInstruction.trim() ? `用户要求：${extraInstruction.trim()}` : '用户要求：自然润色并改善表达。',
-              `章节上下文：\n${contextText}`,
-            ].join('\n\n'),
-          });
-
-          const aiText = result.polished_text?.trim();
-          if (!aiText) {
-            message.warning('AI结果为空，请调整要求后重试');
-            return;
-          }
-
-          confirmApplyChapterAiResult('选中内容', selectedText, aiText, () => {
+      onOk: () => {
+        const contextText = buildChapterFormContext(targetForm);
+        void runChapterAiStream(
+          '选中内容',
+          selectedText,
+          [
+            '你是中文小说编辑。请只处理用户选中的片段，保持章节上下文、人设、事实和叙事视角一致。只输出处理后的选中片段，不要解释，不要补前后缀。',
+            extraInstruction.trim() ? `用户要求：${extraInstruction.trim()}` : '用户要求：自然润色并改善表达。',
+            `章节上下文：\n${contextText}`,
+          ].join('\n\n'),
+          0.65,
+          (aiText) => {
             const currentContent = getChapterFormText(targetForm, 'content');
             let replaceStart = start;
             let replaceEnd = end;
@@ -1134,14 +1204,8 @@ export default function Chapters() {
 
             const nextContent = currentContent.substring(0, replaceStart) + aiText + currentContent.substring(replaceEnd);
             targetForm.setFieldsValue({ content: nextContent });
-          });
-        } catch (error) {
-          console.error('选中内容AI编辑失败:', error);
-          const err = error as Error;
-          message.error(`选中内容AI编辑失败：${err.message || '未知错误'}`);
-        } finally {
-          closeLoading();
-        }
+          }
+        );
       },
     });
   };

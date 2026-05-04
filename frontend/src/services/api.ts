@@ -963,6 +963,14 @@ export const polishApi = {
   polishText: (data: PolishTextRequest) =>
     api.post<unknown, { polished_text: string }>('/polish', data),
 
+  polishTextStream: (data: PolishTextRequest, options?: SSEClientOptions) =>
+    ssePost<{
+      original_text: string;
+      polished_text: string;
+      word_count_before: number;
+      word_count_after: number;
+    }>('/api/polish/stream', data, options),
+
   polishBatch: (texts: string[]) =>
     api.post<unknown, { polished_texts: string[] }>('/polish/batch', { texts }),
 

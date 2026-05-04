@@ -25,6 +25,12 @@ from app.schemas.polish import (
 from app.services.ai_service import AIService
 from app.services.background_task_service import background_task_service, TaskProgressTracker
 from app.services.prompt_service import PromptService
+from app.utils.sse_response import (
+    HEARTBEAT,
+    WizardProgressTracker,
+    create_sse_response,
+    wrap_stream_with_heartbeat,
+)
 from app.logger import get_logger
 
 router = APIRouter(prefix="/polish", tags=["AI去味"])
@@ -336,6 +342,102 @@ async def polish_text(
     except Exception as e:
         logger.error(f"AI去味失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI去味失败: {str(e)}")
+
+
+@router.post("/stream", summary="AI去味/润色（SSE流式）")
+async def polish_text_stream(
+    request: PolishRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+    user_ai_service: AIService = Depends(get_user_ai_service)
+):
+    """
+    AI去味/润色流式接口。
+
+    与普通 /polish 使用相同请求体和提示词构建方式，但通过 SSE 逐块返回内容，
+    前端可边生成边预览，完成后再决定是否应用。
+    """
+    user_id = getattr(http_request.state, 'user_id', None)
+
+    if request.project_id:
+        await verify_project_access(request.project_id, user_id, db)
+
+    if request.instruction:
+        prompt = (
+            f"{request.instruction.strip()}\n\n"
+            "请处理以下内容：\n"
+            f"{request.original_text}"
+        )
+    else:
+        prompt = await _build_denoising_prompt(request.original_text, user_id, db)
+
+    has_instruction = bool(request.instruction)
+    max_tokens = _polish_max_tokens(request.original_text, has_instruction=has_instruction)
+
+    async def _stream_generator():
+        tracker = WizardProgressTracker("AI润色")
+        accumulated = ""
+        estimated_total = max(len(request.original_text), 1200)
+
+        try:
+            logger.info(f"开始流式AI去味处理，原文长度: {len(request.original_text)}")
+            yield await tracker.start("开始AI润色...")
+            yield await tracker.preparing("准备润色提示词...")
+
+            async for chunk in wrap_stream_with_heartbeat(
+                user_ai_service.generate_text_stream(
+                    prompt=prompt,
+                    provider=request.provider,
+                    model=request.model,
+                    temperature=request.temperature,
+                    max_tokens=max_tokens,
+                    auto_mcp=False,
+                )
+            ):
+                if chunk is HEARTBEAT:
+                    yield await tracker.heartbeat()
+                    continue
+
+                if not chunk:
+                    continue
+
+                accumulated += str(chunk)
+                yield await tracker.generating(
+                    current_chars=len(accumulated),
+                    estimated_total=estimated_total,
+                    message="AI润色中..."
+                )
+                yield await tracker.generating_chunk(str(chunk))
+
+            polished_text = accumulated.strip()
+            if not polished_text:
+                yield await tracker.error("AI未返回可用润色内容，请调整要求或更换模型后重试", 502)
+                return
+
+            if request.project_id:
+                history = GenerationHistory(
+                    project_id=request.project_id,
+                    prompt=f"原文: {request.original_text[:100]}...",
+                    generated_content=polished_text,
+                    model=request.model or "default"
+                )
+                db.add(history)
+                await db.commit()
+
+            yield await tracker.complete("AI润色完成")
+            yield await tracker.result({
+                "original_text": request.original_text,
+                "polished_text": polished_text,
+                "word_count_before": len(request.original_text),
+                "word_count_after": len(polished_text),
+            })
+            yield await tracker.done()
+            logger.info(f"流式AI去味完成，处理后长度: {len(polished_text)}")
+        except Exception as e:
+            logger.error(f"流式AI去味失败: {str(e)}", exc_info=True)
+            yield await tracker.error(f"AI去味失败: {str(e)}", 500)
+
+    return create_sse_response(_stream_generator())
 
 
 @router.post("/outlines/background", summary="后台优化已有大纲")
