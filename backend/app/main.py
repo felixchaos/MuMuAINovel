@@ -30,19 +30,18 @@ async def lifespan(app: FastAPI):
     # 注册MCP状态同步服务
     register_status_sync()
 
-    # 安全保障：确保后台任务表存在（兼容未执行Alembic迁移的旧部署）
+    # 安全保障：确保增量运行表存在（兼容未执行Alembic迁移的旧部署）
     try:
         from app.database import get_engine
         from app.models.background_task import BackgroundTask
+        from app.models.ai_usage import AIUsageLog
         _startup_engine = await get_engine("system")
         async with _startup_engine.begin() as conn:
-            # 仅创建 background_tasks 表（如果不存在），不影响其他表
-            await conn.run_sync(
-                lambda sync_conn: BackgroundTask.__table__.create(sync_conn, checkfirst=True)
-            )
-        logger.info("后台任务表检查完成")
+            for table in (BackgroundTask.__table__, AIUsageLog.__table__):
+                await conn.run_sync(lambda sync_conn, t=table: t.create(sync_conn, checkfirst=True))
+        logger.info("后台任务表与AI用量表检查完成")
     except Exception as e:
-        logger.warning(f"后台任务表检查失败（不影响启动）: {e}")
+        logger.warning(f"运行表检查失败（不影响启动）: {e}")
 
     logger.info("应用启动完成")
     
@@ -147,7 +146,7 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, prompt_workshop, book_import,
-    project_covers, tasks, polish, story_engine
+    project_covers, tasks, polish, story_engine, ai_usage
 )
 
 app.include_router(auth.router, prefix="/api")
@@ -176,6 +175,7 @@ app.include_router(prompt_workshop.router, prefix="/api")  # 提示词工坊API
 app.include_router(book_import.router, prefix="/api")  # 拆书导入API
 app.include_router(tasks.router, prefix="/api")  # 后台任务API
 app.include_router(story_engine.router, prefix="/api")  # 剧情工程只读快照API
+app.include_router(ai_usage.router, prefix="/api")  # AI Token 用量统计API
 
 static_dir = Path(__file__).parent.parent / "static"
 generated_assets_root_dir = Path(__file__).parent.parent / "storage"

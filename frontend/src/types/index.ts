@@ -147,6 +147,61 @@ export interface PresetListResponse {
   polish_preset_id?: string;
 }
 
+export interface AIUsageLog {
+  id: string;
+  request_mode: string;
+  provider: string;
+  model: string;
+  api_base_url?: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  stream: boolean;
+  auto_mcp: boolean;
+  tools_count: number;
+  tool_calls_count: number;
+  retry_count: number;
+  success: boolean;
+  duration_ms?: number;
+  finish_reason?: string;
+  error_type?: string;
+  error_message?: string;
+  reference_prompt_price?: number;
+  reference_completion_price?: number;
+  reference_estimated_cost?: number;
+  reference_currency: string;
+  pricing_source: string;
+  pricing_updated_at?: string;
+  created_at: string;
+}
+
+export interface AIUsageModelSummary {
+  provider: string;
+  model: string;
+  api_base_url?: string;
+  request_mode?: string;
+  calls: number;
+  success_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reference_estimated_cost?: number;
+}
+
+export interface AIUsageSummary {
+  days: number;
+  total_calls: number;
+  success_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reference_estimated_cost?: number;
+  reference_currency: string;
+  pricing_source: string;
+  by_model: AIUsageModelSummary[];
+  recent_logs: AIUsageLog[];
+}
+
 // LinuxDO 授权 URL 响应
 export interface AuthUrlResponse {
   auth_url: string;

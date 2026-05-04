@@ -87,6 +87,7 @@ class AIService:
         enable_mcp: bool = True,
     ):
         self.api_provider = normalize_provider(api_provider or app_settings.default_ai_provider)
+        self.api_base_url = api_base_url
         self.default_model = default_model or app_settings.default_model
         self.default_temperature = default_temperature or app_settings.default_temperature
         self.default_max_tokens = default_max_tokens or app_settings.default_max_tokens
@@ -108,6 +109,8 @@ class AIService:
         openai_key = api_key if self.api_provider == "openai" else app_settings.openai_api_key
         if openai_key:
             base_url = api_base_url if self.api_provider == "openai" else app_settings.openai_base_url
+            if self.api_provider == "openai":
+                self.api_base_url = base_url or "https://api.openai.com/v1"
             client = OpenAIClient(openai_key, base_url or "https://api.openai.com/v1", self.config)
             self._openai_provider = OpenAIProvider(client)
         
@@ -115,11 +118,14 @@ class AIService:
         anthropic_key = api_key if self.api_provider == "anthropic" else app_settings.anthropic_api_key
         if anthropic_key:
             base_url = api_base_url if self.api_provider == "anthropic" else app_settings.anthropic_base_url
+            if self.api_provider == "anthropic":
+                self.api_base_url = base_url
             client = AnthropicClient(anthropic_key, base_url, self.config)
             self._anthropic_provider = AnthropicProvider(client)
         
         # 初始化 Gemini
         if self.api_provider == "gemini" and api_key:
+            self.api_base_url = api_base_url
             client = GeminiClient(api_key, api_base_url, self.config)
             self._gemini_provider = GeminiProvider(client)
 
@@ -179,6 +185,7 @@ class AIService:
             request_mode=request_mode,
             provider=normalize_provider(provider or self.api_provider) or "unknown",
             model=model or self.default_model,
+            api_base_url=self.api_base_url,
             user_id=self.user_id,
             stream=stream,
             auto_mcp=auto_mcp,
@@ -193,6 +200,70 @@ class AIService:
             logger.info(message)
         else:
             logger.error(message)
+
+    async def _record_call_metrics(self, metrics: AICallMetrics) -> None:
+        """把 AI 调用指标落库。
+
+        统计记录不能影响主流程，所以这里单独开短会话并吞掉异常。
+        """
+        if not self.user_id:
+            return
+
+        try:
+            from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+            from app.database import get_engine
+            from app.models.ai_usage import AIUsageLog
+            from app.services.openrouter_pricing_service import openrouter_pricing_service
+
+            prompt_tokens = metrics.usage.prompt_tokens or 0
+            completion_tokens = metrics.usage.completion_tokens or 0
+            total_tokens = metrics.usage.total_tokens
+            if total_tokens is None:
+                total_tokens = prompt_tokens + completion_tokens
+
+            pricing, estimated_cost = await openrouter_pricing_service.estimate_cost(
+                metrics.model,
+                prompt_tokens,
+                completion_tokens,
+            )
+
+            engine = await get_engine(self.user_id)
+            SessionLocal = async_sessionmaker(
+                engine,
+                class_=AsyncSession,
+                expire_on_commit=False,
+            )
+            async with SessionLocal() as session:
+                session.add(
+                    AIUsageLog(
+                        user_id=self.user_id,
+                        request_mode=metrics.request_mode,
+                        provider=metrics.provider,
+                        model=metrics.model,
+                        api_base_url=metrics.api_base_url,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens or 0,
+                        stream=metrics.stream,
+                        auto_mcp=metrics.auto_mcp,
+                        tools_count=metrics.tools_count or 0,
+                        tool_calls_count=metrics.tool_metrics.tool_calls_count or 0,
+                        retry_count=metrics.retry_count or 0,
+                        success=metrics.success,
+                        duration_ms=metrics.duration_ms,
+                        finish_reason=metrics.finish_reason,
+                        error_type=metrics.error_type,
+                        error_message=metrics.error_message,
+                        reference_prompt_price=pricing.prompt if pricing else None,
+                        reference_completion_price=pricing.completion if pricing else None,
+                        reference_estimated_cost=estimated_cost,
+                        reference_currency=pricing.currency if pricing else "USD",
+                        pricing_updated_at=pricing.updated_at if pricing else None,
+                    )
+                )
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"AI用量记录落库失败（已忽略）: {e}")
 
     async def _prepare_mcp_tools(self, auto_mcp: bool = True, force_refresh: bool = False) -> Optional[List[Dict]]:
         """
@@ -388,6 +459,7 @@ class AIService:
         auto_mcp: bool = True,
         handle_tool_calls: bool = True,
         mcp_max_rounds: Optional[int] = None,
+        record_usage: bool = True,
     ) -> Dict[str, Any]:
         """
         生成文本（自动支持MCP工具）
@@ -464,10 +536,14 @@ class AIService:
                 usage=usage,
             )
             self._log_call_metrics(metrics)
+            if record_usage:
+                await self._record_call_metrics(metrics)
             return response
         except Exception as e:
             metrics.finish(success=False, error=e)
             self._log_call_metrics(metrics)
+            if record_usage:
+                await self._record_call_metrics(metrics)
             raise
 
     async def generate_text_stream(
@@ -481,6 +557,7 @@ class AIService:
         tool_choice: Optional[str] = None,
         auto_mcp: bool = True,
         mcp_max_rounds: Optional[int] = None,
+        record_usage: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
         流式生成文本（自动支持MCP工具）
@@ -558,6 +635,8 @@ class AIService:
                 usage=latest_usage,
             )
             self._log_call_metrics(metrics)
+            if record_usage:
+                await self._record_call_metrics(metrics)
         except Exception as e:
             metrics.finish(
                 success=False,
@@ -567,6 +646,8 @@ class AIService:
                 error=e,
             )
             self._log_call_metrics(metrics)
+            if record_usage:
+                await self._record_call_metrics(metrics)
             raise
 
     async def call_with_json_retry(
@@ -623,6 +704,7 @@ class AIService:
                     system_prompt=system_prompt,
                     auto_mcp=auto_mcp,
                     handle_tool_calls=True,
+                    record_usage=False,
                 )
                 aggregate_usage.add(TokenUsage.from_response(result))
                 metrics.retry_count = attempt
@@ -644,6 +726,7 @@ class AIService:
                         usage=aggregate_usage,
                     )
                     self._log_call_metrics(metrics, title="AI调用汇总")
+                    await self._record_call_metrics(metrics)
                     return data
                 except Exception as e:
                     metrics.json_parse_success = False
@@ -659,6 +742,7 @@ class AIService:
                 error=e,
             )
             self._log_call_metrics(metrics, title="AI调用汇总")
+            await self._record_call_metrics(metrics)
             raise
 
     @staticmethod

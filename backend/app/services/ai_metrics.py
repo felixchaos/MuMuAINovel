@@ -75,6 +75,7 @@ class AICallMetrics:
     request_mode: str
     provider: str
     model: str
+    api_base_url: Optional[str] = None
     user_id: Optional[str] = None
     stream: bool = False
     auto_mcp: bool = False
@@ -132,6 +133,7 @@ class AICallMetrics:
             ("请求类型", self.request_mode),
             ("提供商", self.provider),
             ("模型", self.model),
+            ("API地址", self.api_base_url or "未知"),
             ("状态", "成功" if self.success else "失败"),
             ("首字耗时", self._format_latency(self.ttft_ms, allow_empty=True)),
             ("总耗时", self._format_latency(self.duration_ms, allow_empty=False)),

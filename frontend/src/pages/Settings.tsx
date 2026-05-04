@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Card, Form, Input, Button, Select, Slider, InputNumber, message, Space, Typography, Spin, Modal, Alert, Grid, Tabs, List, Tag, Popconfirm, Empty, Row, Col, theme } from 'antd';
-import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined } from '@ant-design/icons';
-import { settingsApi, mcpPluginApi } from '../services/api';
-import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig } from '../types';
+import { SaveOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, ThunderboltOutlined, PlusOutlined, EditOutlined, CopyOutlined, WarningOutlined, PictureOutlined, BarChartOutlined } from '@ant-design/icons';
+import { settingsApi, mcpPluginApi, aiUsageApi } from '../services/api';
+import type { SettingsUpdate, APIKeyPreset, PresetCreateRequest, APIKeyPresetConfig, AIUsageSummary } from '../types';
 import { eventBus, EventNames } from '../store/eventBus';
 import { FEATURE_FLAGS } from '../config/featureFlags';
 
@@ -58,6 +58,9 @@ export default function SettingsPage() {
   const [isPresetModalVisible, setIsPresetModalVisible] = useState(false);
   const [testingPresetId, setTestingPresetId] = useState<string | null>(null);
   const [presetForm] = Form.useForm();
+  const [usageSummary, setUsageSummary] = useState<AIUsageSummary | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageDays, setUsageDays] = useState(30);
   
   // 预设编辑窗口的模型列表状态（独立于当前配置的模型列表）
   const [presetModelOptions, setPresetModelOptions] = useState<Array<{ value: string; label: string; description: string }>>([]);
@@ -85,6 +88,8 @@ export default function SettingsPage() {
       // 清除旧的测试结果，因为可能是其他配置的测试结果
       setTestResult(null);
       setShowTestResult(false);
+    } else if (activeTab === 'usage') {
+      loadUsageSummary();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -130,6 +135,38 @@ export default function SettingsPage() {
       }
     } finally {
       setInitialLoading(false);
+    }
+  };
+
+  const loadUsageSummary = async (days = usageDays) => {
+    setUsageLoading(true);
+    try {
+      const summary = await aiUsageApi.getSummary(days);
+      setUsageSummary(summary);
+    } catch (error) {
+      console.error('加载AI用量统计失败:', error);
+      message.error('加载AI用量统计失败');
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
+  const handleUsageDaysChange = (days: number) => {
+    setUsageDays(days);
+    loadUsageSummary(days);
+  };
+
+  const handleRefreshPricing = async () => {
+    setUsageLoading(true);
+    try {
+      const result = await aiUsageApi.refreshPricing();
+      message.success(`OpenRouter参考价格已刷新：${result.count} 个模型`);
+      await loadUsageSummary(usageDays);
+    } catch (error) {
+      console.error('刷新OpenRouter参考价格失败:', error);
+      message.error('刷新OpenRouter参考价格失败');
+    } finally {
+      setUsageLoading(false);
     }
   };
 
@@ -953,6 +990,143 @@ export default function SettingsPage() {
   };
 
   // ========== 渲染预设列表 ==========
+
+  const formatTokenNumber = (value?: number) => new Intl.NumberFormat('zh-CN').format(value || 0);
+
+  const formatReferenceCost = (value?: number) => {
+    if (typeof value !== 'number') return '暂无参考价';
+    return `$${value.toFixed(value < 0.01 ? 6 : 4)}`;
+  };
+
+  const renderUsagePanel = () => {
+    const summary = usageSummary;
+    const statItems = [
+      { label: '总调用', value: formatTokenNumber(summary?.total_calls), hint: `成功 ${formatTokenNumber(summary?.success_calls)} 次` },
+      { label: '输入 Token', value: formatTokenNumber(summary?.prompt_tokens), hint: 'Prompt / 上下文' },
+      { label: '输出 Token', value: formatTokenNumber(summary?.completion_tokens), hint: '模型生成内容' },
+      { label: '总 Token', value: formatTokenNumber(summary?.total_tokens), hint: formatReferenceCost(summary?.reference_estimated_cost) },
+    ];
+
+    return (
+      <Spin spinning={usageLoading}>
+        <Space direction="vertical" size={isMobile ? 'middle' : 'large'} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="这里只统计 Token 用量；OpenRouter 价格库只用于参考估算，不代表实际扣费。"
+          />
+
+          <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space wrap>
+              <Select
+                value={usageDays}
+                style={{ width: 140 }}
+                onChange={handleUsageDaysChange}
+                options={[
+                  { value: 7, label: '最近 7 天' },
+                  { value: 30, label: '最近 30 天' },
+                  { value: 90, label: '最近 90 天' },
+                  { value: 365, label: '最近 365 天' },
+                ]}
+              />
+              <Button icon={<ReloadOutlined />} onClick={() => loadUsageSummary()}>
+                刷新统计
+              </Button>
+            </Space>
+            <Button icon={<ReloadOutlined />} onClick={handleRefreshPricing}>
+              刷新 OpenRouter 参考价
+            </Button>
+          </Space>
+
+          <Row gutter={[12, 12]}>
+            {statItems.map(item => (
+              <Col xs={12} md={6} key={item.label}>
+                <div style={{
+                  padding: isMobile ? 12 : 16,
+                  border: `1px solid ${token.colorBorderSecondary}`,
+                  borderRadius: 8,
+                  background: token.colorFillAlter,
+                  minHeight: 96,
+                }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{item.label}</Text>
+                  <div style={{ fontSize: isMobile ? 20 : 26, fontWeight: 700, marginTop: 8 }}>
+                    {item.value}
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{item.hint}</Text>
+                </div>
+              </Col>
+            ))}
+          </Row>
+
+          <div style={{ border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, overflow: 'hidden' }}>
+            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${token.colorBorderSecondary}`, background: token.colorFillAlter }}>
+              <Text strong>按模型与工作流统计</Text>
+            </div>
+            <List
+              locale={{ emptyText: '暂无AI调用记录' }}
+              dataSource={summary?.by_model || []}
+              renderItem={(item) => (
+                <List.Item style={{ padding: '14px 16px' }}>
+                  <List.Item.Meta
+                    title={
+                      <Space wrap>
+                        <Text strong>{item.model}</Text>
+                        <Tag color={getProviderColor(item.provider)}>{item.provider.toUpperCase()}</Tag>
+                        {item.request_mode && <Tag>{item.request_mode}</Tag>}
+                      </Space>
+                    }
+                    description={
+                      <Space wrap size="middle">
+                        {item.api_base_url && <Text type="secondary" style={{ wordBreak: 'break-all' }}>{item.api_base_url}</Text>}
+                        <Text type="secondary">调用 {formatTokenNumber(item.calls)} 次</Text>
+                        <Text type="secondary">成功 {formatTokenNumber(item.success_calls)} 次</Text>
+                        <Text type="secondary">输入 {formatTokenNumber(item.prompt_tokens)}</Text>
+                        <Text type="secondary">输出 {formatTokenNumber(item.completion_tokens)}</Text>
+                        <Text type="secondary">总计 {formatTokenNumber(item.total_tokens)}</Text>
+                        <Text type="secondary">参考 {formatReferenceCost(item.reference_estimated_cost)}</Text>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+          </div>
+
+          <div style={{ border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 8, overflow: 'hidden' }}>
+            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${token.colorBorderSecondary}`, background: token.colorFillAlter }}>
+              <Text strong>最近调用</Text>
+            </div>
+            <List
+              locale={{ emptyText: '暂无最近调用' }}
+              dataSource={summary?.recent_logs || []}
+              renderItem={(item) => (
+                <List.Item style={{ padding: '12px 16px' }}>
+                  <List.Item.Meta
+                    title={
+                      <Space wrap>
+                        <Tag color={item.success ? 'success' : 'error'}>{item.success ? '成功' : '失败'}</Tag>
+                        <Text>{item.request_mode}</Text>
+                        <Text type="secondary">{item.model}</Text>
+                        {item.api_base_url && <Text type="secondary" style={{ wordBreak: 'break-all' }}>{item.api_base_url}</Text>}
+                      </Space>
+                    }
+                    description={
+                      <Space wrap size="middle">
+                        <Text type="secondary">{new Date(item.created_at).toLocaleString()}</Text>
+                        <Text type="secondary">总Token {formatTokenNumber(item.total_tokens)}</Text>
+                        {typeof item.duration_ms === 'number' && <Text type="secondary">{item.duration_ms}ms</Text>}
+                        {!item.success && item.error_type && <Text type="danger">{item.error_type}</Text>}
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+          </div>
+        </Space>
+      </Spin>
+    );
+  };
 
   const renderPresetsList = () => (
     <Spin spinning={presetsLoading}>
@@ -1878,6 +2052,11 @@ export default function SettingsPage() {
                   key: 'presets',
                   label: <Space size={6}><CopyOutlined />配置预设</Space>,
                   children: renderPresetsList(),
+                },
+                {
+                  key: 'usage',
+                  label: <Space size={6}><BarChartOutlined />用量统计</Space>,
+                  children: renderUsagePanel(),
                 },
               ]}
             />

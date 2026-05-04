@@ -35,6 +35,8 @@ class OpenAIClient(BaseAIClient):
         }
         if stream:
             payload["stream"] = True
+            if "openrouter.ai" in self.base_url or "api.openai.com" in self.base_url:
+                payload["stream_options"] = {"include_usage": True}
         if tools:
             # 清理 $schema 字段
             cleaned = []

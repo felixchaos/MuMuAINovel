@@ -61,6 +61,8 @@ import type {
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
   StoryEngineSnapshot,
+  AIUsageLog,
+  AIUsageSummary,
 } from '../types';
 
 interface MCPPluginSimpleCreate {
@@ -340,6 +342,17 @@ export const settingsApi = {
 
   testSystemSMTPSettings: (data: { to_email: string }) =>
     api.post<unknown, { success: boolean; message: string }>('/settings/system/smtp/test', data),
+};
+
+export const aiUsageApi = {
+  getSummary: (days: number = 30) =>
+    api.get<unknown, AIUsageSummary>('/ai-usage/summary', { params: { days } }),
+
+  getLogs: (params?: { limit?: number; offset?: number; success?: boolean }) =>
+    api.get<unknown, AIUsageLog[]>('/ai-usage/logs', { params }),
+
+  refreshPricing: () =>
+    api.post<unknown, { message: string; count: number; updated_at: string }>('/ai-usage/pricing/refresh'),
 };
 
 export const projectApi = {
