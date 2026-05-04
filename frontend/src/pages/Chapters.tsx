@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge, Tag, Card, InputNumber, Alert, Radio, Descriptions, Collapse, Popconfirm, Pagination, theme, Upload } from 'antd';
-import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined, UploadOutlined } from '@ant-design/icons';
+import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined, UploadOutlined, HighlightOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
 import { useChapterSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
-import { projectApi, writingStyleApi, chapterApi } from '../services/api';
+import { projectApi, writingStyleApi, chapterApi, polishApi } from '../services/api';
 import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { UploadFile } from 'antd/es/upload/interface';
+import type { FormInstance } from 'antd/es/form';
 import ChapterAnalysis from '../components/ChapterAnalysis';
 import ExpansionPlanEditor from '../components/ExpansionPlanEditor';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
@@ -18,6 +19,10 @@ import PartialRegenerateModal from '../components/PartialRegenerateModal';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
+
+type ChapterAiField = 'title' | 'summary' | 'content';
+type ChapterAiMode = 'generate_title' | 'generate_summary' | 'polish' | 'rewrite';
+type ChapterFormLike = Pick<FormInstance, 'getFieldValue' | 'setFieldsValue'>;
 
 // localStorage 缓存键名
 const WORD_COUNT_CACHE_KEY = 'chapter_default_word_count';
@@ -69,6 +74,7 @@ export default function Chapters() {
   const [editorForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const contentTextAreaRef = useRef<TextAreaRef>(null);
+  const manualContentTextAreaRef = useRef<TextAreaRef>(null);
   const [writingStyles, setWritingStyles] = useState<WritingStyle[]>([]);
   const [selectedStyleId, setSelectedStyleId] = useState<number | undefined>();
   const [targetWordCount, setTargetWordCount] = useState<number>(getCachedWordCount);
@@ -826,6 +832,320 @@ export default function Chapters() {
     return chapterGenerateGateMap[chapter.id]?.reason || '';
   };
 
+  const getChapterFormText = (targetForm: ChapterFormLike, field: ChapterAiField) => {
+    return String(targetForm.getFieldValue(field) || '');
+  };
+
+  const buildChapterFormContext = (targetForm: ChapterFormLike) => {
+    const chapterNumber = targetForm.getFieldValue('chapter_number');
+    const outlineId = String(targetForm.getFieldValue('outline_id') || '');
+    const outline = outlineId ? outlines.find(item => item.id === outlineId) : undefined;
+    const title = getChapterFormText(targetForm, 'title').trim();
+    const summary = getChapterFormText(targetForm, 'summary').trim();
+    const content = getChapterFormText(targetForm, 'content').trim();
+    const clippedContent = content.length > 12000
+      ? `${content.slice(0, 7000)}\n\n……（中间内容已压缩）……\n\n${content.slice(-4000)}`
+      : content;
+
+    return [
+      `项目：${currentProject.title}`,
+      chapterNumber ? `章节序号：第${chapterNumber}章` : '',
+      outline ? `关联大纲：${outline.title}\n${outline.content || ''}` : '',
+      title ? `当前标题：${title}` : '',
+      summary ? `当前摘要：${summary}` : '',
+      clippedContent ? `章节正文：\n${clippedContent}` : '',
+    ].filter(Boolean).join('\n\n');
+  };
+
+  const buildChapterAiInstruction = (
+    mode: ChapterAiMode,
+    label: string,
+    extraInstruction: string
+  ) => {
+    const extra = extraInstruction.trim();
+    const baseInstructions: Record<ChapterAiMode, string> = {
+      generate_title:
+        '请根据给定章节上下文生成一个中文网文章节标题。要求：只输出标题本身；不要输出解释、引号、书名号或前后缀；标题要贴合本章核心事件，简洁有辨识度，尽量控制在2到12个汉字。',
+      generate_summary:
+        '请根据给定章节上下文生成章节摘要。要求：保留真实剧情事实、人设状态、关键冲突和结尾落点；不要新增设定；不要写成宣传语；控制在100到220字；只输出摘要正文。',
+      polish:
+        `请润色${label}。要求：保留原意、事实、人设、叙事视角和关键信息；表达更自然、更像人写；不要新增设定；不要输出解释或前后缀，只输出处理后的文本。`,
+      rewrite:
+        `请根据用户要求重写${label}。要求：保留必要事实、人设和前后文逻辑；允许重组表达和段落节奏；不要输出解释或前后缀，只输出重写后的文本。`,
+    };
+
+    return extra
+      ? `${baseInstructions[mode]}\n\n用户额外要求：${extra}`
+      : baseInstructions[mode];
+  };
+
+  const confirmApplyChapterAiResult = (
+    label: string,
+    originalText: string,
+    resultText: string,
+    onApply: () => void
+  ) => {
+    modal.confirm({
+      title: `${label} AI结果`,
+      icon: <HighlightOutlined />,
+      width: isMobile ? 'calc(100vw - 32px)' : 760,
+      centered: true,
+      okText: '应用结果',
+      cancelText: '保留原文',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <Alert
+            type="info"
+            showIcon
+            message="AI 已生成结果，确认后才会替换当前内容。"
+            style={{ marginBottom: 12 }}
+          />
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>原文/上下文</div>
+              <div style={{
+                maxHeight: 150,
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+                lineHeight: 1.6,
+                padding: '8px 10px',
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: token.borderRadius,
+                background: token.colorFillQuaternary,
+                color: token.colorTextSecondary,
+              }}>
+                {originalText || '（空）'}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果</div>
+              <div style={{
+                maxHeight: 240,
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+                lineHeight: 1.6,
+                padding: '8px 10px',
+                border: `1px solid ${token.colorPrimaryBorder}`,
+                borderRadius: token.borderRadius,
+                background: token.colorBgContainer,
+              }}>
+                {resultText}
+              </div>
+            </div>
+          </div>
+        </div>
+      ),
+      onOk: () => {
+        onApply();
+        message.success(`${label}已应用AI结果`);
+      },
+    });
+  };
+
+  const runChapterAiTool = async (
+    targetForm: ChapterFormLike,
+    field: ChapterAiField,
+    label: string,
+    mode: ChapterAiMode,
+    extraInstruction: string
+  ) => {
+    const currentValue = getChapterFormText(targetForm, field).trim();
+    const contextText = buildChapterFormContext(targetForm);
+    const sourceText = mode === 'generate_title' || mode === 'generate_summary'
+      ? contextText
+      : currentValue;
+
+    if ((mode === 'polish' || mode === 'rewrite') && !currentValue) {
+      message.warning(`请先填写${label}`);
+      return;
+    }
+
+    const hasUsefulContext = Boolean(
+      getChapterFormText(targetForm, 'title').trim() ||
+      getChapterFormText(targetForm, 'summary').trim() ||
+      getChapterFormText(targetForm, 'content').trim() ||
+      targetForm.getFieldValue('outline_id')
+    );
+
+    if ((mode === 'generate_title' || mode === 'generate_summary') && !hasUsefulContext) {
+      message.warning('请先填写正文、摘要或选择关联大纲，再让AI生成');
+      return;
+    }
+
+    const closeLoading = message.loading(`AI正在处理${label}...`, 0);
+    try {
+      const result = await polishApi.polishText({
+        original_text: sourceText,
+        project_id: currentProject.id,
+        model: selectedModel || undefined,
+        temperature: mode === 'polish' ? 0.7 : 0.55,
+        instruction: buildChapterAiInstruction(mode, label, extraInstruction),
+      });
+
+      const aiText = result.polished_text?.trim();
+      if (!aiText) {
+        message.warning('AI结果为空，请调整要求后重试');
+        return;
+      }
+
+      confirmApplyChapterAiResult(label, sourceText, aiText, () => {
+        targetForm.setFieldsValue({ [field]: aiText });
+      });
+    } catch (error) {
+      console.error(`${label} AI处理失败:`, error);
+      const err = error as Error;
+      message.error(`${label} AI处理失败：${err.message || '未知错误'}`);
+    } finally {
+      closeLoading();
+    }
+  };
+
+  const openChapterAiTool = (
+    targetForm: ChapterFormLike,
+    field: ChapterAiField,
+    label: string,
+    mode: ChapterAiMode
+  ) => {
+    let extraInstruction = '';
+    const actionText = mode === 'generate_title' || mode === 'generate_summary'
+      ? '生成'
+      : mode === 'rewrite'
+        ? '重写'
+        : '润色';
+
+    modal.confirm({
+      title: `${label}${actionText}要求`,
+      icon: <HighlightOutlined />,
+      width: isMobile ? 'calc(100vw - 32px)' : 640,
+      centered: true,
+      okText: `开始${actionText}`,
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            输入本次希望 AI 如何处理；留空则使用默认规则。
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：更凝练；强化悬疑感；保留所有事实；不要新增设定；标题更有番茄风格..."
+            autoFocus
+            onChange={(event) => {
+              extraInstruction = event.target.value;
+            }}
+          />
+        </div>
+      ),
+      onOk: () => runChapterAiTool(targetForm, field, label, mode, extraInstruction),
+    });
+  };
+
+  const openSelectedContentAiTool = (
+    targetForm: ChapterFormLike,
+    textAreaRef: { current: TextAreaRef | null }
+  ) => {
+    const textArea = textAreaRef.current?.resizableTextArea?.textArea;
+    if (!textArea) {
+      message.warning('请先聚焦章节正文输入框');
+      return;
+    }
+
+    const start = textArea.selectionStart;
+    const end = textArea.selectionEnd;
+    const selectedText = textArea.value.substring(start, end);
+
+    if (start === end || selectedText.trim().length < 10) {
+      message.warning('请先在章节正文中选中至少10个字');
+      return;
+    }
+
+    let extraInstruction = '';
+    modal.confirm({
+      title: '选中内容编辑要求',
+      icon: <HighlightOutlined />,
+      width: isMobile ? 'calc(100vw - 32px)' : 640,
+      centered: true,
+      okText: '开始编辑',
+      cancelText: '取消',
+      content: (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
+            AI 只会处理选中的这段文字，确认后才会替换选区。
+          </div>
+          <TextArea
+            rows={4}
+            placeholder="例如：改成更自然的对白；补足动作细节；压缩这段；保持设定不变..."
+            autoFocus
+            onChange={(event) => {
+              extraInstruction = event.target.value;
+            }}
+          />
+          <div style={{
+            marginTop: 12,
+            maxHeight: 120,
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+            lineHeight: 1.6,
+            padding: '8px 10px',
+            border: `1px solid ${token.colorBorderSecondary}`,
+            borderRadius: token.borderRadius,
+            background: token.colorFillQuaternary,
+            color: token.colorTextSecondary,
+          }}>
+            {selectedText}
+          </div>
+        </div>
+      ),
+      onOk: async () => {
+        const closeLoading = message.loading('AI正在编辑选中内容...', 0);
+        try {
+          const contextText = buildChapterFormContext(targetForm);
+          const result = await polishApi.polishText({
+            original_text: selectedText,
+            project_id: currentProject.id,
+            model: selectedModel || undefined,
+            temperature: 0.65,
+            instruction: [
+              '你是中文小说编辑。请只处理用户选中的片段，保持章节上下文、人设、事实和叙事视角一致。只输出处理后的选中片段，不要解释，不要补前后缀。',
+              extraInstruction.trim() ? `用户要求：${extraInstruction.trim()}` : '用户要求：自然润色并改善表达。',
+              `章节上下文：\n${contextText}`,
+            ].join('\n\n'),
+          });
+
+          const aiText = result.polished_text?.trim();
+          if (!aiText) {
+            message.warning('AI结果为空，请调整要求后重试');
+            return;
+          }
+
+          confirmApplyChapterAiResult('选中内容', selectedText, aiText, () => {
+            const currentContent = getChapterFormText(targetForm, 'content');
+            let replaceStart = start;
+            let replaceEnd = end;
+
+            if (currentContent.substring(start, end) !== selectedText) {
+              const fallbackStart = currentContent.indexOf(selectedText);
+              if (fallbackStart < 0) {
+                message.error('正文已变化，无法定位选中内容，请重新选择');
+                return;
+              }
+              replaceStart = fallbackStart;
+              replaceEnd = fallbackStart + selectedText.length;
+            }
+
+            const nextContent = currentContent.substring(0, replaceStart) + aiText + currentContent.substring(replaceEnd);
+            targetForm.setFieldsValue({ content: nextContent });
+          });
+        } catch (error) {
+          console.error('选中内容AI编辑失败:', error);
+          const err = error as Error;
+          message.error(`选中内容AI编辑失败：${err.message || '未知错误'}`);
+        } finally {
+          closeLoading();
+        }
+      },
+    });
+  };
+
   const handleOpenModal = (id: string) => {
     const chapter = chapters.find(c => c.id === id);
     if (chapter) {
@@ -858,6 +1178,7 @@ export default function Chapters() {
       setCurrentChapter(chapter);
       editorForm.setFieldsValue({
         title: chapter.title,
+        summary: chapter.summary,
         content: chapter.content,
       });
       setEditingId(id);
@@ -1563,10 +1884,29 @@ export default function Chapters() {
 
           <Form.Item
             label="章节标题"
-            name="title"
-            rules={[{ required: true, message: '请输入标题' }]}
+            required
           >
-            <Input placeholder="例如：第一章 初遇" />
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item
+                name="title"
+                noStyle
+                rules={[{ required: true, message: '请输入标题' }]}
+              >
+                <Input placeholder="例如：第一章 初遇" />
+              </Form.Item>
+              <Button
+                icon={<ThunderboltOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'title', '章节标题', 'generate_title')}
+              >
+                AI生成
+              </Button>
+              <Button
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'title', '章节标题', 'polish')}
+              >
+                润色
+              </Button>
+            </Space.Compact>
           </Form.Item>
 
           <Form.Item
@@ -1586,20 +1926,66 @@ export default function Chapters() {
             </Select>
           </Form.Item>
 
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <span style={{ color: token.colorTextSecondary }}>章节正文</span>
+            <Space wrap size={8}>
+              <Button
+                size="small"
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'content', '章节正文', 'polish')}
+              >
+                润色全文
+              </Button>
+              <Button
+                size="small"
+                icon={<ThunderboltOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'content', '章节正文', 'rewrite')}
+              >
+                重写全文
+              </Button>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => openSelectedContentAiTool(manualCreateForm, manualContentTextAreaRef)}
+              >
+                选中编辑
+              </Button>
+            </Space>
+          </div>
+
           <Form.Item
-            label="章节正文"
             name="content"
             tooltip="可以直接从外部文档复制粘贴整章正文"
           >
             <TextArea
+              ref={manualContentTextAreaRef}
               rows={10}
               placeholder="粘贴或输入章节正文..."
               showCount
             />
           </Form.Item>
 
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <span style={{ color: token.colorTextSecondary }}>章节摘要（可选）</span>
+            <Space wrap size={8}>
+              <Button
+                size="small"
+                icon={<ThunderboltOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'summary', '章节摘要', 'generate_summary')}
+              >
+                AI生成
+              </Button>
+              <Button
+                size="small"
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(manualCreateForm, 'summary', '章节摘要', 'polish')}
+              >
+                润色
+              </Button>
+            </Space>
+          </div>
+
           <Form.Item
-            label="章节摘要（可选）"
             name="summary"
             tooltip="简要描述本章的主要内容和情节发展"
           >
@@ -3023,6 +3409,22 @@ export default function Chapters() {
               <Form.Item name="title" noStyle>
                 <Input disabled style={{ flex: 1 }} />
               </Form.Item>
+              <Button
+                icon={<ThunderboltOutlined />}
+                onClick={() => openChapterAiTool(editorForm, 'title', '章节标题', 'generate_title')}
+                disabled={isGenerating}
+                title="根据摘要、正文和关联大纲生成标题"
+              >
+                {isMobile ? '标题' : 'AI标题'}
+              </Button>
+              <Button
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(editorForm, 'title', '章节标题', 'polish')}
+                disabled={isGenerating}
+                title="润色当前章节标题"
+              >
+                润色
+              </Button>
               {editingId && (() => {
                 const currentChapter = chapters.find(c => c.id === editingId);
                 const canGenerate = currentChapter ? canGenerateChapter(currentChapter) : false;
@@ -3055,6 +3457,36 @@ export default function Chapters() {
                 );
               })()}
             </Space.Compact>
+          </Form.Item>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+            <span style={{ color: token.colorTextSecondary }}>章节摘要（可选）</span>
+            <Space wrap size={8}>
+              <Button
+                size="small"
+                icon={<ThunderboltOutlined />}
+                onClick={() => openChapterAiTool(editorForm, 'summary', '章节摘要', 'generate_summary')}
+                disabled={isGenerating}
+              >
+                AI生成
+              </Button>
+              <Button
+                size="small"
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(editorForm, 'summary', '章节摘要', 'polish')}
+                disabled={isGenerating}
+              >
+                润色
+              </Button>
+            </Space>
+          </div>
+
+          <Form.Item name="summary" style={{ marginBottom: isMobile ? 16 : 12 }}>
+            <TextArea
+              rows={3}
+              placeholder="简要描述本章内容，可用于后续分析和衔接..."
+              disabled={isGenerating}
+            />
           </Form.Item>
 
 
@@ -3166,6 +3598,14 @@ export default function Chapters() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
             <span style={{ color: token.colorTextSecondary }}>章节内容</span>
             <Space wrap size={8}>
+              <Button
+                size="small"
+                icon={<HighlightOutlined />}
+                onClick={() => openChapterAiTool(editorForm, 'content', '章节正文', 'polish')}
+                disabled={isGenerating}
+              >
+                润色全文
+              </Button>
               <Button
                 size="small"
                 icon={<ThunderboltOutlined />}
