@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from statistics import mean, stdev
 from typing import Optional
 
 from app.logger import get_logger
@@ -143,6 +144,9 @@ class TxtParserService:
         average_words = int(total_words / chapter_count) if chapter_count else 0
         min_words = min(lengths) if lengths else 0
         max_words = max(lengths) if lengths else 0
+        size_cv = self._coefficient_of_variation(lengths)
+        dialogue_ratio = self._dialogue_line_ratio(source_text[:50000])
+        heading_density = self._heading_candidate_density(source_text[:50000])
         short_numbers = [
             int(chapter.get("chapter_number") or idx)
             for idx, chapter in enumerate(chapters, start=1)
@@ -189,6 +193,21 @@ class TxtParserService:
         if not chapters and source_text.strip():
             reasons.append("文本存在内容，但未能识别有效章节")
 
+        problem_category = self._classify_split_problem(
+            split_mode=split_mode,
+            source_text=source_text,
+            chapter_count=chapter_count,
+            average_words=average_words,
+            max_words=max_words,
+            short_count=len(short_numbers),
+            long_count=len(long_numbers),
+            size_cv=size_cv,
+        )
+        if problem_category != "ok":
+            problem_reason = self._problem_reason(problem_category)
+            if problem_reason and problem_reason not in reasons:
+                reasons.append(problem_reason)
+
         confidence = max(0.0, min(0.99, confidence))
         abnormal_numbers = sorted(set(short_numbers + long_numbers))[:80]
 
@@ -201,11 +220,106 @@ class TxtParserService:
             "average_words": average_words,
             "min_words": min_words,
             "max_words": max_words,
+            "size_cv": round(size_cv, 3),
+            "dialogue_ratio": round(dialogue_ratio, 4),
+            "heading_density": round(heading_density, 4),
+            "problem_category": problem_category,
+            "problem_label": self._problem_label(problem_category),
             "short_chapter_count": len(short_numbers),
             "long_chapter_count": len(long_numbers),
             "abnormal_chapter_numbers": abnormal_numbers,
             "reasons": reasons,
         }
+
+    def _coefficient_of_variation(self, lengths: list[int]) -> float:
+        if len(lengths) <= 1:
+            return 0.0
+        avg = mean(lengths)
+        if avg <= 0:
+            return 0.0
+        return stdev(lengths) / avg
+
+    def _dialogue_line_ratio(self, text: str) -> float:
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if not lines:
+            return 0.0
+        dialogue_lines = sum(1 for line in lines if line.startswith(("“", "\"", "「", "『")))
+        return dialogue_lines / len(lines)
+
+    def _heading_candidate_density(self, text: str) -> float:
+        body_punctuation = set("。，；：！？…、》）」』】")
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if not lines:
+            return 0.0
+        candidates = sum(
+            1
+            for line in lines
+            if 0 < len(line) <= 30 and not any(ch in body_punctuation for ch in line)
+        )
+        return candidates / len(lines)
+
+    def _classify_split_problem(
+        self,
+        *,
+        split_mode: str,
+        source_text: str,
+        chapter_count: int,
+        average_words: int,
+        max_words: int,
+        short_count: int,
+        long_count: int,
+        size_cv: float,
+    ) -> str:
+        text_length = len(source_text or "")
+        if split_mode == "empty":
+            return "empty"
+        if chapter_count <= 0 and text_length > 0:
+            return "no_chapters"
+        if split_mode == "fallback_window":
+            return "no_heading_match"
+        if split_mode == "quality_fallback_window":
+            return "fallback_used"
+        if chapter_count == 1 and max_words > 30000:
+            return "single_huge_chapter"
+        if chapter_count < 5 and text_length > 100000:
+            return "heading_too_sparse"
+        if average_words < 500 and chapter_count > 10:
+            return "heading_too_dense"
+        if short_count > 0 and chapter_count > 0 and short_count / chapter_count > 0.2:
+            return "many_tiny_chapters"
+        if long_count > 0 and chapter_count > 0 and long_count / chapter_count > 0.2:
+            return "many_huge_chapters"
+        if size_cv > 2.0:
+            return "high_variance"
+        return "ok"
+
+    def _problem_label(self, problem_category: str) -> str:
+        return {
+            "ok": "未发现明显异常",
+            "empty": "空文本",
+            "no_chapters": "未识别章节",
+            "no_heading_match": "未匹配标题",
+            "fallback_used": "质量兜底",
+            "single_huge_chapter": "单章过大",
+            "heading_too_sparse": "标题过稀",
+            "heading_too_dense": "标题过密",
+            "many_tiny_chapters": "短章过多",
+            "many_huge_chapters": "长章过多",
+            "high_variance": "长度波动大",
+        }.get(problem_category, problem_category)
+
+    def _problem_reason(self, problem_category: str) -> str:
+        return {
+            "no_chapters": "未能切出有效章节，需要人工设置章节边界",
+            "no_heading_match": "没有匹配到稳定章节标题，当前切分仅适合预览和人工修正",
+            "fallback_used": "规则切分质量不足，已转入兜底切分",
+            "single_huge_chapter": "长文本只形成一个超大章节，疑似漏切",
+            "heading_too_sparse": "长文本章节数偏少，疑似标题识别过稀",
+            "heading_too_dense": "平均章节过短且章节数较多，疑似把正文短行误切成标题",
+            "many_tiny_chapters": "短章节占比偏高，疑似误切",
+            "many_huge_chapters": "超长章节占比偏高，疑似漏切",
+            "high_variance": "章节长度离散度过高，建议重点检查边界",
+        }.get(problem_category, "")
 
     def _is_strong_heading(self, line: str) -> bool:
         if len(line) > 120:

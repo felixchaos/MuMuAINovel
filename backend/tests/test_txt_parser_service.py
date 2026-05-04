@@ -125,6 +125,9 @@ def test_split_report_exposes_mode_and_quality() -> None:
     assert report["mode_label"] == "篇章小节"
     assert report["confidence"] >= 0.75
     assert report["chapter_count"] == 3
+    assert report["problem_category"] == "ok"
+    assert report["size_cv"] >= 0
+    assert report["heading_density"] >= 0
     assert report["reasons"]
 
 
@@ -183,6 +186,7 @@ def test_ground_truth_regression_cases() -> None:
         assert [chapter["title"] for chapter in chapters] == case["titles"], case["name"]
         assert report["chapter_count"] == len(case["titles"]), case["name"]
         assert report["confidence"] >= case["min_confidence"], case["name"]
+        assert report["problem_category"] == "ok", case["name"]
         assert report["abnormal_chapter_numbers"] == [], case["name"]
 
 
@@ -195,6 +199,7 @@ def test_low_confidence_fallback_is_reported() -> None:
     assert len(chapters) >= 1
     assert report["mode"] == "fallback_window"
     assert report["confidence"] < 0.55
+    assert report["problem_category"] == "no_heading_match"
     assert report["reasons"]
 
 

@@ -1325,6 +1325,14 @@ export default function BookImport() {
                       />
                     </Col>
                     <Col xs={12} md={4}>
+                      <Text type="secondary">问题分类</Text>
+                      <div>
+                        <Tag color={preview.split_report.problem_category === 'ok' ? 'green' : 'orange'}>
+                          {preview.split_report.problem_label || preview.split_report.problem_category}
+                        </Tag>
+                      </div>
+                    </Col>
+                    <Col xs={12} md={4}>
                       <Text type="secondary">章节数</Text>
                       <div><Text strong>{preview.split_report.chapter_count}</Text></div>
                     </Col>
@@ -1339,6 +1347,14 @@ export default function BookImport() {
                     <Col xs={12} md={4}>
                       <Text type="secondary">最长</Text>
                       <div><Text strong>{preview.split_report.max_words}</Text></div>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">长度波动</Text>
+                      <div><Text strong>{(preview.split_report.size_cv ?? 0).toFixed(2)}</Text></div>
+                    </Col>
+                    <Col xs={12} md={4}>
+                      <Text type="secondary">标题密度</Text>
+                      <div><Text strong>{Math.round((preview.split_report.heading_density ?? 0) * 100)}%</Text></div>
                     </Col>
                     {preview.split_report.reasons.length > 0 && (
                       <Col span={24}>

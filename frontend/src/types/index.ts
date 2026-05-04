@@ -1250,6 +1250,11 @@ export interface BookImportSplitReport {
   average_words: number;
   min_words: number;
   max_words: number;
+  size_cv: number;
+  dialogue_ratio: number;
+  heading_density: number;
+  problem_category: string;
+  problem_label: string;
   short_chapter_count: number;
   long_chapter_count: number;
   abnormal_chapter_numbers: number[];
