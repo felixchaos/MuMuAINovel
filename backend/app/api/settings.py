@@ -747,7 +747,7 @@ class ApiTestRequest(BaseModel):
 
 
 @router.post("/check-function-calling")
-async def check_function_calling_support(data: ApiTestRequest):
+async def check_function_calling_support(data: ApiTestRequest, request: Request = None):
     """
     检查模型是否支持 Function Calling（工具调用）
     
@@ -766,6 +766,7 @@ async def check_function_calling_support(data: ApiTestRequest):
     api_base_url = data.api_base_url
     provider = normalize_provider(data.provider)
     llm_model = data.llm_model
+    user_id = getattr(getattr(request, "state", None), "user_id", None)
     
     try:
         start_time = time.time()
@@ -809,7 +810,9 @@ async def check_function_calling_support(data: ApiTestRequest):
             api_base_url=api_base_url,
             default_model=llm_model,
             default_temperature=0.3,  # 使用较低温度以获得更确定的行为
-            default_max_tokens=200
+            default_max_tokens=200,
+            user_id=user_id,
+            enable_mcp=False,
         )
         
         # 发送带工具的测试请求
@@ -968,7 +971,7 @@ async def check_function_calling_support(data: ApiTestRequest):
 
 
 @router.post("/test")
-async def test_api_connection(data: ApiTestRequest):
+async def test_api_connection(data: ApiTestRequest, request: Request = None):
     """
     测试 API 连接和配置是否正确
     
@@ -985,6 +988,7 @@ async def test_api_connection(data: ApiTestRequest):
     # 使用前端传递的参数，如果未传递则使用默认值
     temperature = data.temperature if data.temperature is not None else 0.7
     max_tokens = data.max_tokens if data.max_tokens is not None else 2000
+    user_id = getattr(getattr(request, "state", None), "user_id", None)
     import time
     
     try:
@@ -997,7 +1001,9 @@ async def test_api_connection(data: ApiTestRequest):
             api_base_url=api_base_url,
             default_model=llm_model,
             default_temperature=temperature,
-            default_max_tokens=max_tokens
+            default_max_tokens=max_tokens,
+            user_id=user_id,
+            enable_mcp=False,
         )
         
         # 发送简单的测试请求

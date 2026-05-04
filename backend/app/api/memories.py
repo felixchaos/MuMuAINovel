@@ -69,7 +69,9 @@ async def analyze_chapter(
             api_base_url=settings.api_base_url,
             model_name=settings.llm_model,
             temperature=settings.temperature,
-            max_tokens=settings.max_tokens
+            max_tokens=settings.max_tokens,
+            user_id=user_id,
+            db_session=db,
         )
         
         # 获取已埋入的伏笔列表（用于回收匹配）

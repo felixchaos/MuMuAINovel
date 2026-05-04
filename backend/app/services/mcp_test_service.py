@@ -186,7 +186,10 @@ class MCPTestService:
                 api_base_url=user_settings.api_base_url,
                 model_name=user_settings.llm_model,
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                user_id=user.user_id,
+                db_session=db_session,
+                enable_mcp=False,
             )
             
             # 使用统一门面转换为OpenAI Function Calling格式

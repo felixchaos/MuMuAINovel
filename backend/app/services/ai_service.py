@@ -763,6 +763,9 @@ def create_user_ai_service(
     temperature: float,
     max_tokens: int,
     system_prompt: Optional[str] = None,
+    user_id: Optional[str] = None,
+    db_session: Optional[Any] = None,
+    enable_mcp: bool = False,
 ) -> AIService:
     """创建用户 AI 服务（不带MCP支持）"""
     return AIService(
@@ -773,6 +776,9 @@ def create_user_ai_service(
         default_temperature=temperature,
         default_max_tokens=max_tokens,
         default_system_prompt=system_prompt,
+        user_id=user_id,
+        db_session=db_session,
+        enable_mcp=enable_mcp,
     )
 
 
