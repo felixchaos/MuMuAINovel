@@ -3,7 +3,7 @@ import { List, Button, Modal, Form, Input, Select, message, Empty, Space, Badge,
 import { EditOutlined, FileTextOutlined, ThunderboltOutlined, LockOutlined, DownloadOutlined, SettingOutlined, FundOutlined, SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, RocketOutlined, StopOutlined, InfoCircleOutlined, CaretRightOutlined, DeleteOutlined, BookOutlined, FormOutlined, PlusOutlined, ReadOutlined, SearchOutlined, FilterOutlined, ClearOutlined, UploadOutlined, HighlightOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
 import { eventBus } from '../store/eventBus';
-import { useChapterSync } from '../store/hooks';
+import { useChapterSync, useOutlineSync } from '../store/hooks';
 import { generateChapterBackground } from '../services/backgroundTaskService';
 import { projectApi, writingStyleApi, chapterApi, polishApi } from '../services/api';
 import type { Chapter, ChapterUpdate, ApiError, WritingStyle, AnalysisTask, ExpansionPlanData } from '../types';
@@ -355,6 +355,7 @@ export default function Chapters() {
     deleteChapter,
     generateChapterContentStream
   } = useChapterSync();
+  const { refreshOutlines } = useOutlineSync();
 
   useEffect(() => {
     if (currentProject?.id) {
@@ -1946,6 +1947,7 @@ export default function Chapters() {
     manualCreateForm.setFieldsValue({
       chapter_number: nextChapterNumber,
       status: 'draft',
+      outline_sync_mode: 'blank',
     });
 
     modal.confirm({
@@ -1997,7 +1999,7 @@ export default function Chapters() {
           <Form.Item
             label="关联大纲"
             name="outline_id"
-            tooltip="可选。不关联大纲时会作为独立章节保存。"
+            tooltip="可选。选择已有大纲时会绑定到该大纲；不选择时会自动创建一个同章节序号的配套大纲。"
           >
             <Select allowClear placeholder="可选：选择所属大纲">
               {/* 直接使用 store 中的 outlines 数据，而不是从现有章节中提取 */}
@@ -2009,6 +2011,38 @@ export default function Chapters() {
                   </Select.Option>
                 ))}
             </Select>
+          </Form.Item>
+
+          <Form.Item
+            shouldUpdate={(prevValues, currentValues) => prevValues.outline_id !== currentValues.outline_id}
+            noStyle
+          >
+            {({ getFieldValue }) => {
+              const hasExistingOutline = Boolean(getFieldValue('outline_id'));
+              return (
+                <Form.Item
+                  label="配套大纲"
+                  tooltip="手动建章也会补齐传统模式需要的一对一大纲链路。"
+                >
+                  <Form.Item name="outline_sync_mode" noStyle>
+                    <Radio.Group
+                      disabled={hasExistingOutline}
+                      optionType="button"
+                      buttonStyle="solid"
+                      style={{ width: '100%' }}
+                    >
+                      <Radio.Button value="blank">创建空大纲</Radio.Button>
+                      <Radio.Button value="ai">AI根据正文生成</Radio.Button>
+                    </Radio.Group>
+                  </Form.Item>
+                  <div style={{ marginTop: 6, color: token.colorTextSecondary, fontSize: 12 }}>
+                    {hasExistingOutline
+                      ? '已选择已有大纲，本章会直接关联，不再新建配套大纲。'
+                      : '未选择已有大纲时，系统会强制创建一个同序号配套大纲，避免章节和大纲链路断开。'}
+                  </div>
+                </Form.Item>
+              );
+            }}
           </Form.Item>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8 }}>
@@ -2156,6 +2190,7 @@ export default function Chapters() {
 
                 message.success('已删除旧章节并创建新章节');
                 await refreshChapters();
+                await refreshOutlines(currentProject.id);
 
                 // 刷新项目信息以更新字数统计
                 const updatedProject = await projectApi.getProject(currentProject.id);
@@ -2180,8 +2215,9 @@ export default function Chapters() {
             project_id: currentProject.id,
             ...values
           });
-          message.success('章节创建成功');
+          message.success('章节创建成功，已同步配套大纲');
           await refreshChapters();
+          await refreshOutlines(currentProject.id);
 
           // 刷新项目信息以更新字数统计
           const updatedProject = await projectApi.getProject(currentProject.id);

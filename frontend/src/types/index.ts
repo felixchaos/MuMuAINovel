@@ -577,6 +577,10 @@ export interface ChapterCreate {
   content?: string;
   summary?: string;
   status?: 'draft' | 'pending' | 'writing' | 'completed';
+  outline_id?: string;
+  sub_index?: number;
+  expansion_plan?: string;
+  outline_sync_mode?: 'blank' | 'ai' | 'none';
 }
 
 export interface ChapterUpdate {

@@ -1,6 +1,6 @@
 """章节相关的Pydantic模型"""
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 
 
@@ -28,6 +28,10 @@ class ChapterCreate(BaseModel):
     outline_id: Optional[str] = Field(None, description="关联的大纲ID")
     sub_index: Optional[int] = Field(1, description="大纲下的子章节序号")
     expansion_plan: Optional[str] = Field(None, description="展开规划详情(JSON)")
+    outline_sync_mode: Literal["blank", "ai", "none"] = Field(
+        default="blank",
+        description="无关联大纲时的配套大纲创建方式：blank=创建空内容大纲，ai=根据章节正文生成大纲，none=兼容旧接口不创建"
+    )
 
 
 class ChapterUpdate(BaseModel):

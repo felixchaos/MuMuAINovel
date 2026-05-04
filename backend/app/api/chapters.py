@@ -115,6 +115,146 @@ def _build_style_system_prompt(style_content: Optional[str]) -> Optional[str]:
 确保在整个章节创作过程中始终保持风格的一致性。"""
 
 
+def _extract_ai_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        content = response.get("content", "")
+        return content if isinstance(content, str) else str(content or "")
+    return str(response or "")
+
+
+def _build_manual_chapter_outline_structure(
+    *,
+    chapter: ChapterCreate,
+    mode: str,
+    ai_generated: bool = False,
+) -> str:
+    payload = {
+        "source": "manual_chapter_create",
+        "sync_mode": mode,
+        "ai_generated": ai_generated,
+        "chapter_number": chapter.chapter_number,
+        "chapter_title": chapter.title,
+        "summary": chapter.summary or "",
+        "key_events": [],
+        "character_focus": [],
+        "emotional_tone": "",
+        "narrative_goal": "",
+        "conflict_type": "",
+        "estimated_words": len(chapter.content or ""),
+        "scenes": [],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+async def _generate_manual_chapter_outline_content(
+    *,
+    chapter: ChapterCreate,
+    project: Project,
+    user_id: str,
+    db: AsyncSession,
+) -> str:
+    content = (chapter.content or "").strip()
+    summary = (chapter.summary or "").strip()
+    if not content and not summary:
+        return ""
+
+    clipped_content = content
+    if len(clipped_content) > 12000:
+        clipped_content = f"{clipped_content[:7000]}\n\n……（中段略）……\n\n{clipped_content[-4000:]}"
+
+    prompt = f"""请根据用户手动创建的小说章节，生成一个可用于后续章节管理的一对一章节大纲。
+
+要求：
+- 只依据给定章节标题、摘要和正文，不要新增设定、角色、事件或结局。
+- 保留本章已经发生的关键事实、人物状态、冲突、场景和结尾落点。
+- 输出中文大纲正文即可，不要输出 JSON、Markdown、解释或前后缀。
+- 控制在 150-350 字。
+
+项目：{project.title}
+类型：{project.genre or '未设定'}
+主题：{project.theme or '未设定'}
+章节：第{chapter.chapter_number}章《{chapter.title}》
+已有摘要：{summary or '（无）'}
+
+章节正文：
+{clipped_content or '（无正文）'}"""
+
+    ai_service = await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
+    response = await ai_service.generate_text(
+        prompt=prompt,
+        temperature=0.45,
+        max_tokens=1200,
+        auto_mcp=False,
+    )
+    return _extract_ai_text(response).strip()
+
+
+async def _ensure_manual_chapter_outline(
+    *,
+    chapter: ChapterCreate,
+    project: Project,
+    user_id: str,
+    db: AsyncSession,
+) -> Optional[str]:
+    """手动创建章节时补齐配套大纲，避免传统模式章节/大纲链路断开。"""
+    if chapter.outline_id:
+        outline_result = await db.execute(
+            select(Outline).where(
+                Outline.id == chapter.outline_id,
+                Outline.project_id == chapter.project_id,
+            )
+        )
+        if not outline_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="关联大纲不存在或不属于当前项目")
+        return chapter.outline_id
+
+    if chapter.outline_sync_mode == "none":
+        return None
+
+    outline_content = ""
+    ai_generated = False
+    if chapter.outline_sync_mode == "ai":
+        try:
+            outline_content = await _generate_manual_chapter_outline_content(
+                chapter=chapter,
+                project=project,
+                user_id=user_id,
+                db=db,
+            )
+            ai_generated = bool(outline_content)
+        except Exception as exc:
+            logger.warning(
+                "手动章节配套大纲AI生成失败，降级为空大纲: project=%s chapter=%s error=%s",
+                chapter.project_id,
+                chapter.chapter_number,
+                exc,
+            )
+
+    outline = Outline(
+        project_id=chapter.project_id,
+        title=chapter.title,
+        content=outline_content,
+        order_index=chapter.chapter_number,
+        structure=_build_manual_chapter_outline_structure(
+            chapter=chapter,
+            mode=chapter.outline_sync_mode,
+            ai_generated=ai_generated,
+        ),
+    )
+    db.add(outline)
+    await db.flush()
+    logger.info(
+        "手动创建章节时已同步创建配套大纲: project=%s chapter=%s outline=%s mode=%s",
+        chapter.project_id,
+        chapter.chapter_number,
+        outline.id,
+        chapter.outline_sync_mode,
+    )
+    return outline.id
+
+
 @router.post("", response_model=ChapterResponse, summary="创建章节")
 async def create_chapter(
     chapter: ChapterCreate,
@@ -128,9 +268,20 @@ async def create_chapter(
     
     # 计算字数(处理content可能为None的情况)
     word_count = len(chapter.content) if chapter.content else 0
+
+    outline_id = await _ensure_manual_chapter_outline(
+        chapter=chapter,
+        project=project,
+        user_id=user_id,
+        db=db,
+    )
+    chapter_data = chapter.model_dump(exclude={"outline_sync_mode"})
+    chapter_data["outline_id"] = outline_id
+    if outline_id and not chapter_data.get("sub_index"):
+        chapter_data["sub_index"] = 1
     
     db_chapter = Chapter(
-        **chapter.model_dump(),
+        **chapter_data,
         word_count=word_count
     )
     db.add(db_chapter)
