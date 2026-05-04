@@ -8,6 +8,7 @@ from app.models.character import Character
 from app.models.relationship import CharacterRelationship, Organization, OrganizationMember, RelationshipType
 from app.models.project import Project
 from app.services.ai_service import AIService
+from app.services.name_authority_service import build_name_authority, is_generic_reference
 from app.services.prompt_service import PromptService
 from app.logger import get_logger
 
@@ -402,6 +403,10 @@ class AutoCharacterService:
                             name = char_entry.strip()
                         else:
                             continue
+
+                        if is_generic_reference(name):
+                            logger.info(f"🔍 【角色校验】跳过泛称/代词候选: {name}")
+                            continue
                         
                         all_character_names.add(name)
                         # 收集角色出现的上下文
@@ -424,10 +429,22 @@ class AutoCharacterService:
             select(Character).where(Character.project_id == project_id)
         )
         existing_characters = existing_result.scalars().all()
-        existing_names = {char.name for char in existing_characters}
+        name_authority = build_name_authority(existing_characters, include_organizations=False)
         
-        # 3. 找出缺失的角色
-        missing_names = all_character_names - existing_names
+        # 3. 找出缺失的角色。别名命中已有角色时不重复创建；泛称和歧义别名不建卡。
+        missing_names = set()
+        normalized_character_context: dict[str, list[str]] = {}
+        for raw_name in sorted(all_character_names):
+            if raw_name in name_authority.ambiguous_aliases or is_generic_reference(raw_name):
+                continue
+            resolved_name = name_authority.resolve_name(raw_name, keep_unknown=True)
+            if not resolved_name or resolved_name in name_authority.canonical_names:
+                continue
+            missing_names.add(resolved_name)
+            normalized_character_context.setdefault(resolved_name, []).extend(
+                character_context.get(raw_name, [])
+            )
+        character_context = normalized_character_context
         
         if not missing_names:
             logger.info("✅ 【角色校验】所有角色已存在，无需创建")

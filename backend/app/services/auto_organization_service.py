@@ -8,6 +8,7 @@ from app.models.character import Character
 from app.models.relationship import Organization, OrganizationMember
 from app.models.project import Project
 from app.services.ai_service import AIService
+from app.services.name_authority_service import build_name_authority, is_generic_reference
 from app.services.prompt_service import PromptService
 from app.logger import get_logger
 
@@ -276,6 +277,9 @@ class AutoOrganizationService:
                             if entry_type != "organization" or not entry_name.strip():
                                 continue
                             name = entry_name.strip()
+                            if is_generic_reference(name):
+                                logger.info(f"🔍 【组织校验】跳过泛称/代词候选: {name}")
+                                continue
                             all_organization_names.add(name)
                             if name not in organization_context:
                                 organization_context[name] = []
@@ -300,10 +304,22 @@ class AutoOrganizationService:
             )
         )
         existing_org_characters = existing_result.scalars().all()
-        existing_org_names = {char.name for char in existing_org_characters}
+        name_authority = build_name_authority(existing_org_characters, include_organizations=True)
         
-        # 3. 找出缺失的组织
-        missing_names = all_organization_names - existing_org_names
+        # 3. 找出缺失的组织。别名命中已有组织时不重复创建；泛称和歧义别名不建卡。
+        missing_names = set()
+        normalized_organization_context: dict[str, list[str]] = {}
+        for raw_name in sorted(all_organization_names):
+            if raw_name in name_authority.ambiguous_aliases or is_generic_reference(raw_name):
+                continue
+            resolved_name = name_authority.resolve_name(raw_name, keep_unknown=True)
+            if not resolved_name or resolved_name in name_authority.canonical_names:
+                continue
+            missing_names.add(resolved_name)
+            normalized_organization_context.setdefault(resolved_name, []).extend(
+                organization_context.get(raw_name, [])
+            )
+        organization_context = normalized_organization_context
         
         if not missing_names:
             logger.info("✅ 【组织校验】所有组织已存在，无需创建")
