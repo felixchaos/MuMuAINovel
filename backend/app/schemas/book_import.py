@@ -120,6 +120,10 @@ class BookImportApplyRequest(BaseModel):
     project_suggestion: ProjectSuggestion
     chapters: list[BookImportChapter]
     outlines: list[BookImportOutline] = Field(default_factory=list)
+    entity_candidates: list[BookImportEntityCandidate] = Field(
+        default_factory=list,
+        description="用户确认导入的实体候选；目前仅人物/组织会写入角色与组织表"
+    )
     import_mode: ImportMode = Field(default="append", description="导入模式")
     post_import_generation: Literal["auto", "manual"] = Field(
         default="auto",

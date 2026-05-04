@@ -242,6 +242,13 @@ class BookImportService:
             )
             statistics["chapters"] = chapter_count
 
+            candidate_stats = await self._import_entity_candidates(
+                db=db,
+                project_id=project.id,
+                candidates=payload.entity_candidates,
+            )
+            statistics.update(candidate_stats)
+
             if payload.import_mode == "overwrite":
                 project.current_words = words_delta
             else:
@@ -364,11 +371,20 @@ class BookImportService:
             )
             statistics["chapters"] = chapter_count
 
+            candidate_stats = await self._import_entity_candidates(
+                db=db,
+                project_id=project.id,
+                candidates=payload.entity_candidates,
+            )
+            statistics.update(candidate_stats)
+
             if payload.import_mode == "overwrite":
                 project.current_words = words_delta
             else:
                 project.current_words = (project.current_words or 0) + words_delta
-            await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）", 20)
+            imported_candidates = candidate_stats.get("imported_entity_candidates", 0)
+            candidate_suffix = f"，确认实体 {imported_candidates} 个" if imported_candidates else ""
+            await _notify(f"已导入 {chapter_count} 个章节（{words_delta}字）{candidate_suffix}", 20)
 
             if payload.post_import_generation == "manual":
                 statistics["generated_world_building"] = 0
@@ -907,6 +923,93 @@ class BookImportService:
             total_words += word_count
 
         return count, total_words
+
+    async def _import_entity_candidates(
+        self,
+        *,
+        db: AsyncSession,
+        project_id: str,
+        candidates: list[BookImportEntityCandidate],
+    ) -> dict[str, int]:
+        """将用户确认的拆书候选写入现有角色/组织表，地点/物品先保留为预览证据。"""
+        stats = {
+            "imported_entity_candidates": 0,
+            "imported_candidate_characters": 0,
+            "imported_candidate_organizations": 0,
+            "skipped_entity_candidates": 0,
+        }
+        if not candidates:
+            return stats
+
+        existing_result = await db.execute(
+            select(Character.name).where(Character.project_id == project_id)
+        )
+        existing_names = {
+            str(row[0]).strip()
+            for row in existing_result.fetchall()
+            if row[0]
+        }
+        seen_names = set(existing_names)
+
+        for candidate in candidates[:80]:
+            name = str(candidate.name or "").strip()
+            if (
+                not name
+                or len(name) > 100
+                or candidate.entity_type not in {"character", "organization"}
+                or name in seen_names
+                or is_generic_reference(name)
+            ):
+                stats["skipped_entity_candidates"] += 1
+                continue
+
+            evidence_lines = [
+                f"- {snippet.strip()}"
+                for snippet in (candidate.evidence or [])[:3]
+                if snippet and snippet.strip()
+            ]
+            source_parts = [
+                "由拆书实体预扫描确认导入。",
+                f"全文出现次数：{candidate.occurrence_count}",
+            ]
+            if candidate.first_chapter_number:
+                source_parts.append(f"首次出现：第 {candidate.first_chapter_number} 章")
+            if evidence_lines:
+                source_parts.append("证据片段：\n" + "\n".join(evidence_lines))
+            source_note = "\n".join(source_parts)
+
+            is_organization = candidate.entity_type == "organization"
+            character = Character(
+                project_id=project_id,
+                name=name[:100],
+                is_organization=is_organization,
+                role_type="supporting",
+                personality=None if is_organization else "拆书预扫描候选，等待进一步整理。",
+                background=source_note,
+                organization_type="组织" if is_organization else None,
+                organization_purpose=source_note if is_organization else None,
+                traits=json.dumps(["拆书候选"], ensure_ascii=False),
+            )
+            db.add(character)
+            await db.flush()
+
+            if is_organization:
+                organization = Organization(
+                    character_id=character.id,
+                    project_id=project_id,
+                    member_count=0,
+                    power_level=50,
+                )
+                db.add(organization)
+                await db.flush()
+                stats["imported_candidate_organizations"] += 1
+            else:
+                stats["imported_candidate_characters"] += 1
+
+            seen_names.add(name)
+            stats["imported_entity_candidates"] += 1
+
+        return stats
 
     def _select_chapters_for_import(
         self,

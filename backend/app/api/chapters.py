@@ -59,6 +59,7 @@ from app.services.memory_service import memory_service
 from app.services.foreshadow_service import foreshadow_service
 from app.services.chapter_regenerator import ChapterRegenerator
 from app.services.txt_parser_service import txt_parser_service
+from app.services.name_authority_service import build_name_authority
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
 from app.utils.sse_response import (
@@ -1029,6 +1030,40 @@ async def build_characters_info_with_careers(
     return "\n".join(characters_info_parts)
 
 
+async def _build_rewrite_name_authority_context(
+    db: AsyncSession,
+    project_id: str,
+    max_items: int = 80
+) -> str:
+    """构建重写上下文用名称权威表，避免把代词/泛称当成稳定角色。"""
+    characters_result = await db.execute(
+        select(Character)
+        .where(Character.project_id == project_id)
+        .order_by(Character.is_organization.asc(), Character.created_at.asc())
+        .limit(max_items)
+    )
+    characters = characters_result.scalars().all()
+    if not characters:
+        return ""
+
+    authority = build_name_authority(characters)
+    lines: list[str] = []
+    for character in characters:
+        canonical = authority.resolve_name(character.name, keep_unknown=False)
+        if not canonical:
+            continue
+        aliases = sorted(
+            alias
+            for alias, target in authority.alias_to_name.items()
+            if target == canonical and alias != canonical
+        )
+        entity_type = "组织" if character.is_organization else "角色"
+        alias_text = f"；别名/称呼：{', '.join(aliases[:6])}" if aliases else ""
+        lines.append(f"- {canonical}（{entity_type}）{alias_text}")
+
+    return "\n".join(lines)
+
+
 def _compact_rewrite_context_text(text: Optional[str], max_length: int) -> str:
     """压缩重写上下文，保留开头和结尾的关键边界。"""
     if not text:
@@ -1198,6 +1233,8 @@ async def _build_rewrite_continuity_context(
             characters=characters
         )
 
+    name_authority_context = await _build_rewrite_name_authority_context(db, chapter.project_id)
+
     sections: list[tuple[str, str, int]] = [
         (
             "连续性冲突处理",
@@ -1208,6 +1245,7 @@ async def _build_rewrite_continuity_context(
             ]),
             800
         ),
+        ("名称权威表", name_authority_context, 1400),
         (
             "本章目标大纲",
             getattr(chapter_context, "chapter_outline", "") or (outline.content if outline else chapter.summary or ""),
@@ -1686,129 +1724,25 @@ async def analyze_chapter_background(
             )
             logger.info(f"✅ 添加{added_count}条记忆到向量库")
         
-        # 💼 更新角色职业（根据分析结果）
-        if analysis_result.get('character_states'):
-            try:
-                from app.services.career_update_service import CareerUpdateService
-                
-                logger.info(f"💼 开始根据分析结果更新角色职业...")
-                career_update_result = await CareerUpdateService.update_careers_from_analysis(
+        # 统一维护运行态设定：职业、角色卡、关系、组织、伏笔、世界观都走同一个编排入口。
+        try:
+            from app.services.story_runtime_maintenance_service import story_runtime_maintenance_service
+
+            async with write_lock:
+                maintenance_summary = await story_runtime_maintenance_service.sync_from_analysis(
                     db=db_session,
                     project_id=project_id,
-                    character_states=analysis_result.get('character_states', []),
                     chapter_id=chapter_id,
-                    chapter_number=chapter.chapter_number
+                    chapter_number=chapter.chapter_number,
+                    analysis_result=analysis_result,
                 )
-                
-                if career_update_result['updated_count'] > 0:
-                    logger.info(
-                        f"✅ 更新了 {career_update_result['updated_count']} 个角色的职业信息"
-                    )
-                    if career_update_result['changes']:
-                        for change in career_update_result['changes']:
-                            logger.info(f"  - {change}")
-                else:
-                    logger.info("ℹ️ 本章节无角色职业变化")
-                    
-            except Exception as career_error:
-                # 职业更新失败不应影响整个分析流程
-                logger.error(f"⚠️ 更新角色职业失败: {str(career_error)}", exc_info=True)
-        else:
-            logger.debug("📋 分析结果中无角色状态信息，跳过职业更新")
-        
-        # 👤 更新角色心理状态和关系（根据分析结果）
-        if analysis_result.get('character_states'):
-            try:
-                from app.services.character_state_update_service import CharacterStateUpdateService
-                
-                logger.info(f"👤 开始根据分析结果更新角色状态、关系和组织成员...")
-                async with write_lock:
-                    state_update_result = await CharacterStateUpdateService.update_from_analysis(
-                        db=db_session,
-                        project_id=project_id,
-                        character_states=analysis_result.get('character_states', []),
-                        chapter_id=chapter_id,
-                        chapter_number=chapter.chapter_number
-                    )
-                
-                total_state_changes = (
-                    state_update_result['state_updated_count'] +
-                    state_update_result['relationship_created_count'] +
-                    state_update_result['relationship_updated_count'] +
-                    state_update_result.get('org_updated_count', 0)
-                )
-                if total_state_changes > 0:
-                    logger.info(
-                        f"✅ 角色状态更新: 心理状态{state_update_result['state_updated_count']}个, "
-                        f"新建关系{state_update_result['relationship_created_count']}个, "
-                        f"更新关系{state_update_result['relationship_updated_count']}个, "
-                        f"组织变动{state_update_result.get('org_updated_count', 0)}个"
-                    )
-                    if state_update_result['changes']:
-                        for change in state_update_result['changes'][:8]:
-                            logger.info(f"  - {change}")
-                else:
-                    logger.info("ℹ️ 本章节无角色状态、关系或组织变化")
-                    
-            except Exception as state_error:
-                # 角色状态更新失败不应影响整个分析流程
-                logger.error(f"⚠️ 更新角色状态、关系和组织失败: {str(state_error)}", exc_info=True)
-        
-        # 🏛️ 更新组织自身状态（根据分析结果）
-        if analysis_result.get('organization_states'):
-            try:
-                from app.services.character_state_update_service import CharacterStateUpdateService
-                
-                logger.info(f"🏛️ 开始根据分析结果更新组织自身状态...")
-                async with write_lock:
-                    org_state_result = await CharacterStateUpdateService.update_organization_states(
-                        db=db_session,
-                        project_id=project_id,
-                        organization_states=analysis_result.get('organization_states', []),
-                        chapter_number=chapter.chapter_number
-                    )
-                
-                if org_state_result['updated_count'] > 0:
-                    logger.info(
-                        f"✅ 组织状态更新: {org_state_result['updated_count']}个组织"
-                    )
-                    if org_state_result['changes']:
-                        for change in org_state_result['changes'][:5]:
-                            logger.info(f"  - {change}")
-                else:
-                    logger.info("ℹ️ 本章节无组织自身状态变化")
-                    
-            except Exception as org_state_error:
-                # 组织状态更新失败不应影响整个分析流程
-                logger.error(f"⚠️ 更新组织自身状态失败: {str(org_state_error)}", exc_info=True)
-        
-        # 🔮 自动更新伏笔状态（根据分析结果）
-        if analysis_result.get('foreshadows'):
-            try:
-                logger.info(f"🔮 开始根据分析结果自动更新伏笔状态...")
-                async with write_lock:
-                    foreshadow_stats = await foreshadow_service.auto_update_from_analysis(
-                        db=db_session,
-                        project_id=project_id,
-                        chapter_id=chapter_id,
-                        chapter_number=chapter.chapter_number,
-                        analysis_foreshadows=analysis_result.get('foreshadows', [])
-                    )
-                
-                if foreshadow_stats['planted_count'] > 0 or foreshadow_stats['resolved_count'] > 0:
-                    logger.info(
-                        f"✅ 伏笔自动更新: 埋入{foreshadow_stats['planted_count']}个, "
-                        f"回收{foreshadow_stats['resolved_count']}个"
-                    )
-                else:
-                    logger.info("ℹ️ 本章节无新的伏笔状态变化")
-                    
-            except Exception as foreshadow_error:
-                # 伏笔更新失败不应影响整个分析流程
-                logger.error(f"⚠️ 自动更新伏笔失败: {str(foreshadow_error)}", exc_info=True)
-        else:
-            logger.debug("📋 分析结果中无伏笔信息，跳过伏笔自动更新")
-        
+
+            if maintenance_summary.get("errors"):
+                logger.warning(f"⚠️ 章节运行态维护有部分失败: {maintenance_summary['errors'][:3]}")
+        except Exception as maintenance_error:
+            # 运行态维护失败不应影响章节分析结果本身。
+            logger.error(f"⚠️ 章节运行态维护失败: {str(maintenance_error)}", exc_info=True)
+
         # 最终更新任务状态（写操作，需要锁）- 增加重试机制
         update_success = False
         for retry in range(3):

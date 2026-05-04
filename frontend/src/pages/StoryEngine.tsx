@@ -36,6 +36,8 @@ import type {
   StoryEngineRecommendation,
   StoryEngineSection,
   StoryEngineSnapshot,
+  StoryEngineTimelineItem,
+  StoryEngineVisualization,
 } from '../types';
 
 const { Text, Title, Paragraph } = Typography;
@@ -71,6 +73,7 @@ function priorityMeta(priority: string) {
 export default function StoryEngine() {
   const { projectId } = useParams<{ projectId: string }>();
   const [snapshot, setSnapshot] = useState<StoryEngineSnapshot | null>(null);
+  const [visualization, setVisualization] = useState<StoryEngineVisualization | null>(null);
   const [loading, setLoading] = useState(false);
   const { token } = theme.useToken();
 
@@ -79,8 +82,12 @@ export default function StoryEngine() {
 
     setLoading(true);
     try {
-      const data = await projectApi.getStoryEngineSnapshot(projectId);
+      const [data, visualData] = await Promise.all([
+        projectApi.getStoryEngineSnapshot(projectId),
+        projectApi.getStoryEngineVisualization(projectId),
+      ]);
       setSnapshot(data);
+      setVisualization(visualData);
     } catch (error) {
       console.error('加载剧情工程快照失败:', error);
     } finally {
@@ -310,6 +317,105 @@ export default function StoryEngine() {
     );
   };
 
+  const renderTimelineItem = (item: StoryEngineTimelineItem) => (
+    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+      <Space wrap size={6}>
+        <Text strong>{item.title}</Text>
+        {item.chapter_number && <Tag>第{item.chapter_number}章</Tag>}
+        {item.entities.slice(0, 3).map((entity) => (
+          <Tag key={`${item.id}:${entity}`} color="blue">{entity}</Tag>
+        ))}
+        {item.tags.slice(0, 3).map((tag) => (
+          <Tag key={`${item.id}:${tag}`}>{tag}</Tag>
+        ))}
+      </Space>
+      <Text type="secondary">{item.content}</Text>
+    </Space>
+  );
+
+  const renderVisualization = () => {
+    if (!visualization) return null;
+    const timelineGroups = [
+      { key: 'relationship', title: '关系变化时间线', items: visualization.relationship_timeline },
+      { key: 'foreshadow', title: '伏笔时间线', items: visualization.foreshadow_timeline },
+      { key: 'organization', title: '组织变化时间线', items: visualization.organization_timeline },
+      { key: 'world', title: '世界观声明时间线', items: visualization.world_timeline },
+    ].filter((group) => group.items.length > 0);
+
+    if (!visualization.character_chapter_matrix.length && !timelineGroups.length) {
+      return null;
+    }
+
+    return (
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
+          <Title level={4} style={{ margin: 0 }}>剧情图谱</Title>
+          <Text type="secondary">由结构化事实派生</Text>
+        </Space>
+        <Row gutter={[12, 12]}>
+          {visualization.character_chapter_matrix.length > 0 && (
+            <Col xs={24} xl={12}>
+              <Card size="small" title="角色-章节出现矩阵" style={{ height: '100%' }}>
+                <List
+                  size="small"
+                  dataSource={visualization.character_chapter_matrix.slice(0, 12)}
+                  renderItem={(row) => (
+                    <List.Item style={{ paddingInline: 0 }}>
+                      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                        <Space wrap>
+                          <Text strong>{row.entity}</Text>
+                          <Tag color="processing">{row.total} 条事实</Tag>
+                        </Space>
+                        <Space size={[4, 4]} wrap>
+                          {row.chapters.slice(0, 18).map((cell) => (
+                            <Tooltip
+                              key={`${row.entity}:${cell.chapter_number}`}
+                              title={cell.evidence || `${cell.count} 条事实`}
+                            >
+                              <Tag color={cell.count >= 3 ? 'green' : 'default'}>
+                                {cell.chapter_number}:{cell.count}
+                              </Tag>
+                            </Tooltip>
+                          ))}
+                        </Space>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </Card>
+            </Col>
+          )}
+          {timelineGroups.slice(0, 2).map((group) => (
+            <Col xs={24} xl={12} key={group.key}>
+              <Card size="small" title={group.title} style={{ height: '100%' }}>
+                <Timeline
+                  items={group.items.slice(0, 10).map((item) => ({
+                    key: item.id,
+                    color: item.timeline_type === 'foreshadow' ? token.colorWarning : token.colorPrimary,
+                    children: renderTimelineItem(item),
+                  }))}
+                />
+              </Card>
+            </Col>
+          ))}
+          {timelineGroups.slice(2).map((group) => (
+            <Col xs={24} xl={12} key={group.key}>
+              <Card size="small" title={group.title} style={{ height: '100%' }}>
+                <Timeline
+                  items={group.items.slice(0, 10).map((item) => ({
+                    key: item.id,
+                    color: group.key === 'world' ? token.colorSuccess : token.colorPrimary,
+                    children: renderTimelineItem(item),
+                  }))}
+                />
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      </Space>
+    );
+  };
+
   if (loading && !snapshot) {
     return <Skeleton active paragraph={{ rows: 10 }} />;
   }
@@ -376,6 +482,8 @@ export default function StoryEngine() {
                 </Row>
               </Card>
             )}
+
+            {renderVisualization()}
 
             {((snapshot.beats || []).length > 0 || (snapshot.cards || []).length > 0) && (
               <Row gutter={[12, 12]}>

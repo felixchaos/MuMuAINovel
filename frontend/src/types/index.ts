@@ -376,6 +376,39 @@ export interface StoryEngineFactsResponse {
   facts: StoryEngineFact[];
 }
 
+export interface StoryEngineMatrixCell {
+  chapter_number: number;
+  count: number;
+  evidence?: string;
+}
+
+export interface StoryEngineMatrixRow {
+  entity: string;
+  total: number;
+  chapters: StoryEngineMatrixCell[];
+}
+
+export interface StoryEngineTimelineItem {
+  id: string;
+  timeline_type: 'relationship' | 'foreshadow' | 'organization' | 'world' | 'fact' | string;
+  chapter_number?: number;
+  title: string;
+  content: string;
+  entities: string[];
+  tags: string[];
+  importance: number;
+  source_type: string;
+}
+
+export interface StoryEngineVisualization {
+  project_id: string;
+  character_chapter_matrix: StoryEngineMatrixRow[];
+  relationship_timeline: StoryEngineTimelineItem[];
+  foreshadow_timeline: StoryEngineTimelineItem[];
+  organization_timeline: StoryEngineTimelineItem[];
+  world_timeline: StoryEngineTimelineItem[];
+}
+
 export interface StoryEngineSnapshot {
   project_id: string;
   title: string;
@@ -1283,6 +1316,7 @@ export interface BookImportApplyPayload {
   project_suggestion: BookImportProjectSuggestion;
   chapters: BookImportChapter[];
   outlines: BookImportOutline[];
+  entity_candidates?: BookImportEntityCandidate[];
   import_mode?: 'append' | 'overwrite';
   post_import_generation?: 'auto' | 'manual';
 }

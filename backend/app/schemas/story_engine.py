@@ -108,6 +108,43 @@ class StoryEngineFactsResponse(BaseModel):
     facts: List[StoryEngineFact] = Field(default_factory=list)
 
 
+class StoryEngineMatrixCell(BaseModel):
+    """Character/entity appearance in a chapter."""
+    chapter_number: int
+    count: int = 1
+    evidence: Optional[str] = None
+
+
+class StoryEngineMatrixRow(BaseModel):
+    """Character/entity appearance matrix row."""
+    entity: str
+    total: int
+    chapters: List[StoryEngineMatrixCell] = Field(default_factory=list)
+
+
+class StoryEngineTimelineItem(BaseModel):
+    """Timeline item derived from normalized facts."""
+    id: str
+    timeline_type: str = Field(..., description="relationship/foreshadow/organization/world/fact")
+    chapter_number: Optional[int] = None
+    title: str
+    content: str
+    entities: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    importance: float = Field(0.5, ge=0.0, le=1.0)
+    source_type: str
+
+
+class StoryEngineVisualizationResponse(BaseModel):
+    """Read-only visualization data derived from existing facts."""
+    project_id: str
+    character_chapter_matrix: List[StoryEngineMatrixRow] = Field(default_factory=list)
+    relationship_timeline: List[StoryEngineTimelineItem] = Field(default_factory=list)
+    foreshadow_timeline: List[StoryEngineTimelineItem] = Field(default_factory=list)
+    organization_timeline: List[StoryEngineTimelineItem] = Field(default_factory=list)
+    world_timeline: List[StoryEngineTimelineItem] = Field(default_factory=list)
+
+
 class StoryEngineSnapshotResponse(BaseModel):
     """Read-only story-engine snapshot built from official-compatible data."""
     project_id: str

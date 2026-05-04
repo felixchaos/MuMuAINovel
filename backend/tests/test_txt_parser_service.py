@@ -128,9 +128,81 @@ def test_split_report_exposes_mode_and_quality() -> None:
     assert report["reasons"]
 
 
+def test_ground_truth_regression_cases() -> None:
+    parser = TxtParserService()
+    cases = [
+        {
+            "name": "standard_chinese_chapters",
+            "text": "\n".join([
+                "第1章 初遇",
+                _paragraph("少女在雨夜里推开门。", 28),
+                "第2章 线索",
+                _paragraph("旧照片背后藏着新的线索。", 28),
+                "第3章 追踪",
+                _paragraph("他们沿着河岸一路追踪。", 28),
+            ]),
+            "titles": ["第1章 初遇", "第2章 线索", "第3章 追踪"],
+            "min_confidence": 0.75,
+        },
+        {
+            "name": "tomato_like_title_pages",
+            "text": "\n".join([
+                "异象旅馆(1)",
+                _paragraph("午后的阳光穿过图书馆顶层的彩绘玻璃。", 28),
+                "异象旅馆(2)",
+                _paragraph("魔法屏障像水纹一样恢复。", 28),
+                "异象旅馆(3)",
+                _paragraph("诺森把地图摊开。", 28),
+            ]),
+            "titles": ["异象旅馆(1)", "异象旅馆(2)", "异象旅馆(3)"],
+            "min_confidence": 0.70,
+        },
+        {
+            "name": "act_sections",
+            "text": "\n".join([
+                "异象旅馆 第一幕：来自异国的求助信号",
+                "（1）",
+                _paragraph("少女的睫毛轻轻颤动。", 30),
+                "（2）",
+                _paragraph("胆小的诺雪立刻聚到了诺森的身后。", 30),
+                "（3）",
+                _paragraph("旅馆大厅里只剩下钟表声。", 30),
+            ]),
+            "titles": [
+                "第一幕：来自异国的求助信号（1）",
+                "第一幕：来自异国的求助信号（2）",
+                "第一幕：来自异国的求助信号（3）",
+            ],
+            "min_confidence": 0.75,
+        },
+    ]
+
+    for case in cases:
+        chapters, report = parser.split_chapters_with_report(parser.clean_text(case["text"]))
+
+        assert [chapter["title"] for chapter in chapters] == case["titles"], case["name"]
+        assert report["chapter_count"] == len(case["titles"]), case["name"]
+        assert report["confidence"] >= case["min_confidence"], case["name"]
+        assert report["abnormal_chapter_numbers"] == [], case["name"]
+
+
+def test_low_confidence_fallback_is_reported() -> None:
+    parser = TxtParserService()
+    text = _paragraph("没有章节标题的长文本。", 180)
+
+    chapters, report = parser.split_chapters_with_report(parser.clean_text(text))
+
+    assert len(chapters) >= 1
+    assert report["mode"] == "fallback_window"
+    assert report["confidence"] < 0.55
+    assert report["reasons"]
+
+
 if __name__ == "__main__":
     test_act_numbered_sections_are_chapters()
     test_book_title_pagination_is_split()
     test_markdown_headings_are_split()
     test_real_act_sample_keeps_numbered_sections()
     test_split_report_exposes_mode_and_quality()
+    test_ground_truth_regression_cases()
+    test_low_confidence_fallback_is_reported()

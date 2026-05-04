@@ -27,10 +27,14 @@ from app.schemas.story_engine import (
     StoryEngineFact,
     StoryEngineItem,
     StoryEngineLane,
+    StoryEngineMatrixCell,
+    StoryEngineMatrixRow,
     StoryEngineMetric,
     StoryEngineRecommendation,
     StoryEngineSection,
     StoryEngineSnapshotResponse,
+    StoryEngineTimelineItem,
+    StoryEngineVisualizationResponse,
 )
 from app.services.story_fact_adapter import story_fact_adapter
 from app.services.project_story_context import build_project_story_context
@@ -732,6 +736,109 @@ def _recommendations(
         )
 
     return recs[:8]
+
+
+def _timeline_item_from_fact(fact: StoryEngineFact, timeline_type: str) -> StoryEngineTimelineItem:
+    return StoryEngineTimelineItem(
+        id=fact.id,
+        timeline_type=timeline_type,
+        chapter_number=fact.chapter_number,
+        title=fact.title,
+        content=_compact_text(fact.content, 420),
+        entities=fact.entities[:8],
+        tags=fact.tags[:6],
+        importance=fact.importance,
+        source_type=fact.source_type,
+    )
+
+
+def _build_character_chapter_matrix(facts: list[StoryEngineFact], limit: int = 60) -> list[StoryEngineMatrixRow]:
+    matrix: dict[str, dict[int, dict[str, Any]]] = {}
+
+    for fact in facts:
+        if not fact.chapter_number or not fact.entities:
+            continue
+        for entity in fact.entities:
+            entity_name = str(entity or "").strip()
+            if not entity_name:
+                continue
+            by_chapter = matrix.setdefault(entity_name, {})
+            cell = by_chapter.setdefault(
+                fact.chapter_number,
+                {"count": 0, "evidence": None},
+            )
+            cell["count"] += 1
+            if not cell["evidence"]:
+                cell["evidence"] = fact.evidence or _compact_text(fact.content, 100)
+
+    rows: list[StoryEngineMatrixRow] = []
+    for entity, chapter_map in matrix.items():
+        cells = [
+            StoryEngineMatrixCell(
+                chapter_number=chapter_number,
+                count=int(payload["count"]),
+                evidence=payload.get("evidence"),
+            )
+            for chapter_number, payload in sorted(chapter_map.items())
+        ]
+        rows.append(
+            StoryEngineMatrixRow(
+                entity=entity,
+                total=sum(cell.count for cell in cells),
+                chapters=cells,
+            )
+        )
+
+    rows.sort(key=lambda row: (-row.total, row.entity))
+    return rows[:limit]
+
+
+async def build_story_engine_visualization(
+    db: AsyncSession,
+    project_id: str,
+    *,
+    limit: int = 1000,
+) -> StoryEngineVisualizationResponse:
+    """Build matrix/timeline visualization data from existing fact views."""
+    facts_response = await story_fact_adapter.build_facts(db, project_id, limit=limit)
+    facts = facts_response.facts
+
+    relationship_facts = [fact for fact in facts if fact.fact_type == "relationship"]
+    foreshadow_facts = [fact for fact in facts if fact.fact_type == "foreshadow"]
+    organization_facts = [fact for fact in facts if fact.fact_type == "organization_event"]
+    world_facts = [fact for fact in facts if fact.fact_type == "world_detail"]
+
+    def ordered(items: list[StoryEngineFact]) -> list[StoryEngineFact]:
+        return sorted(
+            items,
+            key=lambda fact: (
+                fact.chapter_number is None,
+                fact.chapter_number or 999999,
+                -fact.importance,
+                fact.title,
+            ),
+        )
+
+    return StoryEngineVisualizationResponse(
+        project_id=project_id,
+        character_chapter_matrix=_build_character_chapter_matrix(facts),
+        relationship_timeline=[
+            _timeline_item_from_fact(fact, "relationship")
+            for fact in ordered(relationship_facts)[:120]
+        ],
+        foreshadow_timeline=[
+            _timeline_item_from_fact(fact, "foreshadow")
+            for fact in ordered(foreshadow_facts)[:120]
+        ],
+        organization_timeline=[
+            _timeline_item_from_fact(fact, "organization")
+            for fact in ordered(organization_facts)[:120]
+        ],
+        world_timeline=[
+            _timeline_item_from_fact(fact, "world")
+            for fact in ordered(world_facts)[:120]
+        ],
+    )
 
 
 async def build_story_engine_snapshot(

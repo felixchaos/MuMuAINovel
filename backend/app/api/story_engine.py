@@ -4,9 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.common import verify_project_access_from_request
 from app.database import get_db
-from app.schemas.story_engine import StoryEngineFactsResponse, StoryEngineSnapshotResponse
+from app.schemas.story_engine import (
+    StoryEngineFactsResponse,
+    StoryEngineSnapshotResponse,
+    StoryEngineVisualizationResponse,
+)
 from app.services.story_fact_adapter import story_fact_adapter
-from app.services.story_engine_service import build_story_engine_snapshot
+from app.services.story_engine_service import build_story_engine_snapshot, build_story_engine_visualization
 
 router = APIRouter(prefix="/projects/{project_id}/story-engine", tags=["剧情工程"])
 
@@ -34,3 +38,15 @@ async def get_story_engine_facts(
     """Return normalized read-only facts derived from existing project records."""
     await verify_project_access_from_request(project_id, request, db)
     return await story_fact_adapter.build_facts(db, project_id, fact_type=fact_type, limit=limit)
+
+
+@router.get("/visualization", response_model=StoryEngineVisualizationResponse)
+async def get_story_engine_visualization(
+    project_id: str,
+    request: Request,
+    limit: int = Query(1000, ge=50, le=3000, description="参与可视化聚合的事实数量上限"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return matrix/timeline data derived from existing fact views."""
+    await verify_project_access_from_request(project_id, request, db)
+    return await build_story_engine_visualization(db, project_id, limit=limit)

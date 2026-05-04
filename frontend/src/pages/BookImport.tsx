@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   Collapse,
   Empty,
@@ -30,6 +31,7 @@ import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, Warnin
 import { bookImportApi, polishApi } from '../services/api';
 import type {
   BookImportApplyPayload,
+  BookImportEntityCandidate,
   BookImportExtractMode,
   BookImportPreview,
   BookImportProjectSuggestion,
@@ -117,6 +119,38 @@ function isNotFoundError(error: unknown): boolean {
 
 type ImportSuggestionField = keyof BookImportProjectSuggestion;
 
+function bookImportEntityCandidateKey(item: BookImportEntityCandidate): string {
+  return `${item.entity_type}:${item.name}`;
+}
+
+function findPreviewSplitPosition(content: string, marker: string): number {
+  const text = content || '';
+  const trimmedMarker = marker.trim();
+  if (trimmedMarker) {
+    const markerIndex = text.indexOf(trimmedMarker);
+    return markerIndex;
+  }
+
+  const midpoint = Math.floor(text.length / 2);
+  const paragraphBreaks = [...text.matchAll(/\n\s*\n/g)].map((match) => match.index ?? -1).filter((idx) => idx > 0);
+  if (paragraphBreaks.length > 0) {
+    return paragraphBreaks.reduce((best, current) =>
+      Math.abs(current - midpoint) < Math.abs(best - midpoint) ? current : best
+    );
+  }
+
+  const sentenceBreaks = [...text.matchAll(/[。！？!?]\s*/g)]
+    .map((match) => (match.index ?? -1) + match[0].length)
+    .filter((idx) => idx > 0);
+  if (sentenceBreaks.length > 0) {
+    return sentenceBreaks.reduce((best, current) =>
+      Math.abs(current - midpoint) < Math.abs(best - midpoint) ? current : best
+    );
+  }
+
+  return midpoint;
+}
+
 const importSuggestionFieldLabels: Partial<Record<ImportSuggestionField, string>> = {
   title: '标题',
   genre: '类型',
@@ -166,6 +200,7 @@ export default function BookImport() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<BookImportTask | null>(null);
   const [preview, setPreview] = useState<BookImportPreview | null>(null);
+  const [selectedEntityCandidateKeys, setSelectedEntityCandidateKeys] = useState<string[]>([]);
 
   const [creatingTask, setCreatingTask] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -220,6 +255,32 @@ export default function BookImport() {
     failedSteps,
     retrying,
   ]);
+
+  useEffect(() => {
+    if (!preview?.entity_candidates?.length) {
+      setSelectedEntityCandidateKeys([]);
+      return;
+    }
+
+    setSelectedEntityCandidateKeys(
+      preview.entity_candidates
+        .filter((item) => item.entity_type === 'character' || item.entity_type === 'organization')
+        .slice(0, 40)
+        .map(bookImportEntityCandidateKey)
+    );
+  }, [preview?.task_id]);
+
+  const selectedEntityCandidateKeySet = useMemo(
+    () => new Set(selectedEntityCandidateKeys),
+    [selectedEntityCandidateKeys]
+  );
+
+  const selectedEntityCandidates = useMemo(() => {
+    if (!preview?.entity_candidates?.length) return [];
+    return preview.entity_candidates.filter((item) =>
+      selectedEntityCandidateKeySet.has(bookImportEntityCandidateKey(item))
+    );
+  }, [preview?.entity_candidates, selectedEntityCandidateKeySet]);
 
   const normalizedTailChapterCount = useMemo(
     () => Math.max(5, Math.ceil(tailChapterCount / 5) * 5),
@@ -455,6 +516,7 @@ export default function BookImport() {
       project_suggestion: preview.project_suggestion,
       chapters: preview.chapters,
       outlines: preview.outlines,
+      entity_candidates: selectedEntityCandidates,
       import_mode: 'append',
       post_import_generation: postImportGeneration,
     };
@@ -643,6 +705,120 @@ export default function BookImport() {
       const next = [...prev.chapters];
       next[index] = { ...next[index], ...patch };
       return { ...prev, chapters: next };
+    });
+  };
+
+  const mergeChapterWithNext = (index: number) => {
+    setPreview(prev => {
+      if (!prev || index < 0 || index >= prev.chapters.length - 1) return prev;
+
+      const current = prev.chapters[index];
+      const nextChapter = prev.chapters[index + 1];
+      const chapters = [...prev.chapters];
+      chapters.splice(index, 2, {
+        ...current,
+        content: [current.content, nextChapter.content].filter(Boolean).join('\n\n'),
+        summary: [current.summary, nextChapter.summary].filter(Boolean).join('\n'),
+      });
+
+      const normalizedChapters = chapters.map((chapter, chapterIndex) => ({
+        ...chapter,
+        chapter_number: chapterIndex + 1,
+        outline_title: chapter.outline_title || chapter.title,
+      }));
+      const outlines = prev.outlines
+        .filter((_, outlineIndex) => outlineIndex !== index + 1)
+        .map((outline, outlineIndex) => ({
+          ...outline,
+          order_index: outlineIndex + 1,
+          title: normalizedChapters[outlineIndex]?.outline_title || outline.title,
+        }));
+
+      return { ...prev, chapters: normalizedChapters, outlines };
+    });
+    message.success('已合并下一章，请检查标题和摘要');
+  };
+
+  const splitPreviewChapter = (index: number) => {
+    if (!preview?.chapters[index]) return;
+    let splitMarker = '';
+
+    modal.confirm({
+      title: '拆分章节',
+      icon: <WarningOutlined />,
+      width: 640,
+      centered: true,
+      okText: '确认拆分',
+      cancelText: '取消',
+      content: (
+        <Space direction="vertical" style={{ width: '100%', marginTop: 12 }}>
+          <Text type="secondary">
+            输入新章节开头的一段原文；留空则按最接近中间的段落边界拆分。
+          </Text>
+          <TextArea
+            rows={4}
+            placeholder="例如：粘贴下一章开头的第一句话或小节标题"
+            onChange={(event) => {
+              splitMarker = event.target.value;
+            }}
+          />
+        </Space>
+      ),
+      onOk: () => {
+        const chapter = preview.chapters[index];
+        const content = chapter.content || '';
+        const splitAt = findPreviewSplitPosition(content, splitMarker);
+        if (splitAt <= 0 || splitAt >= content.length - 1) {
+          message.error('没有找到合适的拆分位置，请输入更明确的新章节开头');
+          return Promise.reject(new Error('invalid split position'));
+        }
+
+        setPreview(prev => {
+          if (!prev) return prev;
+          const target = prev.chapters[index];
+          if (!target) return prev;
+
+          const firstContent = (target.content || '').slice(0, splitAt).trim();
+          const secondContent = (target.content || '').slice(splitAt).trim();
+          if (!firstContent || !secondContent) return prev;
+
+          const chapters = [...prev.chapters];
+          chapters.splice(
+            index,
+            1,
+            { ...target, content: firstContent },
+            {
+              ...target,
+              title: `${target.title}（拆分）`,
+              content: secondContent,
+              summary: '',
+              outline_title: `${target.outline_title || target.title}（拆分）`,
+            }
+          );
+          const normalizedChapters = chapters.map((item, chapterIndex) => ({
+            ...item,
+            chapter_number: chapterIndex + 1,
+          }));
+          const outlines = [...prev.outlines];
+          const currentOutline = outlines[index];
+          if (currentOutline) {
+            outlines.splice(index + 1, 0, {
+              ...currentOutline,
+              title: `${currentOutline.title}（拆分）`,
+              content: '',
+              order_index: index + 2,
+              structure: undefined,
+            });
+          }
+          const normalizedOutlines = outlines.map((outline, outlineIndex) => ({
+            ...outline,
+            order_index: outlineIndex + 1,
+          }));
+
+          return { ...prev, chapters: normalizedChapters, outlines: normalizedOutlines };
+        });
+        message.success('已拆分章节，请检查新章节标题和摘要');
+      },
     });
   };
 
@@ -1180,7 +1356,7 @@ export default function BookImport() {
                 <Card
                   size="small"
                   title={`实体预扫描（${preview.entity_candidates.length}）`}
-                  extra={<Text type="secondary">导入后可作为角色/组织/地点候选参考</Text>}
+                  extra={<Text type="secondary">已选 {selectedEntityCandidates.length} 个导入为角色/组织</Text>}
                 >
                   <List
                     size="small"
@@ -1200,10 +1376,30 @@ export default function BookImport() {
                         item: 'gold',
                         unknown: 'default',
                       }[item.entity_type] || 'default';
+                      const candidateKey = bookImportEntityCandidateKey(item);
+                      const canImportEntity = item.entity_type === 'character' || item.entity_type === 'organization';
+                      const checked = selectedEntityCandidateKeySet.has(candidateKey);
 
                       return (
                         <List.Item>
-                          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                          <Space align="start" size={10} style={{ width: '100%' }}>
+                            <Checkbox
+                              checked={checked}
+                              disabled={!canImportEntity}
+                              onChange={(event) => {
+                                const nextChecked = event.target.checked;
+                                setSelectedEntityCandidateKeys((prev) => {
+                                  const next = new Set(prev);
+                                  if (nextChecked) {
+                                    next.add(candidateKey);
+                                  } else {
+                                    next.delete(candidateKey);
+                                  }
+                                  return Array.from(next);
+                                });
+                              }}
+                            />
+                            <Space direction="vertical" size={4} style={{ width: '100%' }}>
                             <Space size={[8, 4]} wrap>
                               <Text strong>{item.name}</Text>
                               <Tag color={typeColor}>{typeLabel}</Tag>
@@ -1217,6 +1413,10 @@ export default function BookImport() {
                                 {item.evidence.slice(0, 2).join(' / ')}
                               </Text>
                             )}
+                            {!canImportEntity && (
+                              <Text type="secondary">地点/物品暂作为证据保留，不写入角色表</Text>
+                            )}
+                            </Space>
                           </Space>
                         </List.Item>
                       );
@@ -1374,6 +1574,18 @@ export default function BookImport() {
                     label: `第 ${ch.chapter_number} 章 · ${ch.title}`,
                     children: (
                       <Space direction="vertical" style={{ width: '100%' }}>
+                        <Space size={8} wrap>
+                          <Button size="small" onClick={() => splitPreviewChapter(idx)}>
+                            拆分本章
+                          </Button>
+                          <Button
+                            size="small"
+                            disabled={idx >= preview.chapters.length - 1}
+                            onClick={() => mergeChapterWithNext(idx)}
+                          >
+                            合并下一章
+                          </Button>
+                        </Space>
                         <Input
                           value={ch.title}
                           addonBefore="标题"

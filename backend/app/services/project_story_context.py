@@ -2,8 +2,10 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.character import Character
 from app.models.chapter import Chapter
 from app.models.outline import Outline
+from app.services.name_authority_service import build_name_authority
 
 
 def _compact_text(text: str, max_len: int) -> str:
@@ -30,9 +32,33 @@ async def build_project_story_context(
     chapter_limit: int = 80,
     prefer_chapter_content: bool = False,
     chapter_excerpt_chars: int = 320,
+    include_name_authority: bool = True,
 ) -> str:
     """Build a bounded context from existing outlines and chapters for AI generation."""
     lines: list[str] = []
+
+    if include_name_authority:
+        characters_result = await db.execute(
+            select(Character)
+            .where(Character.project_id == project_id)
+            .order_by(Character.is_organization.asc(), Character.created_at.asc())
+            .limit(80)
+        )
+        characters = characters_result.scalars().all()
+        if characters:
+            authority = build_name_authority(characters)
+            canonical_names = sorted(authority.canonical_names)
+            if canonical_names:
+                lines.append("【名称权威表】")
+                for name in canonical_names[:40]:
+                    aliases = sorted(
+                        alias
+                        for alias, canonical in authority.alias_to_name.items()
+                        if canonical == name and alias != name
+                    )
+                    alias_text = f"（别名/称呼：{'、'.join(aliases[:5])}）" if aliases else ""
+                    if not _append_with_budget(lines, f"- {name}{alias_text}", max_chars):
+                        break
 
     outlines_result = await db.execute(
         select(Outline)
