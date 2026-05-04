@@ -1262,6 +1262,27 @@ export interface BookImportEntityCandidate {
   occurrence_count: number;
   first_chapter_number?: number;
   evidence: string[];
+  confidence?: number;
+  classification_reason?: string;
+}
+
+export interface BookImportTokenBudgetStage {
+  stage: string;
+  label: string;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  estimated_total_tokens: number;
+  api_calls: number;
+}
+
+export interface BookImportTokenBudget {
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  estimated_total_tokens: number;
+  estimated_api_calls: number;
+  pricing_source: string;
+  note: string;
+  stages: BookImportTokenBudgetStage[];
 }
 
 export interface BookImportProjectSuggestion {
@@ -1310,6 +1331,7 @@ export interface BookImportPreview {
   warnings: BookImportWarning[];
   split_report?: BookImportSplitReport;
   entity_candidates?: BookImportEntityCandidate[];
+  token_budget?: BookImportTokenBudget;
 }
 
 export interface BookImportApplyPayload {

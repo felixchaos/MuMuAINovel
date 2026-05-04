@@ -786,6 +786,7 @@ async def build_characters_info_with_careers(
     """
     if not characters:
         return '暂无角色信息'
+    authority_source_characters = list(characters)
     
     # 如果提供了筛选名单，只保留匹配的角色
     if filter_character_names:
@@ -901,6 +902,19 @@ async def build_characters_info_with_careers(
     
     # 构建角色信息字符串
     characters_info_parts = []
+    name_authority = build_name_authority(authority_source_characters)
+    if name_authority.canonical_names:
+        characters_info_parts.append("【名称权威表】")
+        for canonical in sorted(name_authority.canonical_names)[:80]:
+            aliases = sorted(
+                alias
+                for alias, target in name_authority.alias_to_name.items()
+                if target == canonical and alias != canonical
+            )
+            alias_text = f"（别名/称呼：{', '.join(aliases[:6])}）" if aliases else ""
+            characters_info_parts.append(f"- {canonical}{alias_text}")
+        characters_info_parts.append("")
+
     for c in characters:
         # 基本信息（含存活状态标记）
         entity_type = '组织' if c.is_organization else '角色'
@@ -1508,6 +1522,8 @@ async def analyze_chapter_background(
             title=chapter.title,
             content=chapter.content,
             word_count=chapter.word_count or len(chapter.content),
+            user_id=user_id,
+            db=db_session,
             existing_foreshadows=existing_foreshadows,
             on_retry=on_retry_callback,
             characters_info=characters_info

@@ -44,6 +44,29 @@ class BookImportEntityCandidate(BaseModel):
     occurrence_count: int = Field(default=0, ge=0, description="全文出现次数")
     first_chapter_number: Optional[int] = Field(None, description="首次出现章节")
     evidence: list[str] = Field(default_factory=list, description="证据片段")
+    confidence: float = Field(default=0.6, ge=0.0, le=1.0, description="候选分类置信度")
+    classification_reason: Optional[str] = Field(None, description="分类依据说明")
+
+
+class BookImportTokenBudgetStage(BaseModel):
+    """拆书预览阶段 Token 预算估算"""
+    stage: str = Field(..., description="阶段标识")
+    label: str = Field(..., description="阶段名称")
+    estimated_prompt_tokens: int = Field(default=0, ge=0, description="预估输入 token")
+    estimated_completion_tokens: int = Field(default=0, ge=0, description="预估输出 token")
+    estimated_total_tokens: int = Field(default=0, ge=0, description="预估总 token")
+    api_calls: int = Field(default=0, ge=0, description="预估 API 调用次数")
+
+
+class BookImportTokenBudget(BaseModel):
+    """拆书任务 Token 预算估算，仅供参考"""
+    estimated_prompt_tokens: int = Field(default=0, ge=0, description="预估输入 token")
+    estimated_completion_tokens: int = Field(default=0, ge=0, description="预估输出 token")
+    estimated_total_tokens: int = Field(default=0, ge=0, description="预估总 token")
+    estimated_api_calls: int = Field(default=0, ge=0, description="预估 API 调用次数")
+    pricing_source: str = Field(default="openrouter", description="参考价格来源")
+    note: str = Field(default="", description="估算说明")
+    stages: list[BookImportTokenBudgetStage] = Field(default_factory=list, description="分阶段估算")
 
 
 class ProjectSuggestion(BaseModel):
@@ -113,6 +136,7 @@ class BookImportPreviewResponse(BaseModel):
     warnings: list[BookImportWarning]
     split_report: Optional[BookImportSplitReport] = None
     entity_candidates: list[BookImportEntityCandidate] = Field(default_factory=list)
+    token_budget: Optional[BookImportTokenBudget] = None
 
 
 class BookImportApplyRequest(BaseModel):

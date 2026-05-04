@@ -123,6 +123,12 @@ function bookImportEntityCandidateKey(item: BookImportEntityCandidate): string {
   return `${item.entity_type}:${item.name}`;
 }
 
+function formatApproxTokens(value?: number): string {
+  const count = Math.max(0, Math.round(value || 0));
+  if (count >= 10000) return `${(count / 10000).toFixed(1)}万`;
+  return count.toLocaleString();
+}
+
 function findPreviewSplitPosition(content: string, marker: string): number {
   const text = content || '';
   const trimmedMarker = marker.trim();
@@ -264,7 +270,10 @@ export default function BookImport() {
 
     setSelectedEntityCandidateKeys(
       preview.entity_candidates
-        .filter((item) => item.entity_type === 'character' || item.entity_type === 'organization')
+        .filter((item) =>
+          (item.entity_type === 'character' || item.entity_type === 'organization') &&
+          (item.confidence ?? 0.6) >= 0.45
+        )
         .slice(0, 40)
         .map(bookImportEntityCandidateKey)
     );
@@ -1352,6 +1361,46 @@ export default function BookImport() {
                 </Card>
               )}
 
+              {preview.token_budget && (
+                <Card
+                  size="small"
+                  title="Token 预算参考"
+                  extra={<Text type="secondary">{preview.token_budget.estimated_api_calls} 次 API 调用</Text>}
+                >
+                  <Row gutter={[12, 12]}>
+                    <Col xs={24} md={8}>
+                      <Text type="secondary">输入</Text>
+                      <div><Text strong>{formatApproxTokens(preview.token_budget.estimated_prompt_tokens)}</Text></div>
+                    </Col>
+                    <Col xs={24} md={8}>
+                      <Text type="secondary">输出</Text>
+                      <div><Text strong>{formatApproxTokens(preview.token_budget.estimated_completion_tokens)}</Text></div>
+                    </Col>
+                    <Col xs={24} md={8}>
+                      <Text type="secondary">合计</Text>
+                      <div><Text strong>{formatApproxTokens(preview.token_budget.estimated_total_tokens)}</Text></div>
+                    </Col>
+                    {preview.token_budget.stages.length > 0 && (
+                      <Col span={24}>
+                        <Space size={[6, 6]} wrap>
+                          {preview.token_budget.stages.slice(0, 8).map((stage) => (
+                            <Tag key={stage.stage}>
+                              {stage.label}：{formatApproxTokens(stage.estimated_total_tokens)}
+                            </Tag>
+                          ))}
+                          {preview.token_budget.stages.length > 8 && (
+                            <Tag>另 {preview.token_budget.stages.length - 8} 批</Tag>
+                          )}
+                        </Space>
+                      </Col>
+                    )}
+                    <Col span={24}>
+                      <Text type="secondary">{preview.token_budget.note}</Text>
+                    </Col>
+                  </Row>
+                </Card>
+              )}
+
               {preview.entity_candidates && preview.entity_candidates.length > 0 && (
                 <Card
                   size="small"
@@ -1379,6 +1428,8 @@ export default function BookImport() {
                       const candidateKey = bookImportEntityCandidateKey(item);
                       const canImportEntity = item.entity_type === 'character' || item.entity_type === 'organization';
                       const checked = selectedEntityCandidateKeySet.has(candidateKey);
+                      const confidence = item.confidence ?? 0.6;
+                      const confidenceColor = confidence >= 0.75 ? 'green' : confidence >= 0.5 ? 'orange' : 'default';
 
                       return (
                         <List.Item>
@@ -1403,11 +1454,15 @@ export default function BookImport() {
                             <Space size={[8, 4]} wrap>
                               <Text strong>{item.name}</Text>
                               <Tag color={typeColor}>{typeLabel}</Tag>
+                              <Tag color={confidenceColor}>置信 {Math.round(confidence * 100)}%</Tag>
                               <Tag>{item.occurrence_count} 次</Tag>
                               {item.first_chapter_number ? (
                                 <Text type="secondary">首见第 {item.first_chapter_number} 章</Text>
                               ) : null}
                             </Space>
+                            {item.classification_reason && (
+                              <Text type="secondary">{item.classification_reason}</Text>
+                            )}
                             {item.evidence.length > 0 && (
                               <Text type="secondary">
                                 {item.evidence.slice(0, 2).join(' / ')}

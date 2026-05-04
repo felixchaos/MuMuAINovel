@@ -41,6 +41,8 @@ from app.schemas.book_import import (
     BookImportSetupMode,
     BookImportTaskCreateResponse,
     BookImportTaskStatusResponse,
+    BookImportTokenBudget,
+    BookImportTokenBudgetStage,
     BookImportWarning,
     ProjectSuggestion,
 )
@@ -971,7 +973,10 @@ class BookImportService:
             source_parts = [
                 "由拆书实体预扫描确认导入。",
                 f"全文出现次数：{candidate.occurrence_count}",
+                f"候选置信度：{int((candidate.confidence or 0) * 100)}%",
             ]
+            if candidate.classification_reason:
+                source_parts.append(f"分类依据：{candidate.classification_reason}")
             if candidate.first_chapter_number:
                 source_parts.append(f"首次出现：第 {candidate.first_chapter_number} 章")
             if evidence_lines:
@@ -1312,6 +1317,20 @@ class BookImportService:
             chapters=chapters,
             title=Path(filename).stem,
         )
+        if task.setup_mode != "manual" and entity_candidates:
+            self._set_task_state(
+                task,
+                status="running",
+                progress=20,
+                message="正在校正实体候选类型...",
+            )
+            entity_candidates = await self._classify_import_entity_candidates_with_ai(
+                user_id=task.user_id,
+                task=task,
+                chapters=chapters,
+                candidates=entity_candidates,
+                title=Path(filename).stem,
+            )
 
         if was_trimmed:
             warnings.append(
@@ -1321,6 +1340,12 @@ class BookImportService:
                     level="info",
                 )
             )
+
+        token_budget = self._estimate_book_import_token_budget(
+            chapters=chapters,
+            setup_mode=task.setup_mode,
+            entity_candidate_count=len(entity_candidates),
+        )
 
         if task.setup_mode == "manual":
             self._set_task_state(
@@ -1338,6 +1363,7 @@ class BookImportService:
                 warnings=warnings,
                 split_report=split_report,
                 entity_candidates=entity_candidates,
+                token_budget=token_budget,
             )
 
         # AI 反向生成项目信息：进度 20% -> 95%
@@ -1369,7 +1395,102 @@ class BookImportService:
             warnings=warnings,
             split_report=split_report,
             entity_candidates=entity_candidates,
+            token_budget=token_budget,
         )
+
+    def _estimate_book_import_token_budget(
+        self,
+        *,
+        chapters: list[BookImportChapter],
+        setup_mode: BookImportSetupMode,
+        entity_candidate_count: int,
+    ) -> BookImportTokenBudget:
+        """估算拆书预览阶段 Token 消耗；真实用量仍以 AIUsageLog 为准。"""
+        if setup_mode == "manual":
+            return BookImportTokenBudget(
+                note=(
+                    "手动设定模式只执行规则拆章与可编辑预览，不强制调用 AI。"
+                    "后续点击字段润色/生成工具时，会按实际 AI 调用记录 token。"
+                ),
+            )
+
+        stages: list[BookImportTokenBudgetStage] = []
+
+        entity_prompt_chars = min(9000, sum(len(item.content or "") for item in chapters[:30]))
+        entity_prompt_chars += min(entity_candidate_count, 40) * 180
+        stages.append(
+            self._build_token_budget_stage(
+                stage="entity_classification",
+                label="实体候选分类",
+                prompt_chars=entity_prompt_chars,
+                completion_chars=min(entity_candidate_count, 40) * 80,
+                api_calls=1 if entity_candidate_count else 0,
+            )
+        )
+
+        project_prompt_chars = sum(len((chapter.content or "")[:1600]) + len(chapter.title or "") for chapter in chapters[:3])
+        stages.append(
+            self._build_token_budget_stage(
+                stage="reverse_project",
+                label="反向生成项目信息",
+                prompt_chars=project_prompt_chars + 1400,
+                completion_chars=1200,
+                api_calls=1,
+            )
+        )
+
+        batch_size = 5
+        for batch_index, start in enumerate(range(0, len(chapters), batch_size), start=1):
+            batch = chapters[start: start + batch_size]
+            prompt_chars = sum(len((chapter.content or "")[:2200]) + len(chapter.title or "") + 120 for chapter in batch)
+            stages.append(
+                self._build_token_budget_stage(
+                    stage=f"reverse_outlines_batch_{batch_index}",
+                    label=f"反向生成大纲 {batch_index}",
+                    prompt_chars=prompt_chars + 900,
+                    completion_chars=max(900, len(batch) * 520),
+                    api_calls=1,
+                )
+            )
+
+        prompt_tokens = sum(item.estimated_prompt_tokens for item in stages)
+        completion_tokens = sum(item.estimated_completion_tokens for item in stages)
+        api_calls = sum(item.api_calls for item in stages)
+        return BookImportTokenBudget(
+            estimated_prompt_tokens=prompt_tokens,
+            estimated_completion_tokens=completion_tokens,
+            estimated_total_tokens=prompt_tokens + completion_tokens,
+            estimated_api_calls=api_calls,
+            note=(
+                "这是基于文本长度和拆书批次的粗略 token 预算，不作为真实计费。"
+                "参考价格来自服务器每日缓存的 OpenRouter 模型价格，可能与供应商实时价格存在数小时差异。"
+            ),
+            stages=stages,
+        )
+
+    def _build_token_budget_stage(
+        self,
+        *,
+        stage: str,
+        label: str,
+        prompt_chars: int,
+        completion_chars: int,
+        api_calls: int,
+    ) -> BookImportTokenBudgetStage:
+        prompt_tokens = self._estimate_tokens_from_text_length(prompt_chars)
+        completion_tokens = self._estimate_tokens_from_text_length(completion_chars)
+        return BookImportTokenBudgetStage(
+            stage=stage,
+            label=label,
+            estimated_prompt_tokens=prompt_tokens,
+            estimated_completion_tokens=completion_tokens,
+            estimated_total_tokens=prompt_tokens + completion_tokens,
+            api_calls=api_calls,
+        )
+
+    @staticmethod
+    def _estimate_tokens_from_text_length(length: int) -> int:
+        return max(0, int((max(0, length) + 1) / 1.7))
 
     def _scan_import_entity_candidates(
         self,
@@ -1417,6 +1538,8 @@ class BookImportService:
                     occurrence_count=occurrence_count,
                     first_chapter_number=first_chapter_number,
                     evidence=evidence,
+                    confidence=0.68 if entity_type in {"character", "organization"} else 0.58,
+                    classification_reason="规则预扫描：名称模式与全文出现次数匹配",
                 )
 
         for name in self._extract_import_source_name_candidates(
@@ -1461,6 +1584,123 @@ class BookImportService:
             ),
         )
         return ranked[:limit]
+
+    async def _classify_import_entity_candidates_with_ai(
+        self,
+        *,
+        user_id: str,
+        task: Optional[_BookImportTask],
+        chapters: list[BookImportChapter],
+        candidates: list[BookImportEntityCandidate],
+        title: str,
+    ) -> list[BookImportEntityCandidate]:
+        """用现有用户 AI 配置对规则候选做轻量分类；失败时保持规则结果。"""
+        if not candidates:
+            return candidates
+
+        try:
+            engine = await get_engine(user_id)
+            session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+            async with session_factory() as db:
+                ai_service = await self._build_user_ai_service(db=db, user_id=user_id)
+                source_context = self._build_import_source_prompt_context(chapters, max_chars=9000)
+                candidate_lines = []
+                for idx, item in enumerate(candidates[:40], start=1):
+                    evidence = " / ".join(item.evidence[:2]) or "无"
+                    candidate_lines.append(
+                        f"{idx}. name={item.name} | rule_type={item.entity_type} | "
+                        f"occurrences={item.occurrence_count} | first_chapter={item.first_chapter_number or '未知'} | "
+                        f"evidence={evidence[:260]}"
+                    )
+
+                prompt = f"""
+你是中文小说拆书的实体候选分类器。请只校正候选列表中的实体类型，不要新增候选，不要改写候选名称。
+
+分类规则：
+- character：稳定人物、拟人化角色、明确具有人物行动的存在。
+- organization：国家、军队、学校、公司、家族、舰队、部门、势力、组织。
+- location：城市、区域、建筑、场所、道路、岛屿、港口等地点。
+- item：道具、装备、舰船、文档、装置、药剂、武器、物件。
+- unknown：泛称、代词、章节标题、误切文本、无法从证据判断的候选。
+
+注意：
+- “大哥、那人、前辈、老师、同学、少女、男人、女人”等泛称通常应为 unknown，除非证据明确它是稳定称谓。
+- 只输出严格 JSON 数组，每项字段为：name、entity_type、confidence、reason。
+- name 必须与候选完全一致，entity_type 必须是 character/organization/location/item/unknown 之一，confidence 为 0 到 1。
+
+书名：{title or '未命名'}
+
+候选列表：
+{chr(10).join(candidate_lines)}
+
+正文上下文节选：
+{source_context}
+""".strip()
+
+                ai_items = await ai_service.call_with_json_retry(
+                    prompt=prompt,
+                    max_retries=2,
+                    expected_type="array",
+                    temperature=0.2,
+                    max_tokens=2400,
+                )
+
+            by_name: dict[str, dict[str, Any]] = {}
+            if isinstance(ai_items, list):
+                for raw in ai_items:
+                    if not isinstance(raw, dict):
+                        continue
+                    name = str(raw.get("name") or "").strip()
+                    if name:
+                        by_name[name] = raw
+
+            valid_types = {"character", "organization", "location", "item", "unknown"}
+            refined: list[BookImportEntityCandidate] = []
+            for candidate in candidates:
+                raw = by_name.get(candidate.name)
+                if not raw:
+                    refined.append(candidate)
+                    continue
+
+                entity_type = str(raw.get("entity_type") or candidate.entity_type).strip()
+                if entity_type not in valid_types:
+                    entity_type = candidate.entity_type
+
+                try:
+                    confidence = float(raw.get("confidence", candidate.confidence))
+                except (TypeError, ValueError):
+                    confidence = candidate.confidence
+                confidence = max(0.0, min(1.0, confidence))
+                reason = str(raw.get("reason") or "").strip()
+
+                refined.append(
+                    candidate.model_copy(
+                        update={
+                            "entity_type": entity_type,
+                            "confidence": confidence,
+                            "classification_reason": reason[:160] or candidate.classification_reason,
+                        }
+                    )
+                )
+
+            if task:
+                self._set_task_state(task, status="running", progress=22, message="实体候选分类完成，继续生成预览...")
+
+            return sorted(
+                refined,
+                key=lambda item: (
+                    {"character": 0, "organization": 1, "location": 2, "item": 3, "unknown": 4}.get(item.entity_type, 9),
+                    -item.confidence,
+                    -item.occurrence_count,
+                    item.first_chapter_number or 999999,
+                    item.name,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(f"AI实体候选分类失败，保留规则预扫描结果: {exc}")
+            if task:
+                self._set_task_state(task, status="running", progress=22, message="实体候选分类失败，使用规则预扫描结果")
+            return candidates
 
     def _build_fallback_import_outlines(self, chapters: list[BookImportChapter]) -> list[BookImportOutline]:
         return [
@@ -3083,6 +3323,7 @@ class BookImportService:
 
     def _build_background_task_result(self, task: _BookImportTask) -> dict[str, Any]:
         split_report = None
+        token_budget = None
         chapter_count = 0
         entity_candidate_count = 0
         preview_storage_path = self._normalize_preview_storage_path(
@@ -3097,6 +3338,9 @@ class BookImportService:
             if task.preview.split_report:
                 dump = getattr(task.preview.split_report, "model_dump", None)
                 split_report = dump(mode="json") if callable(dump) else dict(task.preview.split_report)
+            if task.preview.token_budget:
+                dump = getattr(task.preview.token_budget, "model_dump", None)
+                token_budget = dump(mode="json") if callable(dump) else dict(task.preview.token_budget)
 
         return {
             "task_id": task.task_id,
@@ -3111,6 +3355,7 @@ class BookImportService:
             "chapter_count": chapter_count,
             "entity_candidate_count": entity_candidate_count,
             "split_report": split_report,
+            "token_budget": token_budget,
             "imported_project_id": task.imported_project_id,
             "failed_steps": [
                 {
