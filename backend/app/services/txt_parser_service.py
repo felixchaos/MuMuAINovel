@@ -14,6 +14,7 @@ class TxtParserService:
 
     NUMBER_TOKEN = r"一二三四五六七八九十百千万零〇两\d"
     SECTION_MARKER_PATTERN = re.compile(rf"^[（(]\s*([{NUMBER_TOKEN}]{{1,8}})\s*[）)]$")
+    PAGINATION_HEADING_PATTERN = re.compile(r"^(.{1,60}?)[（(]\s*(\d{1,5})\s*[）)]$")
     ACT_HEADING_PATTERN = re.compile(
         rf"^(?:.{{0,80}}?\s+)?(第[{NUMBER_TOKEN}]+[幕卷部集篇](?:\s*[：:、.．\-—]\s*.+|.+)?)$"
     )
@@ -21,10 +22,12 @@ class TxtParserService:
     STRONG_CHAPTER_PATTERNS = [
         re.compile(
             rf"^第[{NUMBER_TOKEN}]+"
-            r"(?:[章回卷集部篇].*|节(?:$|[\s　:：、.．\-—]).*)$"
+            r"(?:[章回卷集部篇幕场].*|节(?:$|[\s　:：、.．\-—]).*)$"
         ),
-        re.compile(r"^chapter\s*\d+.*$", re.IGNORECASE),
-        re.compile(r"^chap\.\s*\d+.*$", re.IGNORECASE),
+        re.compile(r"^(?:楔子|引子|序[章言曲]?|后记|尾声|终章|完本感言|番外)(?:$|[\s　:：、.．\-—].*)$"),
+        re.compile(r"^#{1,3}\s+\S.+$"),
+        re.compile(r"^(?:chapter|chap\.|part)\s*[\divxlcdm]+.*$", re.IGNORECASE),
+        re.compile(r"^(?:prologue|epilogue).*$", re.IGNORECASE),
     ]
 
     def decode_bytes(self, content: bytes) -> tuple[str, str]:
@@ -78,12 +81,21 @@ class TxtParserService:
 
         # 有些正文使用“第一幕：xxx”作为篇章标题，真正的章节边界是独立行“（1）/（2）”。
         # 这种格式不应走固定字数兜底，否则会把一节拆成多个 5000 字窗口。
+        section_heading_indexes = self._collect_numbered_section_headings(lines)
+        if section_heading_indexes and (
+            len(strong_heading_indexes) < 2 or len(section_heading_indexes) >= len(strong_heading_indexes) * 2
+        ):
+            section_chapters = self._split_numbered_sections(lines, section_heading_indexes)
+            if section_chapters:
+                return self._post_process_chapters(section_chapters)
+
+        # 兼容导出文本常见的“书名(1) / 书名(2)”分页标题。
         if len(strong_heading_indexes) < 2:
-            section_heading_indexes = self._collect_numbered_section_headings(lines)
-            if section_heading_indexes:
-                section_chapters = self._split_numbered_sections(lines, section_heading_indexes)
-                if section_chapters:
-                    return section_chapters
+            pagination_heading_indexes = self._collect_pagination_headings(lines)
+            if pagination_heading_indexes:
+                pagination_chapters = self._split_standard_headings(lines, pagination_heading_indexes)
+                if pagination_chapters:
+                    return self._post_process_chapters(pagination_chapters)
 
         # 标准章节标题足够多时，弱标题只会增加对白/短句误判。
         heading_indexes = strong_heading_indexes if len(strong_heading_indexes) >= 2 else (
@@ -95,7 +107,22 @@ class TxtParserService:
         if not heading_indexes:
             return self._fallback_split(text)
 
-        # 如果第一个标题前有较长正文，作为前言章节保留
+        chapters = self._split_standard_headings(lines, heading_indexes)
+        processed = self._post_process_chapters(chapters)
+        if processed and self._has_reasonable_chapter_quality(processed):
+            return processed
+
+        return self._fallback_split(text)
+
+    def _is_strong_heading(self, line: str) -> bool:
+        if len(line) > 120:
+            return False
+        if len(line) > 80 and re.search(r"[。！？!?；;]", line):
+            return False
+        return any(pattern.match(line) for pattern in self.STRONG_CHAPTER_PATTERNS)
+
+    def _split_standard_headings(self, lines: list[str], heading_indexes: list[int]) -> list[dict]:
+        """按已识别出的标题行切分章节，并保留较长前言。"""
         chapters: list[dict] = []
         chapter_no = 1
 
@@ -130,15 +157,54 @@ class TxtParserService:
             )
             chapter_no += 1
 
-        # 过滤掉明显噪音章节
-        filtered = [c for c in chapters if c["title"] or c["content"]]
-        if filtered:
-            return filtered
+        return [c for c in chapters if c["title"] or c["content"]]
 
-        return self._fallback_split(text)
+    def _collect_pagination_headings(self, lines: list[str]) -> list[int]:
+        """识别“书名(1) / 书名(2)”这类分页式章节标题。"""
+        candidates: list[tuple[int, str, int]] = []
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            match = self.PAGINATION_HEADING_PATTERN.match(stripped)
+            if not match:
+                continue
 
-    def _is_strong_heading(self, line: str) -> bool:
-        return any(pattern.match(line) for pattern in self.STRONG_CHAPTER_PATTERNS)
+            title = match.group(1).strip()
+            page_no = int(match.group(2))
+            if not title or page_no <= 0:
+                continue
+            if len(title) > 40 or re.search(r"[。！？!?；;]", title):
+                continue
+
+            next_idx = self._next_nonempty_line_index(lines, idx + 1)
+            if next_idx is None:
+                continue
+            if len(lines[next_idx].strip()) < 20:
+                continue
+
+            candidates.append((idx, title, page_no))
+
+        if len(candidates) < 3:
+            return []
+
+        title_counts: dict[str, int] = {}
+        for _, title, _ in candidates:
+            title_counts[title] = title_counts.get(title, 0) + 1
+
+        dominant_title, dominant_count = max(title_counts.items(), key=lambda item: item[1])
+        if dominant_count < max(3, int(len(candidates) * 0.6)):
+            return []
+
+        filtered = [(idx, page_no) for idx, title, page_no in candidates if title == dominant_title]
+        page_numbers = [page_no for _, page_no in filtered]
+        unique_pages = sorted(set(page_numbers))
+        if len(unique_pages) < 3:
+            return []
+        if unique_pages[0] != 1:
+            return []
+        if max(unique_pages) - min(unique_pages) + 1 > len(unique_pages) + 2:
+            return []
+
+        return [idx for idx, _ in filtered]
 
     def _collect_numbered_section_headings(self, lines: list[str]) -> list[int]:
         """识别“（1）/（2）”这类独立小节标题，并过滤普通列表项误判。"""
@@ -295,6 +361,73 @@ class TxtParserService:
         prev_blank = idx == 0 or not lines[idx - 1].strip()
         next_blank = idx == len(lines) - 1 or not lines[idx + 1].strip()
         return prev_blank and next_blank
+
+    def _post_process_chapters(self, chapters: list[dict]) -> list[dict]:
+        """章节后处理：去空、去连续重复、超大章节再按自然边界拆小。"""
+        cleaned: list[dict] = []
+        for chapter in chapters:
+            title = str(chapter.get("title") or "").strip()[:200]
+            content = str(chapter.get("content") or "").strip()
+            if not title and not content:
+                continue
+
+            if content and len(content) > 50000:
+                sub_chapters = self._fallback_split(content, min_window=6000, max_window=9000)
+                for idx, sub_chapter in enumerate(sub_chapters, start=1):
+                    cleaned.append(
+                        {
+                            "title": f"{title or '章节'}（{idx}）"[:200],
+                            "content": sub_chapter["content"],
+                            "chapter_number": len(cleaned) + 1,
+                        }
+                    )
+                continue
+
+            if cleaned:
+                previous = cleaned[-1]
+                previous_body = re.sub(r"\s+", "", previous.get("content") or "")
+                current_body = re.sub(r"\s+", "", content)
+                if previous.get("title") == title and previous_body == current_body:
+                    continue
+
+            cleaned.append(
+                {
+                    "title": title or f"第{len(cleaned) + 1}章",
+                    "content": content,
+                    "chapter_number": len(cleaned) + 1,
+                }
+            )
+
+        for idx, chapter in enumerate(cleaned, start=1):
+            chapter["chapter_number"] = idx
+        return cleaned
+
+    def _has_reasonable_chapter_quality(self, chapters: list[dict]) -> bool:
+        """用轻量评分过滤误把对白/列表项当章节标题的切分结果。"""
+        if not chapters:
+            return False
+        if len(chapters) <= 2:
+            return True
+
+        lengths = [len((chapter.get("content") or "").strip()) for chapter in chapters]
+        total_length = sum(lengths)
+        if total_length < 3000:
+            return True
+
+        nonempty_lengths = [length for length in lengths if length > 0]
+        if len(nonempty_lengths) < max(2, len(chapters) // 2):
+            return False
+
+        tiny_count = sum(length < 200 for length in nonempty_lengths)
+        if tiny_count / len(nonempty_lengths) > 0.45:
+            return False
+
+        sorted_lengths = sorted(nonempty_lengths)
+        median_length = sorted_lengths[len(sorted_lengths) // 2]
+        if len(chapters) >= 8 and median_length < 350:
+            return False
+
+        return True
 
     def _fallback_split(self, text: str, min_window: int = 3000, max_window: int = 5000) -> list[dict]:
         """
