@@ -224,7 +224,7 @@ export default function Careers() {
                                 setAiGenerating(false);
                                 message.error(data.error || data.message || '生成失败');
                             }
-                        } catch (e) {
+                        } catch {
                             // 忽略非JSON行（如心跳注释）
                         }
                     }

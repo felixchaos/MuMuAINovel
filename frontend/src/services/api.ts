@@ -60,6 +60,7 @@ import type {
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
+  StoryEngineFactsResponse,
   StoryEngineSnapshot,
   AIUsageLog,
   AIUsageSummary,
@@ -364,6 +365,9 @@ export const projectApi = {
     api.get<unknown, StoryEngineSnapshot>(`/projects/${id}/story-engine/snapshot`, {
       params: { context_limit: contextLimit },
     }),
+
+  getStoryEngineFacts: (id: string, params?: { fact_type?: string; limit?: number }) =>
+    api.get<unknown, StoryEngineFactsResponse>(`/projects/${id}/story-engine/facts`, { params }),
 
   createProject: (data: ProjectCreate) => api.post<unknown, Project>('/projects', data),
 

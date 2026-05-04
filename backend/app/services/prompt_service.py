@@ -1197,6 +1197,12 @@ class PromptService:
 - 叙事节奏(快/中/慢)
 - 对话与描写比例
 
+**7b. 世界观事实/规则声明 (Worldbuilding Facts) - 可选**
+仅当章节明确给出稳定设定时填写，禁止凭空扩写或推断：
+- 世界规则、历史事实、地理边界、组织制度、技术/能力限制、文化习俗
+- 每条必须是会约束后续创作的事实，而不是本章情绪或临时描写
+- 必须给出原文定位 keyword（从原文逐字复制8-25字）
+
 **8. 质量评分（支持小数，严格区分度）**
 评分范围：1.0-10.0，支持一位小数（如 6.5、7.8）
 每个维度必须根据以下标准严格评分，避免所有内容都打中等分数：
@@ -1338,6 +1344,15 @@ class PromptService:
       "duration": "时长估计"
     }}
   ],
+  "worldbuilding_facts": [
+    {{
+      "content": "章节明确给出的稳定世界观事实",
+      "category": "history|rule|location|technology|power_system|culture|other",
+      "keyword": "从原文逐字复制的8-25字文本",
+      "location": null,
+      "impact": "对后续创作的约束"
+    }}
+  ],
   "organization_states": [
     {{
       "organization_name": "某门派",
@@ -1375,6 +1390,7 @@ class PromptService:
 ✅ 职业变化可选：仅当章节明确描述时填写
 ✅ 组织变化可选：仅当章节明确描述角色与组织关系变动时填写（character_states中的organization_changes）
 ✅ 组织状态可选：仅当章节明确描述组织势力/据点/目标变化时填写（organization_states顶级字段）
+✅ 世界观事实可选：仅当章节明确给出稳定设定/规则时填写（worldbuilding_facts顶级字段），禁止推断
 ✅ 存活状态谨慎：survival_status仅当章节有明确死亡/失踪/退场描写时填写，默认null
 ✅ 组织覆灭谨慎：is_destroyed仅当组织被彻底消灭时设true，组织受损不算覆灭
 ✅ 【伏笔ID追踪】回收伏笔时，必须从【已埋入伏笔列表】中查找匹配的ID填入 reference_foreshadow_id

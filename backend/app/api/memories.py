@@ -143,7 +143,9 @@ async def analyze_chapter(
         memories_data = analyzer.extract_memories_from_analysis(
             analysis_result,
             chapter_id,
-            chapter.chapter_number
+            chapter.chapter_number,
+            chapter_content=chapter.content or "",
+            chapter_title=chapter.title or ""
         )
 
         # 重新分析前，先清理该章节旧记忆（关系库 + 向量库）
@@ -169,6 +171,7 @@ async def analyze_chapter(
         saved_count = 0
         for mem_data in memories_data:
             memory_id = str(uuid.uuid4())
+            metadata = mem_data.get('metadata', {})
 
             # 保存到关系数据库
             memory = StoryMemory(
@@ -178,9 +181,15 @@ async def analyze_chapter(
                 memory_type=mem_data['type'],
                 title=mem_data.get('title', ''),
                 content=mem_data['content'],
+                importance_score=metadata.get('importance_score', 0.5),
+                tags=metadata.get('tags', []),
+                is_foreshadow=metadata.get('is_foreshadow', 0),
                 story_timeline=chapter.chapter_number,
+                chapter_position=metadata.get('text_position', -1),
+                text_length=metadata.get('text_length', 0),
+                related_characters=metadata.get('related_characters', []),
+                related_locations=metadata.get('related_locations', []),
                 vector_id=memory_id,
-                **mem_data['metadata']
             )
             db.add(memory)
 
@@ -191,7 +200,7 @@ async def analyze_chapter(
                 memory_id=memory_id,
                 content=mem_data['content'],
                 memory_type=mem_data['type'],
-                metadata=mem_data['metadata']
+                metadata=metadata
             )
             saved_count += 1
 

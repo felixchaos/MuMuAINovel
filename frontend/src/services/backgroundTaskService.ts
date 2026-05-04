@@ -230,7 +230,7 @@ export async function generateOutlineBackground(
   const { task_id } = await response.json();
 
   // 2. 开始轮询
-  let cancelPolling = pollTaskUntilComplete(task_id, onProgress, onComplete, onError);
+  const cancelPolling = pollTaskUntilComplete(task_id, onProgress, onComplete, onError);
 
   // 3. 返回统一的取消函数（取消轮询 + 取消后台任务）
   return () => {

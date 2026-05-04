@@ -1453,7 +1453,7 @@ export default function Chapters() {
         () => {
           // 进度更新由悬浮任务框处理，无需额外操作
         },
-        (_) => {
+        () => {
           message.success("后台章节生成完成！");
           refreshChapters();
           if (currentProject) {
@@ -1469,7 +1469,7 @@ export default function Chapters() {
       message.info("章节生成任务已提交，可在右下角任务面板查看进度");
       // 通知悬浮任务框刷新
       eventBus.emit('background-task-created');
-    } catch (error) {
+    } catch {
       message.error("创建后台任务失败");
     }
   };

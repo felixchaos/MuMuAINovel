@@ -81,6 +81,33 @@ class StoryEngineCardDraft(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class StoryEngineFact(BaseModel):
+    """A normalized read-only fact derived from existing official-compatible tables."""
+    id: str
+    fact_type: str = Field(..., description="event/character_state/relationship/scene/world_detail/foreshadow/organization_event")
+    source_type: str = Field(..., description="plot_analysis/story_memory/foreshadow/relationship/organization_member")
+    source_id: str
+    chapter_id: Optional[str] = None
+    chapter_number: Optional[int] = None
+    title: str
+    content: str
+    entities: List[str] = Field(default_factory=list)
+    locations: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    importance: float = Field(0.5, ge=0.0, le=1.0)
+    confidence: float = Field(0.75, ge=0.0, le=1.0)
+    evidence: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class StoryEngineFactsResponse(BaseModel):
+    """Read-only fact view over existing project records."""
+    project_id: str
+    total: int
+    counts_by_type: dict[str, int]
+    facts: List[StoryEngineFact] = Field(default_factory=list)
+
+
 class StoryEngineSnapshotResponse(BaseModel):
     """Read-only story-engine snapshot built from official-compatible data."""
     project_id: str

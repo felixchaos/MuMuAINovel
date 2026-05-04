@@ -475,8 +475,117 @@ class PlotAnalyzer:
                         'is_foreshadow': 0
                     }
                 })
-            
-            # 5. 如果有重要冲突,也记录下来
+
+            # 5. 提取场景事实，供后续续写/重写保持地点与氛围连续
+            for i, scene in enumerate(analysis.get('scenes', [])):
+                if isinstance(scene, dict):
+                    location = str(scene.get('location') or '').strip()
+                    atmosphere = str(scene.get('atmosphere') or '').strip()
+                    duration = str(scene.get('duration') or '').strip()
+                    keyword = str(scene.get('keyword') or location or atmosphere or '').strip()
+                else:
+                    location = str(scene or '').strip()
+                    atmosphere = ''
+                    duration = ''
+                    keyword = location
+                if not any([location, atmosphere, duration]):
+                    continue
+
+                position, length = self._find_text_position(chapter_content, keyword)
+                content_parts = [
+                    f"地点: {location}" if location else "",
+                    f"氛围: {atmosphere}" if atmosphere else "",
+                    f"时长: {duration}" if duration else "",
+                ]
+                memories.append({
+                    'type': 'scene',
+                    'content': "；".join(part for part in content_parts if part),
+                    'title': f"场景 - {location or f'第{i + 1}个场景'}",
+                    'metadata': {
+                        'chapter_id': chapter_id,
+                        'chapter_number': chapter_number,
+                        'importance_score': 0.55,
+                        'tags': ['场景', location, atmosphere],
+                        'related_locations': [location] if location else [],
+                        'is_foreshadow': 0,
+                        'keyword': keyword,
+                        'text_position': position,
+                        'text_length': length
+                    }
+                })
+
+            # 6. 提取组织自身变化，避免只更新当前组织状态而丢失历史事实
+            for i, org_state in enumerate(analysis.get('organization_states', [])):
+                if not isinstance(org_state, dict):
+                    continue
+                org_name = str(org_state.get('organization_name') or '未知组织').strip()
+                key_event = str(org_state.get('key_event') or '').strip()
+                status_description = str(org_state.get('status_description') or '').strip()
+                keyword = key_event or org_name
+                position, length = self._find_text_position(chapter_content, keyword)
+                content_parts = [
+                    f"{org_name}状态变化",
+                    status_description,
+                    f"势力变化: {org_state.get('power_change')}" if org_state.get('power_change') is not None else "",
+                    f"新据点: {org_state.get('new_location')}" if org_state.get('new_location') else "",
+                    f"新目标: {org_state.get('new_purpose')}" if org_state.get('new_purpose') else "",
+                    f"关键事件: {key_event}" if key_event else "",
+                ]
+                memories.append({
+                    'type': 'organization_event',
+                    'content': "；".join(part for part in content_parts if part),
+                    'title': f"{org_name}组织变化",
+                    'metadata': {
+                        'chapter_id': chapter_id,
+                        'chapter_number': chapter_number,
+                        'importance_score': 0.7,
+                        'tags': ['组织', org_name, '状态变化'],
+                        'related_characters': [org_name],
+                        'related_locations': [org_state.get('new_location')] if org_state.get('new_location') else [],
+                        'is_foreshadow': 0,
+                        'keyword': keyword,
+                        'text_position': position,
+                        'text_length': length,
+                        'is_destroyed': bool(org_state.get('is_destroyed'))
+                    }
+                })
+
+            # 7. 提取明确世界观事实/规则声明，只记录原文明确给出的稳定设定
+            for i, fact in enumerate(analysis.get('worldbuilding_facts', [])):
+                if isinstance(fact, dict):
+                    content = str(fact.get('content') or '').strip()
+                    category = str(fact.get('category') or '世界观').strip()
+                    keyword = str(fact.get('keyword') or content[:25]).strip()
+                    location = str(fact.get('location') or '').strip()
+                    impact = str(fact.get('impact') or '').strip()
+                else:
+                    content = str(fact or '').strip()
+                    category = '世界观'
+                    keyword = content[:25]
+                    location = ''
+                    impact = ''
+                if not content:
+                    continue
+
+                position, length = self._find_text_position(chapter_content, keyword)
+                memories.append({
+                    'type': 'world_detail',
+                    'content': f"{content}{'。影响: ' + impact if impact else ''}",
+                    'title': f"世界观设定 - {category}",
+                    'metadata': {
+                        'chapter_id': chapter_id,
+                        'chapter_number': chapter_number,
+                        'importance_score': 0.65,
+                        'tags': ['世界观', category],
+                        'related_locations': [location] if location else [],
+                        'is_foreshadow': 0,
+                        'keyword': keyword,
+                        'text_position': position,
+                        'text_length': length
+                    }
+                })
+
+            # 8. 如果有重要冲突,也记录下来
             conflict = analysis.get('conflict', {})
             
             if conflict and conflict.get('level', 0) >= 7:

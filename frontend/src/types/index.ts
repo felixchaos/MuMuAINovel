@@ -351,6 +351,31 @@ export interface StoryEngineCardDraft {
   tags: string[];
 }
 
+export interface StoryEngineFact {
+  id: string;
+  fact_type: string;
+  source_type: string;
+  source_id: string;
+  chapter_id?: string | null;
+  chapter_number?: number | null;
+  title: string;
+  content: string;
+  entities: string[];
+  locations: string[];
+  tags: string[];
+  importance: number;
+  confidence: number;
+  evidence?: string | null;
+  created_at?: string | null;
+}
+
+export interface StoryEngineFactsResponse {
+  project_id: string;
+  total: number;
+  counts_by_type: Record<string, number>;
+  facts: StoryEngineFact[];
+}
+
 export interface StoryEngineSnapshot {
   project_id: string;
   title: string;

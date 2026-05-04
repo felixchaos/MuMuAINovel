@@ -23,6 +23,7 @@ class StoryMemory(Base):
     - foreshadow: 伏笔
     - dialogue: 重要对话
     - scene: 场景描写
+    - organization_event: 组织状态/成员变化
     """)
     
     # 记忆内容

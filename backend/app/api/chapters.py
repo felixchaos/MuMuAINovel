@@ -1638,8 +1638,8 @@ async def analyze_chapter_background(
         
         # 准备批量添加的记忆数据（不需要锁）
         memory_records = []
-        for mem in memories:
-            memory_id = f"{chapter_id}_{mem['type']}_{len(memory_records)}"
+        for index, mem in enumerate(memories):
+            memory_id = f"{chapter_id}_{mem['type']}_{index}"
             memory_records.append({
                 'id': memory_id,
                 'content': mem['content'],
@@ -1649,8 +1649,8 @@ async def analyze_chapter_background(
             
         # 保存到关系数据库（写操作，需要锁）
         async with write_lock:
-            for mem in memories:
-                memory_id = memory_records[memories.index(mem)]['id']
+            for mem, memory_record in zip(memories, memory_records):
+                memory_id = memory_record['id']
                 text_position = mem['metadata'].get('text_position', -1)
                 text_length = mem['metadata'].get('text_length', 0)
                 

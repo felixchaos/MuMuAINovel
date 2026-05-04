@@ -24,6 +24,7 @@ from app.models.relationship import CharacterRelationship
 from app.schemas.story_engine import (
     StoryEngineBeat,
     StoryEngineCardDraft,
+    StoryEngineFact,
     StoryEngineItem,
     StoryEngineLane,
     StoryEngineMetric,
@@ -31,6 +32,7 @@ from app.schemas.story_engine import (
     StoryEngineSection,
     StoryEngineSnapshotResponse,
 )
+from app.services.story_fact_adapter import story_fact_adapter
 from app.services.project_story_context import build_project_story_context
 
 
@@ -156,6 +158,7 @@ def _build_context_text(
     organizations: list[Character],
     careers: list[Career],
     foreshadows: list[Foreshadow],
+    facts: list[StoryEngineFact],
 ) -> str:
     lines: list[str] = [
         f"【项目】{project.title}",
@@ -209,6 +212,13 @@ def _build_context_text(
         lines.append("【活跃伏笔】")
         for foreshadow in foreshadows[:8]:
             lines.append(f"- {foreshadow.title}（{foreshadow.status}）：{_compact_text(foreshadow.content, 160)}")
+
+    if facts:
+        lines.append("")
+        lines.append("【结构化事实】")
+        for fact in facts[:12]:
+            chapter = f"第{fact.chapter_number}章" if fact.chapter_number else "项目级"
+            lines.append(f"- {chapter} · {fact.title}：{_compact_text(fact.content, 180)}")
 
     lines.append("")
     lines.append(story_context)
@@ -759,6 +769,8 @@ async def build_story_engine_snapshot(
     foreshadow_count = await _count(db, Foreshadow, Foreshadow.project_id == project_id)
     analysis_count = await _count(db, PlotAnalysis, PlotAnalysis.project_id == project_id)
     memory_count = await _count(db, StoryMemory, StoryMemory.project_id == project_id)
+    facts_response = await story_fact_adapter.build_facts(db, project_id, limit=24)
+    fact_count = facts_response.total
 
     outline_rows = (
         await db.execute(
@@ -957,6 +969,24 @@ async def build_story_engine_snapshot(
             for foreshadow in foreshadow_rows
         ],
     )
+    _append_section(
+        sections,
+        key="facts",
+        title="结构化事实",
+        total=fact_count,
+        target=max(1, content_chapter_count),
+        description="由章节分析、长期记忆、伏笔、关系和组织成员聚合出的只读事实视图。",
+        items=[
+            StoryEngineItem(
+                id=fact.id,
+                title=fact.title,
+                subtitle=f"{fact.fact_type} · {fact.source_type}",
+                summary=_compact_text(fact.content, 180),
+                tags=fact.tags[:3],
+            )
+            for fact in facts_response.facts[:8]
+        ],
+    )
 
     metrics = [
         StoryEngineMetric(
@@ -1017,6 +1047,13 @@ async def build_story_engine_snapshot(
             status=_metric_status(memory_count),
             description="向量化故事记忆",
         ),
+        StoryEngineMetric(
+            key="facts",
+            label="事实条目",
+            value=fact_count,
+            status=_metric_status(fact_count),
+            description="从现有表聚合的只读事实视图",
+        ),
     ]
 
     section_scores = [section.coverage for section in sections]
@@ -1036,6 +1073,7 @@ async def build_story_engine_snapshot(
         organization_rows,
         career_rows,
         foreshadow_rows,
+        facts_response.facts,
     )
     if len(context_text) > context_limit:
         suffix = "..."
