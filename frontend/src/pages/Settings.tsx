@@ -310,7 +310,7 @@ export default function SettingsPage() {
       defaultModel: 'gemini-3-flash-preview'
     },
     { value: 'openai', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
-    // { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
+    { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
     { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   ];
 
@@ -941,8 +941,8 @@ export default function SettingsPage() {
     switch (provider) {
       case 'openai':
         return 'blue';
-      // case 'anthropic':
-      //   return 'purple';
+      case 'anthropic':
+        return 'purple';
       case 'gemini':
         return 'green';
       case 'mumu':
@@ -1928,9 +1928,11 @@ export default function SettingsPage() {
                   style={{ marginBottom: 16 }}
                 >
                   <Select placeholder="选择提供商" onChange={handlePresetProviderChange}>
-                    <Select.Option value="mumu">MuMuのAPI</Select.Option>
-                    <Select.Option value="openai">OpenAI</Select.Option>
-                    <Select.Option value="gemini">Google Gemini</Select.Option>
+                    {apiProviders.map(provider => (
+                      <Select.Option key={provider.value} value={provider.value}>
+                        {provider.label}
+                      </Select.Option>
+                    ))}
                   </Select>
                 </Form.Item>
 
