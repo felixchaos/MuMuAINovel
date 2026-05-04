@@ -168,6 +168,14 @@ class AutoOrganizationService:
             return []
         
         members = []
+        name_authority = build_name_authority(existing_characters, include_organizations=False)
+        characters_by_name = {
+            canonical_name: character
+            for character in existing_characters
+            if not character.is_organization
+            for canonical_name in [name_authority.resolve_name(character.name, keep_unknown=False)]
+            if canonical_name
+        }
         
         for member_spec in member_specs:
             try:
@@ -175,11 +183,12 @@ class AutoOrganizationService:
                 if not character_name:
                     continue
                 
-                # 查找目标角色
-                target_char = next(
-                    (c for c in existing_characters if c.name == character_name and not c.is_organization),
-                    None
-                )
+                canonical_character_name = name_authority.resolve_name(character_name, keep_unknown=False)
+                if not canonical_character_name:
+                    logger.info(f"    ⏭️ 跳过非稳定成员引用: {character_name}")
+                    continue
+
+                target_char = characters_by_name.get(canonical_character_name)
                 
                 if not target_char:
                     logger.warning(f"    ⚠️ 目标角色不存在: {character_name}")
@@ -193,7 +202,7 @@ class AutoOrganizationService:
                     )
                 )
                 if existing_member.scalar_one_or_none():
-                    logger.debug(f"    ℹ️ 成员关系已存在: {character_name} -> {organization.id}")
+                    logger.debug(f"    ℹ️ 成员关系已存在: {canonical_character_name} -> {organization.id}")
                     continue
                 
                 # 创建成员关系
@@ -212,7 +221,7 @@ class AutoOrganizationService:
                 members.append(member)
                 
                 logger.info(
-                    f"    ✅ 创建成员关系: {character_name} -> {organization.id} "
+                    f"    ✅ 创建成员关系: {canonical_character_name} -> {organization.id} "
                     f"({member_spec.get('position', '成员')})"
                 )
                 
