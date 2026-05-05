@@ -8,6 +8,12 @@ ARG USE_CN_MIRROR=false
 FROM node:22-alpine AS frontend-builder
 
 ARG USE_CN_MIRROR
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 ARG VITE_ENABLE_SPONSOR=true
 ARG VITE_ENABLE_ANNOUNCEMENT_MODAL=true
 ARG VITE_ENABLE_MUMU_API_LINKS=true
@@ -31,6 +37,14 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
         npm config set registry https://registry.npmmirror.com; \
     fi
 
+# 显式让前端依赖下载走构建代理。代理只用于 builder 阶段，不进入最终镜像环境。
+RUN proxy_url="${HTTP_PROXY:-${http_proxy:-}}" && \
+    https_proxy_url="${HTTPS_PROXY:-${https_proxy:-}}" && \
+    no_proxy_value="${NO_PROXY:-${no_proxy:-}}" && \
+    if [ -n "$proxy_url" ]; then npm config set proxy "$proxy_url"; fi && \
+    if [ -n "$https_proxy_url" ]; then npm config set https-proxy "$https_proxy_url"; fi && \
+    if [ -n "$no_proxy_value" ]; then npm config set noproxy "$no_proxy_value"; fi
+
 # 删除 package-lock.json 以避免因镜像源不一致导致的 404 错误
 RUN rm -f package-lock.json
 
@@ -50,6 +64,12 @@ RUN npm run build
 FROM python:3.11-slim
 
 ARG USE_CN_MIRROR
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
 ARG TARGETPLATFORM
 ARG TARGETARCH
 
@@ -62,8 +82,10 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
         sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources; \
     fi
 
-# 安装系统依赖（添加数据库工具）
-RUN apt-get update && apt-get install -y \
+# 安装系统依赖（添加数据库工具）。apt/pip 下载显式继承构建代理。
+RUN export HTTP_PROXY="${HTTP_PROXY:-${http_proxy:-}}" HTTPS_PROXY="${HTTPS_PROXY:-${https_proxy:-}}" NO_PROXY="${NO_PROXY:-${no_proxy:-}}" \
+    http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}" && \
+    apt-get update && apt-get install -y \
     gcc \
     postgresql-client \
     netcat-traditional \
@@ -75,7 +97,9 @@ COPY backend/requirements.txt ./
 # 安装 Python 依赖
 # 先安装 torch CPU版本（~200MB vs 完整版~2GB，节省90%下载时间）
 # 对于embedding场景，CPU版本完全够用
-RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
+RUN export HTTP_PROXY="${HTTP_PROXY:-${http_proxy:-}}" HTTPS_PROXY="${HTTPS_PROXY:-${https_proxy:-}}" NO_PROXY="${NO_PROXY:-${no_proxy:-}}" \
+        http_proxy="${http_proxy:-${HTTP_PROXY:-}}" https_proxy="${https_proxy:-${HTTPS_PROXY:-}}" no_proxy="${no_proxy:-${NO_PROXY:-}}" && \
+    if [ "$USE_CN_MIRROR" = "true" ]; then \
         pip install --no-cache-dir torch==2.8.0 --index-url https://mirrors.aliyun.com/pypi/simple/ --extra-index-url https://download.pytorch.org/whl/cpu && \
         pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/; \
     else \
