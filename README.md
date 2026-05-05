@@ -128,6 +128,26 @@ http://localhost:8000
 
 镜像版默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。
 
+## 从官方版本无损升级
+
+已经部署过官方 MuMuAINovel 的用户，不需要重新建库。进入原来的官方部署目录，也就是当前放着 `docker-compose.yml` / `compose.yml` 和 `.env` 的目录，执行升级脚本即可切换到本 fork 镜像：
+
+macOS / Linux / WSL：
+
+```bash
+curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.sh
+bash upgrade-to-story-engine.sh
+```
+
+Windows PowerShell：
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
+powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
+```
+
+脚本会备份 compose 文件和 `.env`，如果数据库容器正在运行还会导出 `postgres.sql`。它只替换应用镜像和必要配置，复用原 Docker volume，不会执行 `docker compose down -v`。完整说明见 [deploy/upgrade/README.md](deploy/upgrade/README.md)。
+
 ## 源码快速部署
 
 熟悉命令行的用户可以使用 Docker Compose 从源码构建。不要直接使用官方 Docker Hub 镜像来部署本 fork，因为镜像可能不包含本 fork 的改动。
@@ -386,6 +406,7 @@ FRONTEND_URL=https://your-domain.example
 ├── deploy/cloudflare/       # 可选 Cloudflare Worker 路由示例
 ├── deploy/dockerhub/        # Docker Hub 镜像部署与发布脚本
 ├── deploy/one-click/        # Windows/macOS 一键部署包入口
+├── deploy/upgrade/          # 官方版本原地升级到本 fork 的无损升级脚本
 ├── docker-compose.yml       # Docker Compose 编排
 ├── Dockerfile               # 前后端一体镜像构建
 └── README.md

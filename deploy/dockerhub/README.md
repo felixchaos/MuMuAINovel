@@ -37,6 +37,24 @@ docker compose pull
 docker compose up -d
 ```
 
+## 从官方版本升级
+
+如果机器上已经部署过官方 MuMuAINovel，请不要新建目录迁移。直接进入原官方部署目录，运行升级脚本，它会复用原来的 `.env` 和 PostgreSQL Docker volume：
+
+```bash
+curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.sh
+bash upgrade-to-story-engine.sh
+```
+
+Windows PowerShell：
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
+powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
+```
+
+脚本会先备份 compose 文件和 `.env`，并在 PostgreSQL 容器运行时导出一份 SQL 备份。不要手动执行 `docker compose down -v`，否则会删除数据库卷。
+
 ## 镜像发布
 
 维护者发布镜像时使用：
