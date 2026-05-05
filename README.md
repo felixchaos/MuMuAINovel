@@ -6,7 +6,7 @@
 
 基于 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) 的个人增强版 fork，目标是在保持官方版本兼容性的基础上，补强长篇小说创作里的剧情工程能力、章节重写流程、后台任务可控性和多人部署体验。
 
-本仓库不是官方发行版。需要最稳定的官方版本时，请优先查看上游仓库；需要本 fork 的增强功能时，可以按本文档从源码部署。
+本仓库不是官方发行版。需要最稳定的官方版本时，请优先查看上游仓库；需要本 fork 的增强功能时，可以按本文档使用一键包、Docker Hub 镜像或源码部署。
 
 ## 版本号策略
 
@@ -77,6 +77,17 @@ v{官方基线版本}-story-engine.{fork迭代号}
 - 更新日志读取本 fork 分支，方便看到当前增强版的实际提交。
 - 提供 Windows/macOS 一键部署包：双击脚本后可跳过全部配置，也可按引导填写端口、管理员账号、API 和代理。
 
+## 部署方式怎么选
+
+| 场景 | 推荐方式 | 会不会影响已有数据 |
+| --- | --- | --- |
+| 新电脑、不会命令行，只想本地跑起来 | 一键部署包 | 新建本地数据 |
+| 新服务器或本机已经有 Docker Compose | Docker Hub 镜像部署 | 新建当前目录的数据卷 |
+| 已经部署了官方 MuMuAINovel，想切到本 fork | 从官方版本无损升级 | 保留原 `.env` 和 PostgreSQL Docker volume |
+| 要改代码、二次开发或调试前后端 | 源码快速部署 | 取决于当前 compose 目录和数据库配置 |
+
+最重要的一条：如果你已经有官方版数据，必须在原官方部署目录里执行升级脚本，不要新建空目录。Docker Compose 会根据目录名生成数据卷名，换目录可能导致看起来像“数据没了”。
+
 ## 一键部署包
 
 推荐给不熟悉命令行的用户使用 release 包：
@@ -100,9 +111,9 @@ admin / admin123
 
 API Key、SMTP、注册开关等都可以在网页里配置；一键启动时可以全部跳过。真正必须具备的是 Docker Desktop，因为本项目通过 Docker Compose 启动数据库和应用。Windows/macOS 首次安装 Docker Desktop 时，系统可能弹出管理员授权或要求重启，这是操作系统和 Docker 的限制。
 
-## Docker Hub 镜像部署
+## Docker Hub 镜像部署：新装推荐
 
-如果已经有 Docker Compose，也可以直接使用公开镜像，不需要本地构建：
+这是新装推荐路线。适合已经安装 Docker Desktop / Docker Engine / Docker Compose 的用户，不需要本地构建源码，直接拉公开镜像启动。
 
 ```text
 felixchaos/mumuainovel:v1.4.8-story-engine.1
@@ -110,7 +121,7 @@ felixchaos/mumuainovel:story-engine
 felixchaos/mumuainovel:latest
 ```
 
-快速启动：
+新建一个空目录并启动：
 
 ```bash
 mkdir mumuainovel-story-engine
@@ -128,7 +139,26 @@ http://localhost:8000
 
 镜像版默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。
 
-## 从官方版本无损升级
+常用维护命令：
+
+```bash
+# 更新到最新镜像
+docker compose pull
+docker compose up -d
+
+# 查看状态
+docker compose ps
+
+# 查看日志
+docker compose logs -f
+
+# 停止容器但保留数据库卷
+docker compose down
+```
+
+不要执行 `docker compose down -v`，除非你明确要删除数据库卷和全部本地数据。
+
+## 从官方版本无损升级：保留已有数据
 
 已经部署过官方 MuMuAINovel 的用户，不需要重新建库。进入原来的官方部署目录，也就是当前放着 `docker-compose.yml` / `compose.yml` 和 `.env` 的目录，执行升级脚本即可切换到本 fork 镜像：
 
@@ -148,9 +178,32 @@ powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
 
 脚本会备份 compose 文件和 `.env`，如果数据库容器正在运行还会导出 `postgres.sql`。它只替换应用镜像和必要配置，复用原 Docker volume，不会执行 `docker compose down -v`。完整说明见 [deploy/upgrade/README.md](deploy/upgrade/README.md)。
 
+无人值守升级：
+
+```bash
+bash upgrade-to-story-engine.sh --yes
+```
+
+如果 GitHub 或 Docker Hub 下载很慢，可以指定代理：
+
+```bash
+bash upgrade-to-story-engine.sh --proxy http://127.0.0.1:7890
+```
+
+Windows PowerShell 对应参数：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1 -Yes
+powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1 -Proxy "http://127.0.0.1:7890"
+```
+
+升级后访问地址通常保持不变。如果原 `.env` 设置了 `APP_PORT`，继续使用原端口。
+
+回滚时优先使用脚本生成的 `backups/upgrade-story-engine-*` 目录恢复 compose 文件。数据库迁移后的完整回滚需要额外恢复脚本导出的 `postgres.sql`。
+
 ## 源码快速部署
 
-熟悉命令行的用户可以使用 Docker Compose 从源码构建。不要直接使用官方 Docker Hub 镜像来部署本 fork，因为镜像可能不包含本 fork 的改动。
+这是开发者路线。熟悉命令行、需要改代码或调试前后端时使用 Docker Compose 从源码构建。普通使用优先选择一键部署包或 Docker Hub 镜像。
 
 ```bash
 git clone -b codex/official-compatible-story-engine https://github.com/felixchaos/MuMuAINovel.git
