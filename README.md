@@ -128,8 +128,8 @@ felixchaos/mumuainovel:latest
 ```bash
 mkdir mumuainovel-story-engine
 cd mumuainovel-story-engine
-curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/docker-compose.yml
-curl -fsSL -o .env https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/.env.example
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/dockerhub/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/dockerhub/.env.example
 docker compose up -d
 ```
 
@@ -167,14 +167,14 @@ docker compose down
 macOS / Linux / WSL：
 
 ```bash
-curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.sh
+curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.sh
 bash upgrade-to-story-engine.sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
 powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
 ```
 
@@ -208,7 +208,7 @@ powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1 -Proxy "h
 这是开发者路线。熟悉命令行、需要改代码或调试前后端时使用 Docker Compose 从源码构建。普通使用优先选择一键部署包或 Docker Hub 镜像。
 
 ```bash
-git clone -b codex/official-compatible-story-engine https://github.com/felixchaos/MuMuAINovel.git
+git clone https://github.com/felixchaos/MuMuAINovel.git
 cd MuMuAINovel
 cp backend/.env.example .env
 ```

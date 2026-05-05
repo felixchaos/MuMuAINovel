@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 VERSION="${VERSION:-v1.4.8-story-engine.1}"
 IMAGE="${IMAGE:-felixchaos/mumuainovel:${VERSION}}"
-BRANCH="${BRANCH:-codex/official-compatible-story-engine}"
+BRANCH="${BRANCH:-main}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/felixchaos/MuMuAINovel/${BRANCH}}"
 COMPOSE_URL="${COMPOSE_URL:-${RAW_BASE}/deploy/dockerhub/docker-compose.yml}"
 ENV_URL="${ENV_URL:-${RAW_BASE}/deploy/dockerhub/.env.example}"

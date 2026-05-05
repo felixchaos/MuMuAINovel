@@ -1,7 +1,7 @@
 param(
     [string]$Image = "felixchaos/mumuainovel:v1.4.8-story-engine.1",
     [string]$Version = "v1.4.8-story-engine.1",
-    [string]$Branch = "codex/official-compatible-story-engine",
+    [string]$Branch = "main",
     [string]$Proxy = "",
     [switch]$Yes,
     [switch]$NoDbBackup,

@@ -15,8 +15,8 @@ felixchaos/mumuainovel:latest
 ```bash
 mkdir mumuainovel-story-engine
 cd mumuainovel-story-engine
-curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/docker-compose.yml
-curl -fsSL -o .env https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/.env.example
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/dockerhub/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/dockerhub/.env.example
 docker compose up -d
 ```
 
@@ -42,14 +42,14 @@ docker compose up -d
 如果机器上已经部署过官方 MuMuAINovel，请不要新建目录迁移。直接进入原官方部署目录，运行升级脚本，它会复用原来的 `.env` 和 PostgreSQL Docker volume：
 
 ```bash
-curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.sh
+curl -fsSL -o upgrade-to-story-engine.sh https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.sh
 bash upgrade-to-story-engine.sh
 ```
 
 Windows PowerShell：
 
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.ps1" -OutFile ".\upgrade-to-story-engine.ps1"
 powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
 ```
 

@@ -19,7 +19,7 @@ export const VERSION_INFO = {
   // 链接信息
   githubOwner: 'felixchaos',
   githubRepo: 'MuMuAINovel',
-  githubBranch: 'codex/official-compatible-story-engine',
+  githubBranch: 'main',
   githubUrl: 'https://github.com/felixchaos/MuMuAINovel',
   linuxDoUrl: 'https://linux.do/t/topic/1106333',
   

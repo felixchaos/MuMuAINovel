@@ -23,7 +23,7 @@ def require_login(request: Request):
 GITHUB_API_BASE = "https://api.github.com"
 REPO_OWNER = "felixchaos"
 REPO_NAME = "MuMuAINovel"
-REPO_BRANCH = "codex/official-compatible-story-engine"
+REPO_BRANCH = "main"
 
 # 缓存配置
 _cache = {

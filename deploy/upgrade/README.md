@@ -28,7 +28,7 @@
 
 ```bash
 curl -fsSL -o upgrade-to-story-engine.sh \
-  https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.sh
+  https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.sh
 
 bash upgrade-to-story-engine.sh
 ```
@@ -57,7 +57,7 @@ bash upgrade-to-story-engine.sh --yes --no-db-backup
 
 ```powershell
 Invoke-WebRequest `
-  -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/upgrade/upgrade-to-story-engine.ps1" `
+  -Uri "https://raw.githubusercontent.com/felixchaos/MuMuAINovel/main/deploy/upgrade/upgrade-to-story-engine.ps1" `
   -OutFile ".\upgrade-to-story-engine.ps1"
 
 powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
