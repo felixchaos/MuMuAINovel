@@ -1,8 +1,34 @@
-# MuMuAINovel Enhanced Fork
+# MuMuAINovel Story Engine Fork
+
+当前 fork 并行版本：`v1.4.8-story-engine.1`
+
+官方兼容基线：`xiamuceer-j/MuMuAINovel v1.4.8`
 
 基于 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) 的个人增强版 fork，目标是在保持官方版本兼容性的基础上，补强长篇小说创作里的剧情工程能力、章节重写流程、后台任务可控性和多人部署体验。
 
 本仓库不是官方发行版。需要最稳定的官方版本时，请优先查看上游仓库；需要本 fork 的增强功能时，可以按本文档从源码部署。
+
+## 版本号策略
+
+上游官方版本采用 `v主版本.次版本.修订号` 递增，例如当前兼容基线为 `v1.4.8`。本 fork 不占用官方后续版本号，而是在官方基线后追加分支通道和 fork 迭代号：
+
+```text
+v{官方基线版本}-story-engine.{fork迭代号}
+```
+
+当前版本 `v1.4.8-story-engine.1` 表示：
+
+- `v1.4.8`：基于官方 `v1.4.8` 代码线，尽量保持官方数据结构、部署方式和工作流兼容。
+- `story-engine`：本 fork 的主增强方向，聚焦剧情工程、拆书导入、实体预扫描、章节事实维护、重写上下文和后台任务收敛。
+- `.1`：在该官方基线上的第 1 个公开 fork 迭代。
+
+后续迭代规则：
+
+- 只改本 fork 功能：递增 fork 迭代号，例如 `v1.4.8-story-engine.2`。
+- 跟进新的官方版本：更新官方基线并重新开始 fork 迭代，例如 `v1.4.9-story-engine.1`。
+- 涉及仅供本地部署的小修：优先记录在提交历史和更新日志中，必要时再提升 fork 迭代号。
+
+应用内 `package.json` 仍保留官方兼容基线版本，用于兼容原有前端版本检查和官方生态；本 README 与 GitHub 分支说明使用上面的 fork 并行版本号。
 
 ## 这个 Fork 做了什么
 
