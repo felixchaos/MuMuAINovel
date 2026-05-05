@@ -7,6 +7,7 @@ VERSION="${VERSION:-v1.4.8-story-engine.1}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-true}"
 BUILDER_NAME="${BUILDER_NAME:-mumuainovel-builder}"
+DOCKER_BUILD_PROXY="${DOCKER_BUILD_PROXY:-}"
 
 cd "$ROOT_DIR"
 
@@ -20,8 +21,22 @@ if ! docker buildx version >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ "${RESET_BUILDER:-false}" = "true" ]; then
+  docker buildx rm "$BUILDER_NAME" >/dev/null 2>&1 || true
+fi
+
+driver_opts=()
+if [ -n "$DOCKER_BUILD_PROXY" ]; then
+  driver_opts+=(
+    "--driver-opt" "env.http_proxy=$DOCKER_BUILD_PROXY"
+    "--driver-opt" "env.https_proxy=$DOCKER_BUILD_PROXY"
+    "--driver-opt" "env.HTTP_PROXY=$DOCKER_BUILD_PROXY"
+    "--driver-opt" "env.HTTPS_PROXY=$DOCKER_BUILD_PROXY"
+  )
+fi
+
 if ! docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
-  docker buildx create --name "$BUILDER_NAME" --driver docker-container --use
+  docker buildx create --name "$BUILDER_NAME" --driver docker-container "${driver_opts[@]}" --use
 else
   docker buildx use "$BUILDER_NAME"
 fi
@@ -40,6 +55,18 @@ if [ "$PUSH" != "true" ]; then
   PLATFORMS="${PLATFORMS%%,*}"
 fi
 
+proxy_build_args=()
+if [ -n "$DOCKER_BUILD_PROXY" ]; then
+  proxy_build_args=(
+    --build-arg "HTTP_PROXY=$DOCKER_BUILD_PROXY"
+    --build-arg "HTTPS_PROXY=$DOCKER_BUILD_PROXY"
+    --build-arg "http_proxy=$DOCKER_BUILD_PROXY"
+    --build-arg "https_proxy=$DOCKER_BUILD_PROXY"
+    --build-arg "NO_PROXY=localhost,127.0.0.1,postgres,host.docker.internal,host.lima.internal"
+    --build-arg "no_proxy=localhost,127.0.0.1,postgres,host.docker.internal,host.lima.internal"
+  )
+fi
+
 docker buildx build \
   --platform "$PLATFORMS" \
   "${tags[@]}" \
@@ -54,6 +81,7 @@ docker buildx build \
   --build-arg "VITE_ENABLE_SPRING_FESTIVAL=false" \
   --build-arg "VITE_DISABLE_PROMO_FEATURES=true" \
   --build-arg "VITE_DEPLOY_PROFILE=dockerhub" \
+  "${proxy_build_args[@]}" \
   "${output_args[@]}" \
   .
 

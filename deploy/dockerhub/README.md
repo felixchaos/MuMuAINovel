@@ -47,4 +47,14 @@ VERSION=v1.4.8-story-engine.1 \
 deploy/dockerhub/publish-dockerhub.sh
 ```
 
+如果 Docker Hub 或基础镜像拉取超时，可以让 buildx 的构建容器走宿主机代理：
+
+```bash
+DOCKER_BUILD_PROXY=http://host.docker.internal:7890 \
+RESET_BUILDER=true \
+DOCKERHUB_IMAGE=felixchaos/mumuainovel \
+VERSION=v1.4.8-story-engine.1 \
+deploy/dockerhub/publish-dockerhub.sh
+```
+
 脚本会发布 `VERSION`、`story-engine` 和 `latest` 三个 tag，并默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。
