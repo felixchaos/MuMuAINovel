@@ -599,9 +599,9 @@ export default function Characters() {
       width: 560,
       content: (
         <div>
-          <p>将使用现有 AI 润色流程优化已选的 {selectedItems.length} 个角色/组织设定。</p>
+          <p>将使用 AI 优化已选的 {selectedItems.length} 个角色/组织设定。</p>
           <p style={{ color: token.colorTextSecondary, marginBottom: 0 }}>
-            会保留名称、身份、阵营、能力来源等既有事实，优化结果将直接保存到数据库。
+            会保留名称、身份、阵营、能力来源等既有事实，优化完成后会直接更新角色设定。
           </p>
         </div>
       ),

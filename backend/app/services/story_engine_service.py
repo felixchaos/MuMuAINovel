@@ -7,6 +7,7 @@ features can grow without breaking upstream compatibility.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
@@ -219,7 +220,7 @@ def _build_context_text(
 
     if facts:
         lines.append("")
-        lines.append("【结构化事实】")
+        lines.append("【已确认剧情事实】")
         for fact in facts[:12]:
             chapter = f"第{fact.chapter_number}章" if fact.chapter_number else "项目级"
             lines.append(f"- {chapter} · {fact.title}：{_compact_text(fact.content, 180)}")
@@ -615,6 +616,154 @@ def _derive_card_drafts(
     return cards
 
 
+def _analysis_score(value: Optional[float]) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _analysis_chapter_label(analysis: PlotAnalysis, chapter_by_id: dict[str, Chapter]) -> str:
+    chapter = chapter_by_id.get(analysis.chapter_id)
+    if not chapter:
+        return "未知章节"
+    return f"第{chapter.chapter_number}章《{chapter.title}》"
+
+
+def _analysis_suggestions(analysis: PlotAnalysis) -> list[str]:
+    return [
+        str(item).strip()
+        for item in _json_list(analysis.suggestions)
+        if str(item or "").strip()
+    ]
+
+
+def _suggestion_category(suggestion: str) -> str:
+    text = suggestion.strip()
+    if text.startswith("【") and "】" in text:
+        return text[1:text.find("】")].strip() or "综合问题"
+    for prefix in ("AI味", "排版问题", "时空锚点", "对话潜台词", "情节轻重", "冲突立场", "节奏问题", "吸引力不足", "连贯性问题"):
+        if prefix in text[:16]:
+            return prefix
+    return "综合问题"
+
+
+def _analysis_driven_recommendations(
+    *,
+    analysis_rows: list[PlotAnalysis],
+    chapter_by_id: dict[str, Chapter],
+    foreshadow_rows: list[Foreshadow],
+) -> list[StoryEngineRecommendation]:
+    """Turn existing PlotAnalysis and Foreshadow data into editor-like next steps."""
+    recs: list[StoryEngineRecommendation] = []
+    if not analysis_rows:
+        return recs
+
+    low_quality = sorted(
+        [
+            item for item in analysis_rows
+            if _analysis_score(item.overall_quality_score) and _analysis_score(item.overall_quality_score) < 6.5
+        ],
+        key=lambda item: _analysis_score(item.overall_quality_score),
+    )
+    if low_quality:
+        targets = []
+        for analysis in low_quality[:3]:
+            first_suggestion = _analysis_suggestions(analysis)[:1]
+            suffix = f"：{_compact_text(first_suggestion[0], 80)}" if first_suggestion else ""
+            targets.append(
+                f"{_analysis_chapter_label(analysis, chapter_by_id)} "
+                f"{_analysis_score(analysis.overall_quality_score):.1f}分{suffix}"
+            )
+        recs.append(
+            StoryEngineRecommendation(
+                key="revise-low-quality-chapters",
+                title="优先修订低分章节",
+                detail="；".join(targets),
+                priority="high",
+                source="chapter-analysis",
+            )
+        )
+
+    weak_engagement = [
+        item for item in analysis_rows
+        if _analysis_score(item.engagement_score) and _analysis_score(item.engagement_score) < 6
+    ]
+    if weak_engagement:
+        targets = "、".join(_analysis_chapter_label(item, chapter_by_id) for item in weak_engagement[:4])
+        recs.append(
+            StoryEngineRecommendation(
+                key="strengthen-hooks",
+                title="补强钩子和阅读动力",
+                detail=f"{targets} 的吸引力评分偏低。优先检查前300字、章末钩子和中段信息揭露是否足够具体。",
+                priority="medium",
+                source="chapter-analysis",
+            )
+        )
+
+    weak_coherence = [
+        item for item in analysis_rows
+        if _analysis_score(item.coherence_score) and _analysis_score(item.coherence_score) < 6
+    ]
+    if weak_coherence:
+        targets = "、".join(_analysis_chapter_label(item, chapter_by_id) for item in weak_coherence[:4])
+        recs.append(
+            StoryEngineRecommendation(
+                key="repair-continuity",
+                title="先修连续性断点",
+                detail=f"{targets} 的连贯性评分偏低。重写前先核对角色状态、上一章结尾、伏笔回收和已发生事实。",
+                priority="high",
+                source="chapter-analysis",
+            )
+        )
+
+    category_counter: Counter[str] = Counter()
+    examples: dict[str, str] = {}
+    for analysis in analysis_rows:
+        for suggestion in _analysis_suggestions(analysis):
+            category = _suggestion_category(suggestion)
+            category_counter[category] += 1
+            examples.setdefault(category, suggestion)
+
+    repeated = [
+        (category, count)
+        for category, count in category_counter.most_common()
+        if count >= 2 and category != "综合问题"
+    ]
+    if repeated:
+        category, count = repeated[0]
+        recs.append(
+            StoryEngineRecommendation(
+                key=f"repeated-analysis-{category}",
+                title=f"反复出现的编辑问题：{category}",
+                detail=f"已有 {count} 条章节建议指向该问题。代表建议：{_compact_text(examples.get(category), 140)}",
+                priority="medium",
+                source="chapter-analysis",
+            )
+        )
+
+    urgent_foreshadows = [
+        item for item in foreshadow_rows
+        if item.status in {"planted", "partially_resolved"} and int(item.urgency or 0) >= 2
+    ]
+    if urgent_foreshadows:
+        targets = "、".join(
+            f"《{item.title}》"
+            for item in sorted(urgent_foreshadows, key=lambda row: (-(row.urgency or 0), -(row.importance or 0)))[:4]
+        )
+        recs.append(
+            StoryEngineRecommendation(
+                key="resolve-urgent-foreshadows",
+                title="处理临近或超期伏笔",
+                detail=f"{targets} 已进入高提醒状态。下一次生成或重写前，先决定回收、部分回收还是废弃。",
+                priority="high",
+                source="foreshadows",
+            )
+        )
+
+    return recs
+
+
 def _recommendations(
     *,
     project: Project,
@@ -627,6 +776,9 @@ def _recommendations(
     career_count: int,
     foreshadow_count: int,
     analysis_count: int,
+    analysis_rows: list[PlotAnalysis],
+    chapter_by_id: dict[str, Chapter],
+    foreshadow_rows: list[Foreshadow],
 ) -> list[StoryEngineRecommendation]:
     recs: list[StoryEngineRecommendation] = []
 
@@ -641,7 +793,7 @@ def _recommendations(
             StoryEngineRecommendation(
                 key="complete-world-profile",
                 title="先补齐世界设定骨架",
-                detail="时间、地点、氛围、规则不足时，后续剧情线和章节生成会更容易漂移。",
+                detail="时间、地点、氛围、规则不足时，后续剧情和章节续写会更容易漂移。",
                 priority="high",
                 source="world-setting",
             )
@@ -652,7 +804,7 @@ def _recommendations(
             StoryEngineRecommendation(
                 key="create-outline",
                 title="建立主线大纲",
-                detail="剧情工程层需要先知道故事的大方向，建议先生成或导入基础大纲。",
+                detail="先明确故事的大方向、阶段目标和关键转折，后续章节会更容易保持连贯。",
                 priority="high",
                 source="outline",
             )
@@ -673,8 +825,8 @@ def _recommendations(
         recs.append(
             StoryEngineRecommendation(
                 key="derive-relationships",
-                title="从现有大纲/章节分析角色关系",
-                detail="已有角色但没有关系记录，后续可接入现有 AI 关系生成流程来补全关系网。",
+                title="整理角色关系网",
+                detail="已有角色但没有关系记录，建议先补全关系网，方便后续检查冲突、羁绊和态度变化。",
                 priority="medium",
                 source="relationships",
             )
@@ -684,8 +836,8 @@ def _recommendations(
         recs.append(
             StoryEngineRecommendation(
                 key="derive-careers",
-                title="沉淀职业/力量体系",
-                detail="职业、能力和规则应作为独立设定留存，避免章节生成时临时编造。",
+                title="补全职业/力量体系",
+                detail="先固定职业、能力和规则，避免后续章节临时补设定。",
                 priority="medium",
                 source="careers",
             )
@@ -696,7 +848,7 @@ def _recommendations(
             StoryEngineRecommendation(
                 key="derive-organizations",
                 title="补一层组织/势力结构",
-                detail="组织结构能把角色、冲突、阵营和地图串起来，是剧情线管理的重要支架。",
+                detail="组织结构能把角色、冲突、阵营和地图串起来，让长期矛盾更清楚。",
                 priority="low",
                 source="organizations",
             )
@@ -707,18 +859,26 @@ def _recommendations(
             StoryEngineRecommendation(
                 key="analyze-chapters",
                 title="补齐章节分析覆盖率",
-                detail=f"已有正文章节 {content_chapter_count} 章，完成分析 {analysis_count} 章；剧情工程会优先使用分析结果。",
+                detail=f"已有正文章节 {content_chapter_count} 章，完成分析 {analysis_count} 章；分析越完整，后续看到的剧情问题越准确。",
                 priority="high" if analysis_count == 0 else "medium",
                 source="chapter-analysis",
             )
         )
 
+    recs.extend(
+        _analysis_driven_recommendations(
+            analysis_rows=analysis_rows,
+            chapter_by_id=chapter_by_id,
+            foreshadow_rows=foreshadow_rows,
+        )
+    )
+
     if foreshadow_count == 0 and analysis_count > 0:
         recs.append(
             StoryEngineRecommendation(
                 key="sync-foreshadows",
-                title="把分析出的伏笔同步成可管理条目",
-                detail="剧情分析里的伏笔如果不进入伏笔管理，后续章节生成时很难稳定提醒和回收。",
+                title="整理分析中的伏笔",
+                detail="分析出的伏笔如果没有统一整理，后续写作时容易忘记提醒和回收。",
                 priority="medium",
                 source="foreshadows",
             )
@@ -728,8 +888,8 @@ def _recommendations(
         recs.append(
             StoryEngineRecommendation(
                 key="next-plot-cards",
-                title="下一步适合接入剧情卡",
-                detail="现有大纲和章节已经可作为上下文，后续可以按章节/大纲生成剧情卡与剧情线，而不是替换原流程。",
+                title="整理下一批剧情要点",
+                detail="现有大纲和章节已经足够作为参考，可以继续提炼每章的核心事件、转折、钩子和待回收伏笔。",
                 priority="low",
                 source="story-engine",
             )
@@ -972,7 +1132,7 @@ async def build_story_engine_snapshot(
         title="大纲结构",
         total=outline_count,
         target=max(1, int(project.chapter_count or 12)),
-        description="现有官方大纲，后续剧情卡和剧情线会优先从这里派生。",
+        description="已有大纲会帮助确认主线方向、阶段目标和后续转折。",
         items=[
             StoryEngineItem(
                 id=outline.id,
@@ -989,7 +1149,7 @@ async def build_story_engine_snapshot(
         title="章节正文",
         total=content_chapter_count,
         target=max(1, chapter_count),
-        description="已有正文是剧情状态、伏笔和一致性审计的事实来源。",
+        description="已有正文能帮助核对剧情状态、伏笔和前后连贯性。",
         items=[
             StoryEngineItem(
                 id=chapter.id,
@@ -1047,7 +1207,7 @@ async def build_story_engine_snapshot(
         title="职业/力量体系",
         total=career_count,
         target=2,
-        description="能力成长、规则限制、阶段 progression 的结构化来源。",
+        description="记录能力成长、规则限制和阶段变化，避免战力与设定漂移。",
         items=[
             StoryEngineItem(
                 id=career.id,
@@ -1079,10 +1239,10 @@ async def build_story_engine_snapshot(
     _append_section(
         sections,
         key="facts",
-        title="结构化事实",
+        title="剧情事实",
         total=fact_count,
         target=max(1, content_chapter_count),
-        description="由章节分析、长期记忆、伏笔、关系和组织成员聚合出的只读事实视图。",
+        description="汇总章节分析、长期记忆、伏笔和关系中的已确认信息，方便核对前后设定。",
         items=[
             StoryEngineItem(
                 id=fact.id,
@@ -1234,6 +1394,9 @@ async def build_story_engine_snapshot(
             career_count=career_count,
             foreshadow_count=foreshadow_count,
             analysis_count=analysis_count,
+            analysis_rows=analysis_rows,
+            chapter_by_id=chapter_by_id,
+            foreshadow_rows=foreshadow_rows,
         ),
         context_text=context_text,
     )

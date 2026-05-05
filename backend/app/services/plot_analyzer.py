@@ -714,6 +714,32 @@ class PlotAnalyzer:
                 lines.append(f"  类型: {', '.join(conflict.get('types', []))}")
                 lines.append(f"  强度: {conflict.get('level', 0)}/10")
                 lines.append(f"  进度: {int(conflict.get('resolution_progress', 0) * 100)}%\n")
+
+            # 文本质感审计
+            quality_audit = analysis.get('quality_audit', {})
+            if isinstance(quality_audit, dict) and quality_audit:
+                lines.append("【文本质感审计】")
+                ai_flavor_level = quality_audit.get('ai_flavor_level')
+                if ai_flavor_level:
+                    lines.append(f"  AI味风险: {ai_flavor_level}")
+                summary = quality_audit.get('summary')
+                if summary:
+                    lines.append(f"  总结: {summary}")
+                mobile_rhythm = quality_audit.get('mobile_rhythm')
+                if mobile_rhythm:
+                    lines.append(f"  移动端节奏: {mobile_rhythm}")
+                sensory_anchor = quality_audit.get('sensory_anchor')
+                if sensory_anchor:
+                    lines.append(f"  时空/五感锚点: {sensory_anchor}")
+                dialogue_subtext = quality_audit.get('dialogue_subtext')
+                if dialogue_subtext:
+                    lines.append(f"  对话潜台词: {dialogue_subtext}")
+                template_risks = quality_audit.get('template_risks')
+                if isinstance(template_risks, list) and template_risks:
+                    risks = [str(item) for item in template_risks if item]
+                    if risks:
+                        lines.append(f"  模板风险: {'；'.join(risks[:5])}")
+                lines.append("")
             
             # 改进建议
             suggestions = analysis.get('suggestions', [])

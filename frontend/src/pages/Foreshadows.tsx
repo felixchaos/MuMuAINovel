@@ -808,7 +808,7 @@ export default function Foreshadows() {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="include_in_context" label="包含在生成上下文" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Form.Item name="include_in_context" label="写作时提醒" valuePropName="checked" style={{ marginBottom: 0 }}>
                 <Switch checkedChildren="是" unCheckedChildren="否" />
               </Form.Item>
             </Col>

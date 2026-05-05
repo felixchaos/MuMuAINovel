@@ -93,7 +93,7 @@ export default function StoryEngine() {
       setSnapshot(data);
       setVisualization(visualData);
     } catch (error) {
-      console.error('加载剧情工程快照失败:', error);
+      console.error('加载剧情整理结果失败:', error);
     } finally {
       setLoading(false);
     }
@@ -114,9 +114,9 @@ export default function StoryEngine() {
     if (!snapshot?.context_text) return;
     try {
       await navigator.clipboard.writeText(snapshot.context_text);
-      message.success('上下文已复制');
+      message.success('写作参考已复制');
     } catch (error) {
-      console.error('复制剧情工程上下文失败:', error);
+      console.error('复制写作参考失败:', error);
       message.error('复制失败');
     }
   };
@@ -216,7 +216,7 @@ export default function StoryEngine() {
             {lane.summary}
           </Paragraph>
           {lane.items.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可派生线索" />
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可整理的线索" />
           ) : (
             <List
               size="small"
@@ -372,7 +372,7 @@ export default function StoryEngine() {
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Space align="center" style={{ justifyContent: 'space-between', width: '100%' }}>
           <Title level={4} style={{ margin: 0 }}>剧情图谱</Title>
-          <Text type="secondary">由结构化事实派生</Text>
+          <Text type="secondary">根据已确认信息整理</Text>
         </Space>
         <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
           <Input.Search
@@ -472,10 +472,10 @@ export default function StoryEngine() {
             <Title level={3} style={{ margin: 0 }}>剧情工程</Title>
           </Space>
           <Space>
-            <Tooltip title="刷新快照">
+            <Tooltip title="刷新建议">
               <Button icon={<ReloadOutlined />} onClick={loadSnapshot} loading={loading} />
             </Tooltip>
-            <Tooltip title="复制 AI 上下文">
+            <Tooltip title="复制写作参考">
               <Button icon={<CopyOutlined />} onClick={copyContext} disabled={!snapshot?.context_text} />
             </Tooltip>
           </Space>
@@ -489,7 +489,7 @@ export default function StoryEngine() {
               icon={snapshot.readiness_score >= 70 ? <CheckCircleOutlined /> : undefined}
               message={
                 <Space wrap>
-                  <Text strong>工程化就绪度</Text>
+                  <Text strong>剧情准备度</Text>
                   <Progress
                     percent={snapshot.readiness_score}
                     size="small"
@@ -518,7 +518,7 @@ export default function StoryEngine() {
             {(snapshot.lanes || []).length > 0 && (
               <Card
                 title="剧情线索"
-                extra={<Text type="secondary">由现有官方数据派生，不新增专用表</Text>}
+                extra={<Text type="secondary">根据已有内容整理</Text>}
               >
                 <Row gutter={[12, 12]}>
                   {snapshot.lanes.map(renderLane)}
@@ -562,10 +562,10 @@ export default function StoryEngine() {
                       title={
                         <Space>
                           <ProfileOutlined />
-                          <span>剧情卡草稿</span>
+                          <span>剧情要点草稿</span>
                         </Space>
                       }
-                      extra={<Text type="secondary">由分析结果优先派生</Text>}
+                      extra={<Text type="secondary">优先参考章节分析</Text>}
                       style={{ height: '100%' }}
                     >
                       <List
@@ -584,7 +584,7 @@ export default function StoryEngine() {
             </Row>
 
             <Card
-              title="AI 上下文快照"
+              title="写作参考摘录"
               extra={<Button size="small" icon={<CopyOutlined />} onClick={copyContext}>复制</Button>}
             >
               <pre style={{
@@ -601,12 +601,12 @@ export default function StoryEngine() {
                 fontSize: 13,
                 lineHeight: 1.7,
               }}>
-                {contextPreview || '暂无可用上下文'}
+                {contextPreview || '暂无可复制的写作参考'}
               </pre>
             </Card>
           </>
         ) : (
-          <Empty description="暂无剧情工程快照" />
+          <Empty description="暂无剧情整理结果" />
         )}
       </Space>
     </div>
