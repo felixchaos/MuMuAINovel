@@ -18,6 +18,8 @@ from app.models.project import Project
 from app.models.relationship import Organization
 from app.schemas.polish import (
     CharacterOptimizeTaskRequest,
+    CharacterSettingsOptimizeRequest,
+    CharacterSettingsOptimizeResponse,
     OutlineOptimizeTaskRequest,
     PolishRequest,
     PolishResponse,
@@ -176,6 +178,43 @@ def _string_list_value(data: Optional[Dict[str, Any]], key: str) -> Optional[lis
     return items or None
 
 
+def _number_value(data: Optional[Dict[str, Any]], key: str) -> Optional[int]:
+    value = data.get(key) if data else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_optimized_settings_fields(
+    parsed: Optional[Dict[str, Any]],
+    *,
+    is_organization: bool,
+) -> Dict[str, Any]:
+    if is_organization:
+        fields: Dict[str, Any] = {
+            "organization_purpose": _string_value(parsed, "organization_purpose"),
+            "motto": _string_value(parsed, "motto"),
+            "background": _string_value(parsed, "background"),
+            "location": _string_value(parsed, "location"),
+            "color": _string_value(parsed, "color"),
+            "power_level": _number_value(parsed, "power_level"),
+        }
+    else:
+        fields = {
+            "personality": _string_value(parsed, "personality"),
+            "appearance": _string_value(parsed, "appearance"),
+            "background": _string_value(parsed, "background"),
+        }
+    return {key: value for key, value in fields.items() if value is not None}
+
+
 def _load_structure(structure: Optional[str]) -> Dict[str, Any]:
     if not structure:
         return {}
@@ -263,6 +302,22 @@ async def _build_denoising_prompt(original_text: str, user_id: Optional[str], db
     return PromptService.format_prompt(template, original_text=original_text)
 
 
+async def _build_instruction_edit_prompt(
+    original_text: str,
+    instruction: str,
+    user_id: Optional[str],
+    db: AsyncSession,
+) -> str:
+    template = await PromptService.get_template_with_fallback("AI_INSTRUCTION_EDIT", user_id, db)
+    if not template:
+        template = PromptService.AI_INSTRUCTION_EDIT
+    return PromptService.format_prompt(
+        template,
+        instruction=instruction.strip(),
+        original_text=original_text,
+    )
+
+
 @router.post("", response_model=PolishResponse, summary="AI去味")
 async def polish_text(
     request: PolishRequest,
@@ -289,10 +344,11 @@ async def polish_text(
             await verify_project_access(request.project_id, user_id, db)
         
         if request.instruction:
-            prompt = (
-                f"{request.instruction.strip()}\n\n"
-                "请处理以下内容：\n"
-                f"{request.original_text}"
+            prompt = await _build_instruction_edit_prompt(
+                request.original_text,
+                request.instruction,
+                user_id,
+                db,
             )
         else:
             prompt = await _build_denoising_prompt(request.original_text, user_id, db)
@@ -362,10 +418,11 @@ async def polish_text_stream(
         await verify_project_access(request.project_id, user_id, db)
 
     if request.instruction:
-        prompt = (
-            f"{request.instruction.strip()}\n\n"
-            "请处理以下内容：\n"
-            f"{request.original_text}"
+        prompt = await _build_instruction_edit_prompt(
+            request.original_text,
+            request.instruction,
+            user_id,
+            db,
         )
     else:
         prompt = await _build_denoising_prompt(request.original_text, user_id, db)
@@ -534,6 +591,41 @@ async def optimize_characters_background(
         "status": "pending",
         "message": "角色设定优化任务已创建，请通过后台任务面板查看进度"
     }
+
+
+@router.post("/character-settings", response_model=CharacterSettingsOptimizeResponse, summary="预览优化单个角色/组织设定")
+async def optimize_character_settings(
+    data: CharacterSettingsOptimizeRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """优化单个角色/组织设定并返回可回填字段，不直接保存。"""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    await verify_project_access(data.project_id, user_id, db)
+
+    user_ai_service = await _get_polish_ai_service(request=request, db=db)
+    source = json.dumps(data.source, ensure_ascii=False, indent=2)
+    optimized_text = await _generate_optimized_text(
+        ai_service=user_ai_service,
+        source=source,
+        template_key="ORGANIZATION_OPTIMIZE" if data.is_organization else "CHARACTER_OPTIMIZE",
+        user_id=user_id,
+        db=db,
+        provider=data.provider,
+        model=data.model,
+        temperature=data.temperature or 0.6,
+    )
+    fields = _extract_optimized_settings_fields(
+        _parse_json_object(optimized_text),
+        is_organization=data.is_organization,
+    )
+    if not fields:
+        raise HTTPException(status_code=502, detail="AI返回格式无法识别")
+
+    return CharacterSettingsOptimizeResponse(fields=fields, raw_text=optimized_text)
 
 
 async def _run_outline_optimize_background(task_id: str, user_id: str, data: Dict[str, Any]):
@@ -705,32 +797,46 @@ async def _run_character_optimize_background(task_id: str, user_id: str, data: D
                         temperature=data.get("temperature") or 0.6,
                     )
                     parsed = _parse_json_object(optimized_text)
-                    if not parsed:
+                    fields = _extract_optimized_settings_fields(
+                        parsed,
+                        is_organization=character.is_organization,
+                    )
+                    if not fields:
                         raise ValueError("AI返回格式无法识别")
 
                     if character.is_organization:
-                        purpose = _string_value(parsed, "organization_purpose")
-                        motto = _string_value(parsed, "motto")
-                        background = _string_value(parsed, "background")
+                        purpose = fields.get("organization_purpose")
+                        motto = fields.get("motto")
+                        background = fields.get("background")
                         if purpose:
                             character.organization_purpose = purpose
                         if background:
                             character.background = background
-                        if motto:
-                            if organization:
+                        org_fields = {
+                            key: fields[key]
+                            for key in ("motto", "location", "color", "power_level")
+                            if key in fields
+                        }
+                        if org_fields and not organization:
+                            organization = Organization(
+                                character_id=character.id,
+                                project_id=character.project_id,
+                                member_count=0,
+                            )
+                            bg_db.add(organization)
+                        if organization:
+                            if motto:
                                 organization.motto = motto
-                            else:
-                                organization = Organization(
-                                    character_id=character.id,
-                                    project_id=character.project_id,
-                                    member_count=0,
-                                    motto=motto,
-                                )
-                                bg_db.add(organization)
+                            if "location" in fields:
+                                organization.location = fields["location"]
+                            if "color" in fields:
+                                organization.color = fields["color"]
+                            if "power_level" in fields:
+                                organization.power_level = fields["power_level"]
                     else:
-                        personality = _string_value(parsed, "personality")
-                        appearance = _string_value(parsed, "appearance")
-                        background = _string_value(parsed, "background")
+                        personality = fields.get("personality")
+                        appearance = fields.get("appearance")
+                        background = fields.get("background")
                         if personality:
                             character.personality = personality
                         if appearance:

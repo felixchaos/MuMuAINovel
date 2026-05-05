@@ -27,8 +27,8 @@ import {
   theme,
 } from 'antd';
 import type { UploadFile } from 'antd/es/upload/interface';
-import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined, HighlightOutlined } from '@ant-design/icons';
-import { bookImportApi, polishApi } from '../services/api';
+import { InboxOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined, WarningOutlined, RedoOutlined } from '@ant-design/icons';
+import { bookImportApi } from '../services/api';
 import type {
   BookImportApplyPayload,
   BookImportEntityCandidate,
@@ -39,6 +39,8 @@ import type {
   BookImportStepFailure,
   BookImportTask,
 } from '../types';
+import { taskMessage } from '../utils/taskMessage';
+import { AIFieldAssistButton, buildDefaultAIFieldInstruction } from '../components/AIFieldAssistant';
 
 const { Text, Title } = Typography;
 const { Dragger } = Upload;
@@ -490,7 +492,7 @@ export default function BookImport() {
       });
 
       setTaskId(response.task_id);
-      message.success('拆书任务已创建');
+      taskMessage.started('拆书任务', { location: 'currentPage' });
     } catch (error) {
       console.error('创建任务失败:', error);
       message.error('创建拆书任务失败');
@@ -524,7 +526,7 @@ export default function BookImport() {
     if (!taskId) return;
     try {
       await bookImportApi.cancelTask(taskId);
-      message.success('任务已取消');
+      taskMessage.cancelled('拆书任务');
       await refreshStatus();
     } catch (error) {
       console.error('取消任务失败:', error);
@@ -859,121 +861,27 @@ export default function BookImport() {
     }) : prev);
   };
 
-  const runProjectSuggestionAI = async (field: ImportSuggestionField, label: string) => {
-    if (!preview) return;
-
-    const suggestion = preview.project_suggestion;
-    const currentValue = String(suggestion[field] || '').trim();
-    const contextText = buildImportSuggestionContext(suggestion, label);
-    const sourceText = currentValue || contextText;
-    let instruction = '';
-
-    modal.confirm({
-      title: `${label} AI处理要求`,
-      icon: <HighlightOutlined />,
-      width: 640,
-      centered: true,
-      okText: currentValue ? '开始润色' : '开始补全',
-      cancelText: '取消',
-      content: (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
-            {currentValue
-              ? '输入希望 AI 如何润色该字段；留空则只做自然表达优化。'
-              : '当前字段为空，AI会参考已填写的拆书项目信息补全。'}
-          </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：保持原设定但更清晰；强化时代感；压缩成一句话；不要新增未出现的设定..."
-            autoFocus
-            onChange={(event) => {
-              instruction = event.target.value;
-            }}
-          />
-          <div style={{
-            marginTop: 12,
-            maxHeight: 120,
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-            lineHeight: 1.6,
-            padding: '8px 10px',
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: token.borderRadius,
-            background: token.colorFillQuaternary,
-            color: token.colorTextSecondary,
-          }}>
-            {sourceText}
-          </div>
-        </div>
-      ),
-      onOk: async () => {
-        const closeLoading = message.loading(`正在处理${label}...`, 0);
-        try {
-          const defaultInstruction = currentValue
-            ? `请润色「${label}」。保留原意和原文设定，不新增无依据内容，不输出解释，只输出处理后的文本。`
-            : `请根据拆书项目信息补全「${label}」。不要输出解释、标题或前后缀，只输出可直接填入字段的文本。`;
-          const result = await polishApi.polishText({
-            original_text: sourceText,
-            temperature: currentValue ? 0.65 : 0.8,
-            instruction: instruction.trim() || defaultInstruction,
-          });
-          const aiText = (result.polished_text || '').trim();
-          if (!aiText) {
-            message.warning('AI结果为空，请稍后重试');
-            return;
-          }
-
-          modal.confirm({
-            title: `${label} AI结果`,
-            icon: <HighlightOutlined />,
-            width: 720,
-            centered: true,
-            okText: '应用结果',
-            cancelText: currentValue ? '保留原文' : '暂不应用',
-            content: (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
-                  AI结果需要确认后才会写入拆书预览。
-                </div>
-                <div style={{
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: 1.6,
-                  padding: '8px 10px',
-                  border: `1px solid ${token.colorPrimaryBorder}`,
-                  borderRadius: token.borderRadius,
-                  background: token.colorBgContainer,
-                }}>
-                  {aiText}
-                </div>
-              </div>
-            ),
-            onOk: () => {
-              updateProjectSuggestion(projectSuggestionPatch(field, aiText));
-              message.success(`${label}已应用AI结果`);
-            },
-          });
-        } catch (error) {
-          console.error(`${label} AI处理失败:`, error);
-          message.error(`${label} AI处理失败`);
-        } finally {
-          closeLoading();
-        }
-      },
-    });
-  };
-
   const renderSuggestionLabel = (field: ImportSuggestionField, label: string) => (
     <Space size={6}>
       <Text>{label}</Text>
-      <Button
-        type="link"
-        size="small"
-        icon={<HighlightOutlined />}
-        style={{ paddingInline: 0 }}
-        onClick={() => runProjectSuggestionAI(field, label)}
-      >
-        AI辅助
-      </Button>
+      <AIFieldAssistButton
+        modalApi={modal}
+        label={label}
+        getCurrentValue={() => String(preview?.project_suggestion[field] || '').trim()}
+        getSourceText={() => preview ? buildImportSuggestionContext(preview.project_suggestion, label) : ''}
+        buildDefaultInstruction={(mode) => buildDefaultAIFieldInstruction(label, mode, {
+          contextName: '拆书项目信息',
+        })}
+        onApply={(aiText) => {
+          updateProjectSuggestion(projectSuggestionPatch(field, aiText));
+          message.success(`${label}已应用AI结果`);
+        }}
+        filledHelpText="输入希望 AI 如何润色该字段；留空则只做自然表达优化。"
+        emptyHelpText="当前字段为空，AI会参考已填写的拆书项目信息补全。"
+        placeholder="例如：保持原设定但更清晰；强化时代感；压缩成一句话；不要新增未出现的设定..."
+        resultNotice="AI结果需要确认后才会写入拆书预览。"
+        buttonStyle={{ paddingInline: 0 }}
+      />
     </Space>
   );
 

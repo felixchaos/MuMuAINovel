@@ -13,6 +13,7 @@ import {
 import api from '../services/api';
 import AnnotatedText, { type MemoryAnnotation } from '../components/AnnotatedText';
 import MemorySidebar from '../components/MemorySidebar';
+import { taskMessage } from '../utils/taskMessage';
 
 interface ChapterData {
   id: string;
@@ -171,7 +172,7 @@ const ChapterReader: React.FC = () => {
     try {
       setAnalyzing(true);
       setAnalysisProgress(0);
-      message.loading({ content: '开始分析章节...', key: 'analyze', duration: 0 });
+      message.loading({ content: '章节分析任务已开始，正在当前页面更新进度...', key: 'analyze', duration: 0 });
 
       // 触发分析
       await api.post(`/chapters/${chapterId}/analyze`);
@@ -187,7 +188,7 @@ const ChapterReader: React.FC = () => {
           if (status === 'completed') {
             clearInterval(pollInterval);
             setAnalyzing(false);
-            message.success({ content: '分析完成！', key: 'analyze' });
+            taskMessage.completed('章节分析任务', undefined, { key: 'analyze' });
             
             // 重新加载标注数据
             const annotationsRes = await api.get(`/chapters/${chapterId}/annotations`);
@@ -195,10 +196,7 @@ const ChapterReader: React.FC = () => {
           } else if (status === 'failed') {
             clearInterval(pollInterval);
             setAnalyzing(false);
-            message.error({
-              content: `分析失败：${error_message || '未知错误'}`,
-              key: 'analyze'
-            });
+            taskMessage.failed('章节分析任务', error_message || '未知错误', { key: 'analyze' });
           }
         } catch (err) {
           console.error('轮询分析状态失败:', err);

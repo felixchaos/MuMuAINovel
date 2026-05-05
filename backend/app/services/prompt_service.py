@@ -43,6 +43,23 @@ class PromptService:
 原文：
 {original_text}"""
 
+    AI_INSTRUCTION_EDIT = """你是专业的中文小说文本编辑和设定编辑，请严格按照用户要求处理文本。
+
+用户要求：
+{instruction}
+
+处理边界：
+- 保留原文中已经明确的事实、设定、人物关系、叙事视角和时间线，除非用户要求修改。
+- 只处理用户要求覆盖的目标字段或文本，不扩写无依据的新设定。
+- 如果用户要求补全字段，只输出可直接写入该字段的内容。
+
+输出要求：
+- 只输出处理后的结果。
+- 不要解释，不要列清单，不要使用 Markdown，不要添加前后缀。
+
+待处理内容：
+{original_text}"""
+
     OUTLINE_OPTIMIZE = """你是小说大纲编辑，请优化已有大纲。
 
 处理目标：
@@ -79,7 +96,7 @@ class PromptService:
 
 输出要求：
 - 严格只输出 JSON，不要 Markdown，不要解释。
-- JSON 字段：organization_purpose、motto、background。
+- JSON 字段：organization_purpose、motto、background、location、color、power_level。
 
 请处理以下内容：
 {source}"""
@@ -615,6 +632,24 @@ class PromptService:
 ❌ 忽略已有角色发展
 ❌ 忽略最近大纲中的情节线索
 </constraints>"""
+
+    # 手动章节创建 - 自动补齐一对一章节大纲
+    MANUAL_CHAPTER_OUTLINE_SYNC = """请根据用户手动创建的小说章节，生成一个可用于后续章节管理的一对一章节大纲。
+
+要求：
+- 只依据给定章节标题、摘要和正文，不要新增设定、角色、事件或结局。
+- 保留本章已经发生的关键事实、人物状态、冲突、场景和结尾落点。
+- 输出中文大纲正文即可，不要输出 JSON、Markdown、解释或前后缀。
+- 控制在 150-350 字。
+
+项目：{project_title}
+类型：{genre}
+主题：{theme}
+章节：第{chapter_number}章《{chapter_title}》
+已有摘要：{summary}
+
+章节正文：
+{chapter_content}"""
     
     # 章节生成 - 1-N模式（第1章）
     CHAPTER_GENERATION_ONE_TO_MANY = """<system>
@@ -1953,6 +1988,29 @@ class PromptService:
 }}
 
 只返回纯JSON，不要有其他文字。"""
+
+    BOOK_IMPORT_ENTITY_CLASSIFIER = """你是中文小说拆书的实体候选分类器。请只校正候选列表中的实体类型，不要新增候选，不要改写候选名称。
+
+分类规则：
+- character：稳定人物、拟人化角色、明确具有人物行动的存在。
+- organization：国家、军队、学校、公司、家族、舰队、部门、势力、组织。
+- location：城市、区域、建筑、场所、道路、岛屿、港口等地点。
+- item：道具、装备、舰船、文档、装置、药剂、武器、物件。
+- unknown：泛称、代词、章节标题、误切文本、无法从证据判断的候选。
+
+注意：
+- “大哥、那人、前辈、老师、同学、少女、男人、女人”等泛称通常应为 unknown，除非证据明确它是稳定称谓。
+- 只输出严格 JSON 数组，每项字段为：name、entity_type、confidence、reason。
+- name 必须与候选完全一致，entity_type 必须是 character/organization/location/item/unknown 之一，confidence 为 0 到 1。
+
+书名：{title}
+
+候选列表：
+{candidate_list}
+
+正文上下文节选：
+{source_context}"""
+
     # 自动角色引入 - 生成提示词 V2（RTCO框架）
     AUTO_CHARACTER_GENERATION = """<system>
 你是专业的角色设定师，擅长根据剧情需求创建完整的角色设定。
@@ -2864,6 +2922,12 @@ class PromptService:
                 "description": "用于润色文本、降低AI味并保留原意、事实、人设和叙事视角",
                 "parameters": ["original_text"]
             },
+            "AI_INSTRUCTION_EDIT": {
+                "name": "按要求润色/补全字段",
+                "category": "文本润色",
+                "description": "用于输入框AI辅助，按用户或字段要求润色、重写或补全目标文本",
+                "parameters": ["instruction", "original_text"]
+            },
             "OUTLINE_OPTIMIZE": {
                 "name": "大纲优化",
                 "category": "AI优化",
@@ -2902,6 +2966,12 @@ class PromptService:
                     "title", "genre", "theme", "narrative_perspective",
                     "start_chapter", "end_chapter", "expected_count", "chapters_text"
                 ]
+            },
+            "BOOK_IMPORT_ENTITY_CLASSIFIER": {
+                "name": "拆书导入-实体候选分类",
+                "category": "拆书导入",
+                "description": "基于规则候选和正文上下文校正拆书导入中的实体类型",
+                "parameters": ["title", "candidate_list", "source_context"]
             },
             "CHARACTERS_BATCH_GENERATION": {
                 "name": "批量角色生成",
@@ -2982,6 +3052,12 @@ class PromptService:
                              "target_word_count", "narrative_perspective", "previous_chapter_content",
                              "previous_chapter_summary", "characters_info", "chapter_careers",
                              "foreshadow_reminders", "relevant_memories"]
+            },
+            "MANUAL_CHAPTER_OUTLINE_SYNC": {
+                "name": "手动章节-同步大纲",
+                "category": "章节创作",
+                "description": "手动创建章节时根据标题、摘要和正文补齐一对一章节大纲",
+                "parameters": ["project_title", "genre", "theme", "chapter_number", "chapter_title", "summary", "chapter_content"]
             },
             "CHAPTER_REGENERATION_SYSTEM": {
                 "name": "章节重写系统提示",

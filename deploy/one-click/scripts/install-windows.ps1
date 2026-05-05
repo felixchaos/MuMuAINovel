@@ -5,7 +5,7 @@ try {
   $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {}
 
-$ForkVersion = "v1.4.8-story-engine.1"
+$ForkVersion = "v1.4.8-story-engine.2"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = (Resolve-Path (Join-Path $ScriptDir "..\..\..")).Path
 $EnvFile = Join-Path $RootDir ".env"

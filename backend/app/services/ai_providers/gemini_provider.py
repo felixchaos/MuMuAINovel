@@ -3,6 +3,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.logger import get_logger
 from app.services.ai_clients.gemini_client import GeminiClient
+from app.services.tool_prompting import build_tool_result_followup
 from .base_provider import BaseAIProvider
 
 logger = get_logger(__name__)
@@ -79,9 +80,8 @@ class GeminiProvider(BaseAIProvider):
                         # 将工具结果注入到上下文中
                         tool_context = mcp_client.build_tool_context(tool_results, format="markdown")
                         
-                        # 构建最终提示词，要求AI基于工具结果回答
-                        final_prompt = f"{prompt}\n\n{tool_context}\n\n请基于以上工具查询结果，给出完整详细的回答。"
-                        final_messages = [{"role": "user", "content": final_prompt}]
+                        final_messages = messages.copy()
+                        final_messages.append({"role": "user", "content": build_tool_result_followup(tool_context)})
                         
                         # 递归调用生成最终结果
                         async for final_chunk in self._generate_with_tools(
@@ -155,7 +155,7 @@ class GeminiProvider(BaseAIProvider):
                     )
                     tool_context = mcp_client.build_tool_context(tool_results, format="markdown")
                     
-                    messages.append({"role": "user", "content": f"{tool_context}\n\n请基于以上工具查询结果，给出完整详细的回答。"})
+                    messages.append({"role": "user", "content": build_tool_result_followup(tool_context)})
                     
                     async for final_chunk in self._generate_with_tools(
                         messages, model, temperature, max_tokens, system_prompt, tools, user_id

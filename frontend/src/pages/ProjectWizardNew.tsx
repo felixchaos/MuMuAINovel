@@ -6,11 +6,12 @@ import {
 } from 'antd';
 import type { FormInstance } from 'antd/es/form';
 import {
-  RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined, EditOutlined, HighlightOutlined
+  RocketOutlined, ArrowLeftOutlined, CheckCircleOutlined, EditOutlined
 } from '@ant-design/icons';
 import { AIProjectGenerator, type GenerationConfig } from '../components/AIProjectGenerator';
-import { projectApi, polishApi } from '../services/api';
+import { projectApi } from '../services/api';
 import type { WizardBasicInfo } from '../types';
+import { AIFieldAssistButton, buildDefaultAIFieldInstruction } from '../components/AIFieldAssistant';
 
 const { TextArea } = Input;
 const { Title, Paragraph } = Typography;
@@ -66,225 +67,45 @@ const parseTagResult = (text: string) => (
     .slice(0, 5)
 );
 
-interface WizardAIFieldButtonProps {
-  form: FormInstance<WizardBasicInfo>;
-  modalApi: ModalApi;
-  name: keyof WizardBasicInfo;
-  label: string;
-  resultType?: 'text' | 'tags';
-  maxLength?: number;
-}
-
-function WizardAIFieldButton({
-  form,
-  modalApi,
-  name,
-  label,
-  resultType = 'text',
-  maxLength,
-}: WizardAIFieldButtonProps) {
-  const [loading, setLoading] = useState(false);
-  const { token } = theme.useToken();
-
-  const readFieldText = () => {
-    const value = form.getFieldValue(name);
-    if (Array.isArray(value)) return value.join('、');
-    return String(value || '').trim();
-  };
-
-  const applyResult = (text: string) => {
-    if (resultType === 'tags') {
-      const tags = parseTagResult(text);
-      if (!tags.length) {
-        message.warning('AI未返回可用标签');
-        return;
-      }
-      form.setFieldsValue({ [name]: tags } as Partial<WizardBasicInfo>);
-      message.success(`${label}已应用AI结果`);
-      return;
-    }
-
-    const nextText = maxLength ? text.slice(0, maxLength) : text;
-    form.setFieldsValue({ [name]: nextText } as Partial<WizardBasicInfo>);
-    message.success(`${label}已应用AI结果`);
-  };
-
-  const runAI = async (sourceText: string, instruction: string, currentValue: string) => {
-    const trimmedInstruction = instruction.trim();
-    const defaultInstruction = currentValue
-      ? `请润色「${label}」。保留原意和设定，不新增无依据内容，不输出解释，只输出处理后的${resultType === 'tags' ? '标签列表' : '文本'}。`
-      : `请根据上下文补全「${label}」。不要输出解释、标题或前后缀，只输出可直接填入该字段的${resultType === 'tags' ? '标签列表，使用顿号分隔' : '文本'}。`;
-    const closeLoading = message.loading(`正在处理${label}...`, 0);
-
-    try {
-      setLoading(true);
-      const result = await polishApi.polishText({
-        original_text: sourceText,
-        temperature: currentValue ? 0.65 : 0.8,
-        instruction: trimmedInstruction || defaultInstruction,
-      });
-
-      const aiText = (result.polished_text || '').trim();
-      if (!aiText) {
-        message.warning('AI结果为空，请稍后重试');
-        return;
-      }
-
-      modalApi.confirm({
-        title: `${label} AI结果`,
-        icon: <HighlightOutlined />,
-        width: 720,
-        centered: true,
-        okText: '应用结果',
-        cancelText: currentValue ? '保留原文' : '暂不应用',
-        content: (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
-              AI 结果需要确认后才会写入字段。
-            </div>
-            <div style={{ display: 'grid', gap: 12 }}>
-              {trimmedInstruction && (
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>本次要求</div>
-                  <div style={{
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.6,
-                    padding: '8px 10px',
-                    border: `1px solid ${token.colorInfoBorder}`,
-                    borderRadius: token.borderRadius,
-                    background: token.colorInfoBg,
-                  }}>
-                    {trimmedInstruction}
-                  </div>
-                </div>
-              )}
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>{currentValue ? '当前内容' : '生成依据'}</div>
-                <div style={{
-                  maxHeight: 150,
-                  overflowY: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: 1.6,
-                  padding: '8px 10px',
-                  border: `1px solid ${token.colorBorderSecondary}`,
-                  borderRadius: token.borderRadius,
-                  background: token.colorFillQuaternary,
-                  color: token.colorTextSecondary,
-                }}>
-                  {currentValue || sourceText}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果</div>
-                <div style={{
-                  maxHeight: 220,
-                  overflowY: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: 1.6,
-                  padding: '8px 10px',
-                  border: `1px solid ${token.colorPrimaryBorder}`,
-                  borderRadius: token.borderRadius,
-                  background: token.colorBgContainer,
-                }}>
-                  {aiText}
-                </div>
-              </div>
-            </div>
-          </div>
-        ),
-        onOk: () => applyResult(aiText),
-      });
-    } catch (error) {
-      console.error(`${label} AI处理失败:`, error);
-      message.error(`${label} AI处理失败`);
-    } finally {
-      closeLoading();
-      setLoading(false);
-    }
-  };
-
-  const handleClick = () => {
-    const currentValue = readFieldText();
-    const context = buildWizardContext(form.getFieldsValue(true), label);
-    const sourceText = currentValue || context;
-    let instruction = '';
-
-    modalApi.confirm({
-      title: `${label} AI处理要求`,
-      icon: <HighlightOutlined />,
-      width: 640,
-      centered: true,
-      okText: currentValue ? '开始润色' : '开始补全',
-      cancelText: '取消',
-      content: (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
-            {currentValue
-              ? '输入希望 AI 如何润色这段内容；留空则只做自然表达优化。'
-              : '当前字段为空，AI会参考已填写的项目上下文补全；也可以输入更具体的生成要求。'}
-          </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：更口语一点；压缩到一句话；强化世界观冲突；保留关键词但改得更自然..."
-            autoFocus
-            onChange={(event) => {
-              instruction = event.target.value;
-            }}
-          />
-          <div style={{
-            marginTop: 12,
-            maxHeight: 120,
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-            lineHeight: 1.6,
-            padding: '8px 10px',
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: token.borderRadius,
-            background: token.colorFillQuaternary,
-            color: token.colorTextSecondary,
-          }}>
-            {sourceText}
-          </div>
-        </div>
-      ),
-      onOk: () => runAI(sourceText, instruction, currentValue),
-    });
-  };
-
-  return (
-    <Button
-      type="link"
-      size="small"
-      icon={<HighlightOutlined />}
-      loading={loading}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        handleClick();
-      }}
-      style={{ paddingInline: 4 }}
-    >
-      AI辅助
-    </Button>
-  );
-}
-
 const makeAIFieldLabel = (
   form: FormInstance<WizardBasicInfo>,
   modalApi: ModalApi,
   name: keyof WizardBasicInfo,
   label: string,
-  options?: Pick<WizardAIFieldButtonProps, 'resultType' | 'maxLength'>,
+  options?: { resultType?: 'text' | 'tags'; maxLength?: number },
 ) => (
   <Space size={6}>
     <span>{label}</span>
-    <WizardAIFieldButton
-      form={form}
+    <AIFieldAssistButton
       modalApi={modalApi}
-      name={name}
       label={label}
-      resultType={options?.resultType}
-      maxLength={options?.maxLength}
+      getCurrentValue={() => {
+        const value = form.getFieldValue(name);
+        return Array.isArray(value) ? value.join('、') : String(value || '').trim();
+      }}
+      getSourceText={() => buildWizardContext(form.getFieldsValue(true), label)}
+      buildDefaultInstruction={(mode) => buildDefaultAIFieldInstruction(label, mode, {
+        resultDescription: options?.resultType === 'tags'
+          ? mode === 'complete' ? '标签列表，使用顿号分隔' : '标签列表'
+          : '文本',
+      })}
+      onApply={(text) => {
+        if (options?.resultType === 'tags') {
+          const tags = parseTagResult(text);
+          if (!tags.length) {
+            message.warning('AI未返回可用标签');
+            return;
+          }
+          form.setFieldsValue({ [name]: tags } as Partial<WizardBasicInfo>);
+        } else {
+          form.setFieldsValue({ [name]: options?.maxLength ? text.slice(0, options.maxLength) : text } as Partial<WizardBasicInfo>);
+        }
+        message.success(`${label}已应用AI结果`);
+      }}
+      maxLength={options?.resultType === 'tags' ? undefined : options?.maxLength}
+      emptyHelpText="当前字段为空，AI会参考已填写的项目上下文补全；也可以输入更具体的生成要求。"
+      placeholder="例如：更口语一点；压缩到一句话；强化世界观冲突；保留关键词但改得更自然..."
+      buttonStyle={{ paddingInline: 4 }}
     />
   </Space>
 );

@@ -16,6 +16,7 @@ import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 import ChapterReader from '../components/ChapterReader';
 import PartialRegenerateToolbar from '../components/PartialRegenerateToolbar';
 import PartialRegenerateModal from '../components/PartialRegenerateModal';
+import { taskMessage } from '../utils/taskMessage';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -412,9 +413,9 @@ export default function Chapters() {
           activeAnalysisPollingIdsRef.current.delete(chapterId);
 
           if (task?.status === 'completed') {
-            message.success('章节分析完成');
+            taskMessage.completed('章节分析任务');
           } else if (task?.status === 'failed') {
-            message.error(`章节分析失败: ${task.error_message || '未知错误'}`);
+            taskMessage.failed('章节分析任务', task.error_message || '未知错误');
           }
         }
       });
@@ -559,7 +560,7 @@ export default function Chapters() {
         // 启动轮询
         startBatchPolling(task.batch_id);
 
-        message.info('检测到未完成的批量生成任务，请查看任务列表');
+        taskMessage.restored('批量生成任务');
       }
     } catch (error) {
       console.error('检查批量生成任务失败:', error);
@@ -1455,7 +1456,7 @@ export default function Chapters() {
           // 进度更新由悬浮任务框处理，无需额外操作
         },
         () => {
-          message.success("后台章节生成完成！");
+          taskMessage.completed('章节生成任务');
           refreshChapters();
           if (currentProject) {
             projectApi.getProject(currentProject.id).then(setCurrentProject).catch(console.error);
@@ -1463,15 +1464,15 @@ export default function Chapters() {
           loadAnalysisTasks();
         },
         (error) => {
-          message.error("后台生成失败: " + error);
+          taskMessage.failed('章节生成任务', error);
         }
       );
 
-      message.info("章节生成任务已提交，可在右下角任务面板查看进度");
+      taskMessage.started('章节生成任务');
       // 通知悬浮任务框刷新
       eventBus.emit('background-task-created');
     } catch {
-      message.error("创建后台任务失败");
+      message.error("创建章节生成任务失败");
     }
   };
   const getStatusColor = (status: string) => {
@@ -1659,9 +1660,10 @@ export default function Chapters() {
           startPollingTask(chapterId);
         });
 
-        message.success(
-          `已加入 ${result.total_started} 章顺序分析队列（跳过已分析 ${result.total_already_completed} 章，分析中/排队中 ${result.total_skipped_running} 章）`
-        );
+        taskMessage.started('章节分析任务', {
+          detail: `已加入 ${result.total_started} 章顺序分析队列（跳过已分析 ${result.total_already_completed} 章，分析中/排队中 ${result.total_skipped_running} 章）`,
+          location: 'currentPage',
+        });
       } else {
         message.info('没有可启动分析的章节：当前章节要么无内容、要么已分析完成、要么正在分析中');
       }
@@ -1757,7 +1759,9 @@ export default function Chapters() {
         estimated_time_minutes: result.estimated_time_minutes,
       });
 
-      message.success(`批量生成任务已创建，预计需要 ${result.estimated_time_minutes} 分钟，可在右下角任务面板查看进度`);
+      taskMessage.started('批量生成任务', {
+        detail: `预计需要 ${result.estimated_time_minutes} 分钟`,
+      });
       // 通知悬浮任务框刷新
       eventBus.emit('background-task-created');
 
@@ -1832,7 +1836,7 @@ export default function Chapters() {
           }
 
           if (status.status === 'completed') {
-            message.success(`批量生成完成！成功生成 ${status.completed} 章`);
+            taskMessage.completed('批量生成任务', `成功生成 ${status.completed} 章`);
             // 🔔 触发浏览器通知
             showBrowserNotification(
               '批量生成完成',
@@ -1840,7 +1844,7 @@ export default function Chapters() {
               'success'
             );
           } else if (status.status === 'failed') {
-            message.error(`批量生成失败：${status.error_message || '未知错误'}`);
+            taskMessage.failed('批量生成任务', status.error_message || '未知错误');
             // 🔔 触发浏览器通知
             showBrowserNotification(
               '批量生成失败',
@@ -1848,7 +1852,7 @@ export default function Chapters() {
               'error'
             );
           } else if (status.status === 'cancelled') {
-            message.warning('批量生成已取消');
+            taskMessage.cancelled('批量生成任务');
           }
 
           // 延迟关闭对话框，让用户看到最终状态
@@ -1883,7 +1887,7 @@ export default function Chapters() {
         throw new Error('取消失败');
       }
 
-      message.success('批量生成已取消');
+      taskMessage.cancelled('批量生成任务');
 
       // 取消后立即刷新章节列表和分析任务，显示已生成的章节
       await refreshChapters();

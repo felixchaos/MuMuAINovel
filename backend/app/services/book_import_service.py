@@ -1663,29 +1663,13 @@ class BookImportService:
                         f"evidence={evidence[:260]}"
                     )
 
-                prompt = f"""
-你是中文小说拆书的实体候选分类器。请只校正候选列表中的实体类型，不要新增候选，不要改写候选名称。
-
-分类规则：
-- character：稳定人物、拟人化角色、明确具有人物行动的存在。
-- organization：国家、军队、学校、公司、家族、舰队、部门、势力、组织。
-- location：城市、区域、建筑、场所、道路、岛屿、港口等地点。
-- item：道具、装备、舰船、文档、装置、药剂、武器、物件。
-- unknown：泛称、代词、章节标题、误切文本、无法从证据判断的候选。
-
-注意：
-- “大哥、那人、前辈、老师、同学、少女、男人、女人”等泛称通常应为 unknown，除非证据明确它是稳定称谓。
-- 只输出严格 JSON 数组，每项字段为：name、entity_type、confidence、reason。
-- name 必须与候选完全一致，entity_type 必须是 character/organization/location/item/unknown 之一，confidence 为 0 到 1。
-
-书名：{title or '未命名'}
-
-候选列表：
-{chr(10).join(candidate_lines)}
-
-正文上下文节选：
-{source_context}
-""".strip()
+                template = await PromptService.get_template("BOOK_IMPORT_ENTITY_CLASSIFIER", user_id, db)
+                prompt = PromptService.format_prompt(
+                    template,
+                    title=title or "未命名",
+                    candidate_list="\n".join(candidate_lines),
+                    source_context=source_context,
+                )
 
                 ai_items = await ai_service.call_with_json_retry(
                     prompt=prompt,

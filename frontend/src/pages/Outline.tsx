@@ -1,5 +1,4 @@
 ﻿import { useState, useEffect, useMemo, useRef } from 'react';
-import type { ChangeEvent, CSSProperties } from 'react';
 import { Button, List, Modal, Form, Input, message, Empty, Space, Popconfirm, Card, Select, Radio, Tag, InputNumber, Tabs, Pagination, theme } from 'antd';
 import type { FormInstance } from 'antd';
 import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BranchesOutlined, AppstoreAddOutlined, CheckCircleOutlined, ExclamationCircleOutlined, PlusOutlined, FileTextOutlined, HighlightOutlined } from '@ant-design/icons';
@@ -10,6 +9,8 @@ import { useOutlineSync } from '../store/hooks';
 import { generateOutlineBackground } from '../services/backgroundTaskService';
 import { outlineApi, chapterApi, projectApi, characterApi, polishApi } from '../services/api';
 import type { ApiError, Character, Outline as OutlineItem, Project } from '../types';
+import { taskMessage } from '../utils/taskMessage';
+import { PolishableTextArea, type AIFieldModalApi } from '../components/AIFieldAssistant';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -39,8 +40,6 @@ interface GenerateFormValues {
   plot_stage?: 'development' | 'climax' | 'ending';
   keep_existing?: boolean;
 }
-
-type PolishableOutlineField = 'story_direction' | 'requirements';
 
 interface ModelOption {
   value: string;
@@ -171,227 +170,7 @@ function getOutlinePreview(content: string, maxLength = 120): { text: string; tr
 }
 
 const { TextArea } = Input;
-type ModalApi = ReturnType<typeof Modal.useModal>[0];
-
-interface PolishableTextAreaProps {
-  form: FormInstance<GenerateFormValues>;
-  modalApi: ModalApi;
-  name: PolishableOutlineField;
-  label: string;
-  rows: number;
-  placeholder: string;
-  value?: string;
-  id?: string;
-  onChange?: (event: ChangeEvent<HTMLTextAreaElement>) => void;
-}
-
-function PolishableTextArea({
-  form,
-  modalApi,
-  name,
-  label,
-  rows,
-  placeholder,
-  value,
-  id,
-  onChange,
-}: PolishableTextAreaProps) {
-  const [isPolishing, setIsPolishing] = useState(false);
-  const { token } = theme.useToken();
-
-  const runPolish = async (currentValue: string, instruction: string) => {
-    const closeLoading = message.loading(`正在润色${label}...`, 0);
-    try {
-      setIsPolishing(true);
-      const selectedModel = form.getFieldValue('model');
-      const selectedProvider = form.getFieldValue('provider');
-      const trimmedInstruction = instruction.trim();
-      const result = await polishApi.polishText({
-        original_text: currentValue,
-        model: selectedModel || undefined,
-        provider: selectedProvider || undefined,
-        temperature: 0.7,
-        instruction: trimmedInstruction || undefined,
-      });
-
-      const polishedText = result.polished_text?.trim();
-      if (!polishedText) {
-        message.warning('润色结果为空，请稍后重试');
-        return;
-      }
-
-      modalApi.confirm({
-        title: `${label}润色结果`,
-        icon: <HighlightOutlined />,
-        width: 720,
-        centered: true,
-        okText: '应用润色结果',
-        cancelText: '保留原文',
-        content: (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ marginBottom: 14, color: token.colorTextSecondary }}>
-              AI 已完成润色，确认后才会替换文本框内容。
-            </div>
-            <div style={{ display: 'grid', gap: 12 }}>
-              {trimmedInstruction && (
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>本次要求</div>
-                  <div
-                    style={{
-                      whiteSpace: 'pre-wrap',
-                      lineHeight: 1.6,
-                      padding: '8px 10px',
-                      border: `1px solid ${token.colorInfoBorder}`,
-                      borderRadius: token.borderRadius,
-                      background: token.colorInfoBg,
-                    }}
-                  >
-                    {trimmedInstruction}
-                  </div>
-                </div>
-              )}
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>原文</div>
-                <div
-                  style={{
-                    maxHeight: 160,
-                    overflowY: 'auto',
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.6,
-                    padding: '8px 10px',
-                    border: `1px solid ${token.colorBorderSecondary}`,
-                    borderRadius: token.borderRadius,
-                    background: token.colorFillQuaternary,
-                  }}
-                >
-                  {currentValue}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>润色结果</div>
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflowY: 'auto',
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.6,
-                    padding: '8px 10px',
-                    border: `1px solid ${token.colorPrimaryBorder}`,
-                    borderRadius: token.borderRadius,
-                    background: token.colorBgContainer,
-                  }}
-                >
-                  {polishedText}
-                </div>
-              </div>
-            </div>
-          </div>
-        ),
-        onOk: () => {
-          form.setFieldsValue({ [name]: polishedText });
-          message.success(`${label}已应用润色结果`);
-        },
-      });
-    } catch (error) {
-      console.error(`${label}润色失败:`, error);
-      message.error(`${label}润色失败`);
-    } finally {
-      closeLoading();
-      setIsPolishing(false);
-    }
-  };
-
-  const handlePolish = () => {
-    const currentValue = String(form.getFieldValue(name) || '').trim();
-    if (!currentValue) {
-      message.warning(`请先填写${label}`);
-      return;
-    }
-
-    let instruction = '';
-    modalApi.confirm({
-      title: `${label}润色要求`,
-      icon: <HighlightOutlined />,
-      width: 640,
-      centered: true,
-      okText: '开始润色',
-      cancelText: '取消',
-      content: (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
-            输入本次希望 AI 如何处理这段内容；留空则使用默认去 AI 味润色。
-          </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：保留原意，只让表达更自然；语气更口语化；压缩到两句话；强化悬疑感；不要新增设定..."
-            autoFocus
-            onChange={(event) => {
-              instruction = event.target.value;
-            }}
-          />
-          <div
-            style={{
-              marginTop: 12,
-              maxHeight: 120,
-              overflowY: 'auto',
-              whiteSpace: 'pre-wrap',
-              lineHeight: 1.6,
-              padding: '8px 10px',
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: token.borderRadius,
-              background: token.colorFillQuaternary,
-              color: token.colorTextSecondary,
-            }}
-          >
-            {currentValue}
-          </div>
-        </div>
-      ),
-      onOk: () => runPolish(currentValue, instruction),
-    });
-  };
-
-  const textAreaStyle: CSSProperties = {
-    paddingRight: 44,
-  };
-
-  return (
-    <div style={{ position: 'relative' }}>
-      <TextArea
-        id={id}
-        rows={rows}
-        value={value}
-        onChange={onChange}
-        placeholder={placeholder}
-        style={textAreaStyle}
-      />
-      <Button
-        type="text"
-        shape="circle"
-        size="small"
-        icon={<HighlightOutlined />}
-        loading={isPolishing}
-        aria-label={`润色${label}`}
-        title={`润色${label}`}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void handlePolish();
-        }}
-        style={{
-          position: 'absolute',
-          top: 8,
-          right: 8,
-          zIndex: 1,
-          color: token.colorPrimary,
-          background: token.colorBgElevated,
-          border: `1px solid ${token.colorBorderSecondary}`,
-          boxShadow: token.boxShadowTertiary,
-        }}
-      />
-    </div>
-  );
-}
+type ModalApi = AIFieldModalApi;
 
 interface OutlineGenerateModalContentProps {
   form: FormInstance<GenerateFormValues>;
@@ -565,6 +344,8 @@ function OutlineGenerateModalContent({
                       label="故事发展方向"
                       rows={3}
                       placeholder="例如：主角遇到新的挑战、引入新角色、揭示关键秘密等..."
+                      providerFieldName="provider"
+                      modelFieldName="model"
                     />
                   </Form.Item>
 
@@ -615,6 +396,8 @@ function OutlineGenerateModalContent({
                   label="其他要求"
                   rows={2}
                   placeholder="其他特殊要求（可选）"
+                  providerFieldName="provider"
+                  modelFieldName="model"
                 />
               </Form.Item>
             </>
@@ -1111,17 +894,17 @@ export default function Outline() {
           // 进度更新由悬浮任务框处理，无需额外操作
         },
         (result) => {
-          message.success(result.task_result?.message as string || '大纲生成完成！');
+          taskMessage.completed('大纲生成任务', result.task_result?.message as string | undefined);
           setIsGenerating(false);
           refreshOutlines();
         },
         (error) => {
-          message.error(`生成失败: ${error}`);
+          taskMessage.failed('大纲生成任务', error);
           setIsGenerating(false);
         }
       );
 
-      message.info('大纲生成任务已提交，可在右下角任务面板查看进度');
+      taskMessage.started('大纲生成任务');
       // 通知悬浮任务框刷新
       eventBus.emit('background-task-created');
 
@@ -1415,13 +1198,13 @@ export default function Outline() {
               throw new Error(err.detail || '创建大纲展开任务失败');
             }
 
-            message.success('大纲展开任务已提交，可在右下角任务面板查看进度');
+            taskMessage.started('大纲展开任务');
             eventBus.emit('background-task-created');
             setIsExpanding(false);
 
           } catch (error) {
             console.error('展开失败:', error);
-            message.error(error instanceof Error ? error.message : '展开失败');
+            taskMessage.failed('大纲展开任务', error instanceof Error ? error.message : '展开失败');
             setIsExpanding(false);
           }
         },
@@ -1810,13 +1593,13 @@ export default function Outline() {
             throw new Error(err.detail || '创建批量展开任务失败');
           }
 
-          message.success('批量展开任务已提交，可在右下角任务面板查看进度');
+          taskMessage.started('批量展开任务');
           eventBus.emit('background-task-created');
           setIsExpanding(false);
 
         } catch (error) {
           console.error('批量展开失败:', error);
-          message.error(error instanceof Error ? error.message : '批量展开失败');
+          taskMessage.failed('批量展开任务', error instanceof Error ? error.message : '批量展开失败');
           setIsExpanding(false);
         }
       },
@@ -1866,10 +1649,9 @@ export default function Outline() {
         temperature: 0.6,
       });
 
-      message.success({
+      taskMessage.started('大纲优化任务', {
         key: messageKey,
-        content: '大纲优化任务已提交，可在右下角后台任务中查看或取消',
-        duration: 3
+        cancellable: true,
       });
       eventBus.emit('background-task-created');
 
@@ -1888,22 +1670,14 @@ export default function Outline() {
           outlineOptimizePollCancelRef.current = null;
           void (async () => {
             await refreshOutlines();
-            message.success({
-              key: messageKey,
-              content: status.status_message || '大纲优化完成',
-              duration: 3
-            });
+            taskMessage.completed('大纲优化任务', status.status_message, { key: messageKey });
             resetLoadingState();
             eventBus.emit('background-task-created');
           })();
         },
         (error: string) => {
           outlineOptimizePollCancelRef.current = null;
-          message.error({
-            key: messageKey,
-            content: error || '大纲优化任务失败',
-            duration: 4
-          });
+          taskMessage.failed('大纲优化任务', error, { key: messageKey, duration: 4 });
           resetLoadingState();
           eventBus.emit('background-task-created');
         }
@@ -1963,7 +1737,7 @@ export default function Outline() {
             </Radio.Group>
           </Form.Item>
           <div style={{ color: token.colorTextSecondary, fontSize: 13 }}>
-            使用现有后台任务流程优化表达与可执行性，不改变章节编号、标题和核心设定；提交后可在右下角后台任务中查看或取消。
+            使用现有后台任务流程优化表达与可执行性，不改变章节编号、标题和核心设定；提交后可在右下角后台任务面板查看进度或取消。
           </div>
         </Form>
       ),

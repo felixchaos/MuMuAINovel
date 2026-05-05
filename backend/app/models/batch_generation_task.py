@@ -20,6 +20,7 @@ class BatchGenerationTask(Base):
     style_id = Column(Integer, comment="使用的写作风格ID")
     target_word_count = Column(Integer, default=3000, comment="目标字数")
     enable_analysis = Column(Boolean, default=False, comment="是否启用同步分析")
+    enable_mcp = Column(Boolean, default=True, comment="是否启用MCP工具增强")
     
     # 任务状态
     status = Column(String(20), default="pending", comment="任务状态: pending/running/completed/failed/cancelled")

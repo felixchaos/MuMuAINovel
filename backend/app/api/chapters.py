@@ -164,22 +164,17 @@ async def _generate_manual_chapter_outline_content(
     if len(clipped_content) > 12000:
         clipped_content = f"{clipped_content[:7000]}\n\n……（中段略）……\n\n{clipped_content[-4000:]}"
 
-    prompt = f"""请根据用户手动创建的小说章节，生成一个可用于后续章节管理的一对一章节大纲。
-
-要求：
-- 只依据给定章节标题、摘要和正文，不要新增设定、角色、事件或结局。
-- 保留本章已经发生的关键事实、人物状态、冲突、场景和结尾落点。
-- 输出中文大纲正文即可，不要输出 JSON、Markdown、解释或前后缀。
-- 控制在 150-350 字。
-
-项目：{project.title}
-类型：{project.genre or '未设定'}
-主题：{project.theme or '未设定'}
-章节：第{chapter.chapter_number}章《{chapter.title}》
-已有摘要：{summary or '（无）'}
-
-章节正文：
-{clipped_content or '（无正文）'}"""
+    template = await PromptService.get_template("MANUAL_CHAPTER_OUTLINE_SYNC", user_id, db)
+    prompt = PromptService.format_prompt(
+        template,
+        project_title=project.title,
+        genre=project.genre or "未设定",
+        theme=project.theme or "未设定",
+        chapter_number=chapter.chapter_number,
+        chapter_title=chapter.title,
+        summary=summary or "（无）",
+        chapter_content=clipped_content or "（无正文）",
+    )
 
     ai_service = await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
     response = await ai_service.generate_text(
@@ -3618,6 +3613,7 @@ async def batch_generate_chapters_in_order(
         style_id=batch_request.style_id,
         target_word_count=batch_request.target_word_count,
         enable_analysis=batch_request.enable_analysis,
+        enable_mcp=batch_request.enable_mcp,
         max_retries=batch_request.max_retries,
         status='pending',
         total_chapters=len(chapters_to_generate),
@@ -3818,6 +3814,7 @@ async def execute_batch_generation_in_order(
         
         # 维护上一章的摘要，用于传递给下一章（防重复上下文）
         last_generated_summary = None
+        enable_mcp = True if task.enable_mcp is None else bool(task.enable_mcp)
 
         # 按顺序生成每个章节
         for idx, chapter_id in enumerate(task.chapter_ids, 1):
@@ -3877,7 +3874,8 @@ async def execute_batch_generation_in_order(
                         ai_service=ai_service,
                         write_lock=write_lock,
                         custom_model=custom_model,
-                        previous_summary_context=last_generated_summary
+                        previous_summary_context=last_generated_summary,
+                        enable_mcp=enable_mcp,
                     )
                     
                     # 更新上一章摘要，供下一章使用
@@ -4064,7 +4062,8 @@ async def generate_single_chapter_for_batch(
     ai_service: AIService,
     write_lock: Lock,
     custom_model: Optional[str] = None,
-    previous_summary_context: Optional[str] = None
+    previous_summary_context: Optional[str] = None,
+    enable_mcp: bool = True,
 ) -> Optional[str]:
     """
     为批量生成执行单个章节的生成（非流式）
@@ -4262,7 +4261,8 @@ async def generate_single_chapter_for_batch(
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
-        "tool_choice": "auto",
+        "tool_choice": "auto" if enable_mcp else None,
+        "auto_mcp": enable_mcp,
         "max_tokens": calculated_max_tokens  # 添加 max_tokens 限制
     }
     # 如果传入了自定义模型，使用指定的模型

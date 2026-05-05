@@ -67,6 +67,49 @@ def validate_options_response(result: Dict[str, Any], step: str, max_retries: in
     return True, ""
 
 
+def _append_inspiration_control_blocks(system_prompt: str, *blocks: str) -> str:
+    """集中追加灵感模式的动态控制块，便于审计最终生效提示词。"""
+    parts = [system_prompt.strip()]
+    parts.extend(block.strip() for block in blocks if block and block.strip())
+    return "\n\n".join(parts)
+
+
+def _build_inspiration_retry_guardrail(attempt: int, *, require_option_count: bool) -> str:
+    if attempt <= 0:
+        return ""
+
+    option_count_clause = "，确保 options 数组包含 6 个有效选项" if require_option_count else ""
+    return (
+        "【灵感模式重试约束】\n"
+        f"这是第{attempt + 1}次生成，请务必严格按照 JSON 格式返回{option_count_clause}。"
+    )
+
+
+def _build_inspiration_feedback_guardrail(feedback: str, previous_options: Any) -> str:
+    options = previous_options if isinstance(previous_options, list) else []
+    option_lines = [
+        f"- {str(option).strip()}"
+        for option in options
+        if str(option).strip()
+    ]
+    previous_options_text = "\n".join(option_lines) or "（无）"
+    feedback_text = (feedback or "").strip() or "（无具体反馈）"
+
+    return f"""【用户反馈调整】
+用户对之前的选项不太满意，提供了以下反馈：
+「{feedback_text}」
+
+之前生成的选项：
+{previous_options_text}
+
+请根据用户反馈调整生成策略，提供更符合用户期望的新选项。
+要求：
+1. 仔细理解用户的反馈意图
+2. 新选项要明显体现用户要求的调整方向
+3. 保持与已有上下文的一致性
+4. 确保返回 6 个有效选项"""
+
+
 @router.post("/generate-options")
 async def generate_options(
     data: Dict[str, Any],
@@ -140,9 +183,10 @@ async def generate_options(
             system_prompt = system_template.format(**format_params)
             user_prompt = user_template.format(**format_params)
             
-            # 如果是重试，在提示词中强调格式要求
-            if attempt > 0:
-                system_prompt += f"\n\n⚠️ 这是第{attempt + 1}次生成，请务必严格按照JSON格式返回，确保options数组包含6个有效选项！"
+            system_prompt = _append_inspiration_control_blocks(
+                system_prompt,
+                _build_inspiration_retry_guardrail(attempt, require_option_count=True),
+            )
             
             # 调用AI生成选项
             # 关键改进：使用递减的temperature以保持后续阶段与前文的一致性
@@ -300,28 +344,11 @@ async def refine_options(
             system_prompt = system_template.format(**format_params)
             user_prompt = user_template.format(**format_params)
             
-            # 添加反馈信息到提示词
-            feedback_instruction = f"""
-
-⚠️ 用户对之前的选项不太满意，提供了以下反馈：
-「{feedback}」
-
-之前生成的选项：
-{chr(10).join([f"- {opt}" for opt in previous_options]) if previous_options else "（无）"}
-
-请根据用户的反馈调整生成策略，提供更符合用户期望的新选项。
-注意：
-1. 仔细理解用户的反馈意图
-2. 生成的新选项要明显体现用户要求的调整方向
-3. 保持与已有上下文的一致性
-4. 确保返回6个有效选项
-"""
-            
-            system_prompt += feedback_instruction
-            
-            # 如果是重试，强调格式要求
-            if attempt > 0:
-                system_prompt += f"\n\n⚠️ 这是第{attempt + 1}次生成，请务必严格按照JSON格式返回！"
+            system_prompt = _append_inspiration_control_blocks(
+                system_prompt,
+                _build_inspiration_feedback_guardrail(feedback, previous_options),
+                _build_inspiration_retry_guardrail(attempt, require_option_count=False),
+            )
             
             # 调用AI生成选项
             temperature = TEMPERATURE_SETTINGS.get(step, 0.7)

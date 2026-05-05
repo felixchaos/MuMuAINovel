@@ -1073,6 +1073,8 @@ async def new_outline_generator(
             provider=provider_param,
             model=model_param,
             max_tokens=_outline_json_max_tokens(chapter_count),
+            tool_choice="auto" if enable_mcp else None,
+            auto_mcp=enable_mcp,
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -1132,6 +1134,8 @@ async def new_outline_generator(
                     provider=provider_param,
                     model=model_param,
                     max_tokens=_outline_json_max_tokens(chapter_count, retry=True),
+                    tool_choice="auto" if enable_mcp else None,
+                    auto_mcp=enable_mcp,
                 ):
                     chunk_count += 1
                     accumulated_text += chunk
@@ -1348,6 +1352,7 @@ async def continue_outline_generator(
         project_id = data.get("project_id")
         # 确保chapter_count是整数（前端可能传字符串）
         total_chapters_to_generate = int(data.get("chapter_count", 5))
+        enable_mcp = data.get("enable_mcp", True)
         
         # 验证项目
         yield await tracker.loading("加载项目信息...", 0.2)
@@ -1528,6 +1533,8 @@ async def continue_outline_generator(
                 provider=provider_param,
                 model=model_param,
                 max_tokens=_outline_json_max_tokens(current_batch_size),
+                tool_choice="auto" if enable_mcp else None,
+                auto_mcp=enable_mcp,
             ):
                 chunk_count += 1
                 accumulated_text += chunk
@@ -1589,6 +1596,8 @@ async def continue_outline_generator(
                         provider=provider_param,
                         model=model_param,
                         max_tokens=_outline_json_max_tokens(current_batch_size, retry=True),
+                        tool_choice="auto" if enable_mcp else None,
+                        auto_mcp=enable_mcp,
                     ):
                         chunk_count += 1
                         accumulated_text += chunk
@@ -1825,6 +1834,7 @@ async def _run_new_outline_bg(
     project_id = data.get("project_id")
     chapter_count = int(data.get("chapter_count", 10))
     user_id_for_mcp = data.get("user_id")
+    enable_mcp = data.get("enable_mcp", True)
 
     await tracker.loading("加载项目信息...", 0.3)
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -1874,6 +1884,8 @@ async def _run_new_outline_bg(
         provider=provider_param,
         model=model_param,
         max_tokens=_outline_json_max_tokens(chapter_count),
+        tool_choice="auto" if enable_mcp else None,
+        auto_mcp=enable_mcp,
     ):
         chunk_count += 1
         accumulated_text += chunk
@@ -1912,6 +1924,8 @@ async def _run_new_outline_bg(
                 provider=provider_param,
                 model=model_param,
                 max_tokens=_outline_json_max_tokens(chapter_count, retry=True),
+                tool_choice="auto" if enable_mcp else None,
+                auto_mcp=enable_mcp,
             ):
                 accumulated_text += chunk
             ai_content = accumulated_text
@@ -2077,6 +2091,7 @@ async def _run_continue_outline_bg(
     """后台执行大纲续写"""
     project_id = data.get("project_id")
     total_chapters = int(data.get("chapter_count", 5))
+    enable_mcp = data.get("enable_mcp", True)
 
     await tracker.loading("加载项目信息...", 0.2)
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -2183,6 +2198,8 @@ async def _run_continue_outline_bg(
             provider=data.get("provider"),
             model=data.get("model"),
             max_tokens=_outline_json_max_tokens(current_batch_size),
+            tool_choice="auto" if enable_mcp else None,
+            auto_mcp=enable_mcp,
         ):
             chunk_count += 1
             accumulated_text += chunk
@@ -2216,6 +2233,8 @@ async def _run_continue_outline_bg(
                     provider=data.get("provider"),
                     model=data.get("model"),
                     max_tokens=_outline_json_max_tokens(current_batch_size, retry=True),
+                    tool_choice="auto" if enable_mcp else None,
+                    auto_mcp=enable_mcp,
                 ):
                     accumulated_text += chunk
 

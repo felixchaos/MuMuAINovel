@@ -3,6 +3,7 @@ import { Modal, Button, Card, Statistic, Row, Col, message, theme } from 'antd';
 import { CheckOutlined, CloseOutlined, SwapOutlined } from '@ant-design/icons';
 import ReactDiffViewer from 'react-diff-viewer-continued';
 import { useThemeMode } from '../theme/useThemeMode';
+import { taskMessage } from '../utils/taskMessage';
 
 interface ChapterContentComparisonProps {
   visible: boolean;
@@ -118,7 +119,7 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
           });
 
           if (analysisResponse.ok) {
-            message.success('章节分析已开始，请稍后查看结果');
+            taskMessage.started('章节分析任务', { location: 'currentPage' });
           } else {
             message.warning('章节分析触发失败，您可以手动触发分析');
           }

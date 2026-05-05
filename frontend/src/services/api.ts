@@ -1013,6 +1013,19 @@ export const polishApi = {
   polishBatch: (texts: string[]) =>
     api.post<unknown, { polished_texts: string[] }>('/polish/batch', { texts }),
 
+  optimizeCharacterSettings: (data: {
+    project_id: string;
+    is_organization: boolean;
+    source: Record<string, unknown>;
+    provider?: string;
+    model?: string;
+    temperature?: number;
+  }) =>
+    api.post<unknown, { fields: Record<string, unknown>; raw_text: string }>(
+      '/polish/character-settings',
+      data
+    ),
+
   optimizeOutlinesBackground: (data: {
     project_id: string;
     outline_ids?: string[];

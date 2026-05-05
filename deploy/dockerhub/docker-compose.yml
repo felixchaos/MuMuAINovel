@@ -68,7 +68,7 @@ services:
       - ai-story-network
 
   mumuainovel:
-    image: ${MUMUAINOVEL_IMAGE:-felixchaos/mumuainovel:v1.4.8-story-engine.1}
+    image: ${MUMUAINOVEL_IMAGE:-felixchaos/mumuainovel:v1.4.8-story-engine.2}
     container_name: mumuainovel
     depends_on:
       postgres-init:
@@ -83,7 +83,7 @@ services:
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - APP_NAME=${APP_NAME:-MuMuAINovel}
-      - APP_VERSION=${APP_VERSION:-1.4.8-story-engine.1}
+      - APP_VERSION=${APP_VERSION:-1.4.8-story-engine.2}
       - APP_HOST=${APP_HOST:-0.0.0.0}
       - APP_PORT=8000
       - DEBUG=${DEBUG:-false}

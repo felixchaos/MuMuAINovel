@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 DOCKERHUB_IMAGE="${DOCKERHUB_IMAGE:-felixchaos/mumuainovel}"
-VERSION="${VERSION:-v1.4.8-story-engine.1}"
+VERSION="${VERSION:-v1.4.8-story-engine.2}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-true}"
 BUILDER_NAME="${BUILDER_NAME:-mumuainovel-builder}"

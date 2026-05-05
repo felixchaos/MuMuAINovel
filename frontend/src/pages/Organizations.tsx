@@ -7,7 +7,6 @@ import { useCharacterSync } from '../store/hooks';
 import { characterApi, polishApi } from '../services/api';
 import { SSEPostClient } from '../utils/sseClient';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
-import { extractJsonObject } from '../utils/jsonExtract';
 import axios from 'axios';
 
 const { TextArea } = Input;
@@ -62,16 +61,6 @@ interface OrganizationGenerateValues {
   background?: string;
   requirements?: string;
 }
-
-const getStringField = (data: Record<string, unknown> | null, key: string): string | undefined => {
-  const value = data?.[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-};
-
-const getNumberField = (data: Record<string, unknown> | null, key: string): number | undefined => {
-  const value = data?.[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-};
 
 export default function Organizations() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -238,40 +227,31 @@ export default function Organizations() {
 
   const handleOptimizeOrganization = async () => {
     if (!selectedOrg) return;
+    if (!currentProject?.id) {
+      message.warning('请先选择项目');
+      return;
+    }
 
     try {
       setIsOptimizingOrg(true);
       const character = await characterApi.getCharacter(selectedOrg.character_id);
-      const source = JSON.stringify({
-        type: 'organization',
-        name: selectedOrg.name,
-        organization_type: selectedOrg.type || '',
-        organization_purpose: selectedOrg.purpose || '',
-        power_level: selectedOrg.power_level,
-        location: selectedOrg.location || '',
-        motto: selectedOrg.motto || '',
-        color: selectedOrg.color || '',
-        background: character.background || '',
-      }, null, 2);
-      const result = await polishApi.polishText({
-        original_text: source,
-        instruction: [
-          '你是小说设定编辑，请分析并优化组织/势力设定。',
-          '只优化表达、层次和可读性，不改变既有事实、名称、阵营、世界观和时间线。',
-          '严格只输出 JSON，不要 Markdown，不要解释。',
-          'JSON 字段：organization_purpose、motto、background、location、color、power_level。'
-        ].join('\n'),
+      const result = await polishApi.optimizeCharacterSettings({
+        project_id: currentProject.id,
+        is_organization: true,
+        source: {
+          type: 'organization',
+          name: selectedOrg.name,
+          organization_type: selectedOrg.type || '',
+          organization_purpose: selectedOrg.purpose || '',
+          power_level: selectedOrg.power_level,
+          location: selectedOrg.location || '',
+          motto: selectedOrg.motto || '',
+          color: selectedOrg.color || '',
+          background: character.background || '',
+        },
         temperature: 0.6,
       });
-      const parsed = extractJsonObject(result.polished_text || '');
-      const updateData = {
-        organization_purpose: getStringField(parsed, 'organization_purpose'),
-        motto: getStringField(parsed, 'motto'),
-        background: getStringField(parsed, 'background'),
-        location: getStringField(parsed, 'location'),
-        color: getStringField(parsed, 'color'),
-        power_level: getNumberField(parsed, 'power_level'),
-      };
+      const updateData = result.fields;
       const filtered = Object.fromEntries(
         Object.entries(updateData).filter(([, value]) => value !== undefined)
       );

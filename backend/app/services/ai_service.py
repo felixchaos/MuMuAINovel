@@ -20,6 +20,7 @@ from app.services.ai_providers.anthropic_provider import AnthropicProvider
 from app.services.ai_providers.gemini_provider import GeminiProvider
 from app.services.ai_providers.base_provider import BaseAIProvider
 from app.services.json_helper import clean_json_response, parse_json
+from app.services.tool_prompting import build_tool_result_followup
 
 # 导出清理函数
 cleanup_http_clients = cleanup_all_clients
@@ -381,6 +382,7 @@ class AIService:
             "usage": response.get("usage"),
         }
         
+        tool_contexts: List[str] = []
         prompt = original_prompt
         
         for round_num in range(max_rounds):
@@ -405,14 +407,16 @@ class AIService:
                 
                 # 构建工具上下文
                 tool_context = mcp_client.build_tool_context(tool_results, format="markdown")
+                tool_contexts.append(tool_context)
+                combined_tool_context = "\n\n".join(tool_contexts)
                 
                 # 更新提示词
                 if round_num == max_rounds - 1:
                     # 最后一轮，强制要求回答
-                    prompt = f"{original_prompt}\n\n{tool_context}\n\n⚠️ 重要：请基于以上工具查询结果，给出完整详细的最终答案。不要再调用工具。"
+                    prompt = f"{original_prompt}\n\n{build_tool_result_followup(combined_tool_context, final_round=True)}"
                     tool_choice = "none"
                 else:
-                    prompt = f"{original_prompt}\n\n{tool_context}\n\n请基于以上工具查询结果，继续完成任务。"
+                    prompt = f"{original_prompt}\n\n{build_tool_result_followup(combined_tool_context)}"
                     tool_choice = kwargs.get("tool_choice", "auto")
                 
                 # 继续调用AI

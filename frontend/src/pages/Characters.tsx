@@ -12,7 +12,7 @@ import { characterApi, polishApi } from '../services/api';
 import { SSEPostClient } from '../utils/sseClient';
 import api from '../services/api';
 import { pollTaskUntilComplete } from '../services/backgroundTaskService';
-import { extractJsonObject } from '../utils/jsonExtract';
+import { taskMessage } from '../utils/taskMessage';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -98,58 +98,9 @@ interface CharacterUpdateData {
 
 type CharacterSettingsSource = Partial<Character> & Partial<CharacterFormValues>;
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function parseLabeledSections(text: string, labelMap: Record<string, string[]>): Record<string, string> {
-  const allLabels = Object.values(labelMap).flat().map(escapeRegExp).join('|');
-  const sections: Record<string, string> = {};
-
-  Object.entries(labelMap).forEach(([field, labels]) => {
-    for (const label of labels) {
-      const pattern = new RegExp(
-        `(?:^|\\n)\\s*${escapeRegExp(label)}\\s*[：:]\\s*([\\s\\S]*?)(?=\\n\\s*(?:${allLabels})\\s*[：:]|$)`,
-        'i'
-      );
-      const match = text.match(pattern);
-      const value = match?.[1]?.trim();
-      if (value) {
-        sections[field] = value;
-        break;
-      }
-    }
-  });
-
-  return sections;
-}
-
-function getStringField(data: Record<string, unknown> | null, key: string): string | undefined {
-  const value = data?.[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function getCharacterOptimizeInstruction(isOrganization?: boolean) {
-  if (isOrganization) {
-    return [
-      '你是小说设定编辑，请优化组织/势力设定。',
-      '只优化表达、层次和可读性，不改变既有事实、名称、阵营、世界观和时间线。',
-      '严格只输出 JSON，不要 Markdown，不要解释。',
-      'JSON 字段：organization_purpose、motto、background。'
-    ].join('\n');
-  }
-
-  return [
-    '你是小说设定编辑，请优化角色设定。',
-    '只优化表达、层次和可读性，不改变既有事实、姓名、定位、年龄、性别、阵营、能力来源和时间线。',
-    '严格只输出 JSON，不要 Markdown，不要解释。',
-    'JSON 字段：personality、appearance、background。'
-  ].join('\n');
-}
-
 function buildCharacterOptimizeSource(character: CharacterSettingsSource) {
   if (character.is_organization) {
-    return JSON.stringify({
+    return {
       type: 'organization',
       name: character.name || '',
       organization_type: character.organization_type || '',
@@ -159,10 +110,10 @@ function buildCharacterOptimizeSource(character: CharacterSettingsSource) {
       motto: character.motto || '',
       color: character.color || '',
       background: character.background || ''
-    }, null, 2);
+    };
   }
 
-  return JSON.stringify({
+  return {
     type: 'character',
     name: character.name || '',
     role_type: character.role_type || '',
@@ -171,51 +122,11 @@ function buildCharacterOptimizeSource(character: CharacterSettingsSource) {
     personality: character.personality || '',
     appearance: character.appearance || '',
     background: character.background || ''
-  }, null, 2);
-}
-
-function parseOptimizedCharacterSettings(polishedText: string, isOrganization?: boolean): CharacterUpdateData {
-  const json = extractJsonObject(polishedText);
-
-  if (isOrganization) {
-    const fromJson: CharacterUpdateData = {
-      organization_purpose: getStringField(json, 'organization_purpose'),
-      motto: getStringField(json, 'motto'),
-      background: getStringField(json, 'background')
-    };
-    const labeled = parseLabeledSections(polishedText, {
-      organization_purpose: ['组织目的', '宗旨目标'],
-      motto: ['格言', '口号', '格言/口号'],
-      background: ['组织背景', '背景']
-    });
-
-    return {
-      organization_purpose: fromJson.organization_purpose || labeled.organization_purpose,
-      motto: fromJson.motto || labeled.motto,
-      background: fromJson.background || labeled.background
-    };
-  }
-
-  const fromJson: CharacterUpdateData = {
-    personality: getStringField(json, 'personality'),
-    appearance: getStringField(json, 'appearance'),
-    background: getStringField(json, 'background')
-  };
-  const labeled = parseLabeledSections(polishedText, {
-    personality: ['性格特点', '性格'],
-    appearance: ['外貌描写', '外貌'],
-    background: ['角色背景', '背景']
-  });
-
-  return {
-    personality: fromJson.personality || labeled.personality,
-    appearance: fromJson.appearance || labeled.appearance,
-    background: fromJson.background || labeled.background
   };
 }
 
 function hasOptimizedFields(data: CharacterUpdateData) {
-  return Object.values(data).some(value => typeof value === 'string' && value.trim());
+  return Object.values(data).some(value => value !== undefined && value !== null && String(value).trim());
 }
 
 export default function Characters() {
@@ -541,16 +452,17 @@ export default function Characters() {
   };
 
   const optimizeCharacterSettings = async (source: CharacterSettingsSource) => {
-    const result = await polishApi.polishText({
-      original_text: buildCharacterOptimizeSource(source),
-      instruction: getCharacterOptimizeInstruction(source.is_organization),
+    if (!currentProject?.id) {
+      throw new Error('请先选择项目');
+    }
+
+    const result = await polishApi.optimizeCharacterSettings({
+      project_id: currentProject.id,
+      is_organization: Boolean(source.is_organization),
+      source: buildCharacterOptimizeSource(source),
       temperature: 0.6,
     });
-
-    const updateData = parseOptimizedCharacterSettings(
-      result.polished_text || '',
-      source.is_organization
-    );
+    const updateData = result.fields as CharacterUpdateData;
 
     if (!hasOptimizedFields(updateData)) {
       throw new Error('AI返回格式无法识别');
@@ -631,10 +543,9 @@ export default function Characters() {
             temperature: 0.6,
           });
 
-          message.success({
+          taskMessage.started('角色设定优化任务', {
             key: messageKey,
-            content: '角色设定优化任务已提交，可在右下角后台任务中查看或取消',
-            duration: 3
+            cancellable: true,
           });
           eventBus.emit('background-task-created');
 
@@ -654,22 +565,14 @@ export default function Characters() {
               void (async () => {
                 await refreshCharacters();
                 setSelectedCharacters([]);
-                message.success({
-                  key: messageKey,
-                  content: status.status_message || '角色设定优化完成',
-                  duration: 3
-                });
+                taskMessage.completed('角色设定优化任务', status.status_message, { key: messageKey });
                 setIsOptimizingBatch(false);
                 eventBus.emit('background-task-created');
               })();
             },
             (error) => {
               characterOptimizePollCancelRef.current = null;
-              message.error({
-                key: messageKey,
-                content: error || '角色设定优化任务失败',
-                duration: 4
-              });
+              taskMessage.failed('角色设定优化任务', error, { key: messageKey, duration: 4 });
               setIsOptimizingBatch(false);
               eventBus.emit('background-task-created');
             }

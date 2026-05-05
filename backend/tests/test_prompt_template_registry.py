@@ -47,6 +47,11 @@ def test_polish_optimization_templates_are_registered() -> None:
         for item in PromptService.get_all_system_templates()
     }
 
+    assert "AI_INSTRUCTION_EDIT" in templates
+    assert templates["AI_INSTRUCTION_EDIT"]["category"] == "文本润色"
+    assert templates["AI_INSTRUCTION_EDIT"]["parameters"] == ["instruction", "original_text"]
+    assert _template_fields(templates["AI_INSTRUCTION_EDIT"]["content"]) == {"instruction", "original_text"}
+
     for key in ("OUTLINE_OPTIMIZE", "CHARACTER_OPTIMIZE", "ORGANIZATION_OPTIMIZE"):
         assert key in templates
         assert templates[key]["category"] == "AI优化"
@@ -77,6 +82,16 @@ def test_user_facing_generation_templates_are_registered() -> None:
             "relationship_count",
         },
         "CAREER_INCREMENTAL_GENERATION": {"project_context", "generation_requirements"},
+        "MANUAL_CHAPTER_OUTLINE_SYNC": {
+            "project_title",
+            "genre",
+            "theme",
+            "chapter_number",
+            "chapter_title",
+            "summary",
+            "chapter_content",
+        },
+        "BOOK_IMPORT_ENTITY_CLASSIFIER": {"title", "candidate_list", "source_context"},
     }
     for key, params in expected.items():
         assert key in templates

@@ -1,6 +1,6 @@
 """AI去味相关的Pydantic模型"""
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class PolishRequest(BaseModel):
@@ -37,3 +37,19 @@ class CharacterOptimizeTaskRequest(BaseModel):
     provider: Optional[str] = Field(None, description="AI提供商")
     model: Optional[str] = Field(None, description="AI模型")
     temperature: Optional[float] = Field(0.6, description="温度参数")
+
+
+class CharacterSettingsOptimizeRequest(BaseModel):
+    """预览优化单个角色/组织设定请求"""
+    project_id: str = Field(..., description="项目ID")
+    is_organization: bool = Field(False, description="是否为组织/势力")
+    source: Dict[str, Any] = Field(..., description="待优化的角色或组织字段")
+    provider: Optional[str] = Field(None, description="AI提供商")
+    model: Optional[str] = Field(None, description="AI模型")
+    temperature: Optional[float] = Field(0.6, description="温度参数")
+
+
+class CharacterSettingsOptimizeResponse(BaseModel):
+    """预览优化单个角色/组织设定响应"""
+    fields: Dict[str, Any] = Field(..., description="可直接回填表单的字段")
+    raw_text: str = Field(..., description="AI原始输出")
