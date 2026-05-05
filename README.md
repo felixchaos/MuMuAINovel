@@ -139,7 +139,7 @@ docker compose up -d
 http://localhost:8000
 ```
 
-镜像版默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。
+镜像版默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。向量记忆的 embedding 模型不预置在公开镜像内，第一次使用相关功能时会下载到 Docker volume 的 `/app/embedding` 缓存，后续重启会复用。
 
 常用维护命令：
 

@@ -28,6 +28,8 @@ http://localhost:8000
 
 默认本地账号是 `admin / admin123`。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。
 
+向量记忆的 embedding 模型不会预置进公开镜像。第一次使用相关功能时，容器会把模型下载到 `embedding_cache` volume 挂载的 `/app/embedding` 目录；后续重启或升级镜像会复用这份缓存。
+
 如果 API Key、SMTP、注册开关等希望在网页里配置，可以先留空。
 
 ## 更新镜像

@@ -77,6 +77,7 @@ services:
       - "${APP_PORT:-8000}:8000"
     volumes:
       - ./logs:/app/logs
+      - embedding_cache:/app/embedding
       - ./storage/generated_covers:/app/storage/generated_covers
       - ./storage/book_import_previews:/app/storage/book_import_previews
       - ./.env:/app/.env:ro
@@ -137,6 +138,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  embedding_cache:
     driver: local
 
 networks:

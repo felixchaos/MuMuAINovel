@@ -83,24 +83,14 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
         pip install --no-cache-dir -r requirements.txt; \
     fi
 
-# 创建embedding目录
+# 创建 embedding 缓存目录。模型不预置进公开镜像，首次使用向量记忆时按需下载并缓存。
 RUN mkdir -p /app/embedding
 
-# 设置 Sentence-Transformers 缓存目录
 ENV SENTENCE_TRANSFORMERS_HOME=/app/embedding
+ENV HF_HOME=/app/embedding/huggingface
+ENV HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
-# 下载 embedding 模型（从 HuggingFace）
-# 使用 Python 脚本预下载模型，这样运行时不需要网络
-RUN python -c "\
-from sentence_transformers import SentenceTransformer; \
-import os; \
-os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/app/embedding'; \
-print('Downloading sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2...'); \
-model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'); \
-print('Model downloaded successfully!'); \
-"
-
-# 复制后端代码（不包含embedding，因为已经下载了）
+# 复制后端代码
 COPY backend/ ./
 
 # 从前端构建阶段复制构建好的静态文件
@@ -125,11 +115,6 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 ENV APP_HOST=0.0.0.0
 ENV APP_PORT=8000
-
-# 设置运行时为离线模式（模型已在构建时下载）
-ENV TRANSFORMERS_OFFLINE=1
-ENV HF_DATASETS_OFFLINE=1
-ENV HF_HUB_OFFLINE=1
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
