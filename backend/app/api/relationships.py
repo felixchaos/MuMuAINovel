@@ -31,6 +31,7 @@ from app.api.settings import get_user_ai_service
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
 from app.services.name_authority_service import build_name_authority
+from app.services.prompt_service import PromptService
 from app.services.project_story_context import build_project_story_context
 
 router = APIRouter(prefix="/relationships", tags=["关系管理"])
@@ -242,59 +243,29 @@ async def generate_relationships_stream(
             story_context = await build_project_story_context(db, gen_request.project_id)
 
             requirements = (gen_request.requirements or "").strip() or "无"
-            prompt = f"""
-你是小说人物关系分析师。请基于项目已有角色、大纲和章节，补充生成尚未入库的角色关系。
-
-项目信息：
-- 书名：{project.title}
-- 类型：{project.genre or '未设定'}
-- 主题：{project.theme or '未设定'}
-- 世界规则：{project.world_rules or '未设定'}
-
-【已有角色】
-{character_context}
-
-【已入库关系】
-{existing_context}
-
-{story_context}
-
-用户要求：
-{requirements}
-
-生成要求：
-- 本次最多生成 {gen_request.relationship_count} 条关系
-- 只能使用【已有角色】中的角色 ID，ID 必须完全匹配
-- 优先从已有大纲和章节中的同伴、敌对、上下级、旧识、亲属、师承、合作、利用等关系中提取
-- 不要重复已入库关系，不要生成没有文本依据的臆测关系
-- intimacy_level 使用 -100 到 100，敌对为负，疏离/复杂接近0，亲近为正
-- status 只能为 active、broken、past、complicated
-- 只输出 JSON，不要 Markdown，不要解释
-
-返回格式：
-{{
-  "relationships": [
-    {{
-      "character_from_id": "角色A的ID",
-      "character_to_id": "角色B的ID",
-      "character_from_name": "角色A名称",
-      "character_to_name": "角色B名称",
-      "relationship_name": "关系名称",
-      "intimacy_level": 50,
-      "status": "active",
-      "description": "关系依据和简述",
-      "started_at": "关系开始时间或章节，可选"
-    }}
-  ]
-}}
-"""
+            project_context = "\n".join([
+                f"- 书名：{project.title}",
+                f"- 类型：{project.genre or '未设定'}",
+                f"- 主题：{project.theme or '未设定'}",
+                f"- 世界规则：{project.world_rules or '未设定'}",
+            ])
+            template = await PromptService.get_template("RELATIONSHIP_INCREMENTAL_GENERATION", user_id, db)
+            prompt = PromptService.format_prompt(
+                template,
+                project_context=project_context,
+                character_context=character_context,
+                existing_context=existing_context,
+                story_context=story_context,
+                requirements=requirements,
+                relationship_count=gen_request.relationship_count,
+            )
 
             yield await tracker.generating(0, max(3000, len(prompt) * 8), "调用AI分析生成关系...")
             ai_content = ""
             chunk_count = 0
             estimated_total = max(3000, len(prompt) * 8)
             async for chunk in wrap_stream_with_heartbeat(
-                user_ai_service.generate_text_stream(prompt=prompt),
+                user_ai_service.generate_text_stream(prompt=prompt, auto_mcp=False),
                 heartbeat_interval=15.0
             ):
                 if chunk is HEARTBEAT:

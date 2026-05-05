@@ -43,6 +43,47 @@ class PromptService:
 原文：
 {original_text}"""
 
+    OUTLINE_OPTIMIZE = """你是小说大纲编辑，请优化已有大纲。
+
+处理目标：
+- 只优化表达、层次、情节逻辑和可执行性。
+- 不要续写，不要新增章节。
+- 不改变章节编号、标题、核心事实、人物关系和世界观设定。
+
+输出要求：
+- 严格只输出 JSON，不要 Markdown，不要解释。
+- JSON 字段：content、key_points、key_events、emotion、goal。
+- content 必填，其他字段可按原设定优化后返回。
+
+请处理以下内容：
+{source}"""
+
+    CHARACTER_OPTIMIZE = """你是小说设定编辑，请优化角色设定。
+
+处理目标：
+- 只优化表达、层次和可读性。
+- 不改变既有事实、姓名、定位、年龄、性别、阵营、能力来源和时间线。
+
+输出要求：
+- 严格只输出 JSON，不要 Markdown，不要解释。
+- JSON 字段：personality、appearance、background。
+
+请处理以下内容：
+{source}"""
+
+    ORGANIZATION_OPTIMIZE = """你是小说设定编辑，请优化组织/势力设定。
+
+处理目标：
+- 只优化表达、层次和可读性。
+- 不改变既有事实、名称、阵营、世界观和时间线。
+
+输出要求：
+- 严格只输出 JSON，不要 Markdown，不要解释。
+- JSON 字段：organization_purpose、motto、background。
+
+请处理以下内容：
+{source}"""
+
     NOVEL_COVER_PROMPT_TEMPLATE = """创作一幅高质量小说封面插图，适用于竖版书籍封面。
 
 小说标题是：“{title}”。
@@ -1057,6 +1098,88 @@ class PromptService:
 ❌ 空泛的描述
 </constraints>"""
 
+    CHARACTER_TEXT_ANALYSIS = """你是小说角色设定整理助手。请从项目已有大纲与章节内容中，识别所有重要“角色”，并按文内已有事实整理成角色卡。
+
+【项目基础信息】
+{project_context}
+
+【已有角色卡】
+{existing_info}
+
+【已有大纲与章节内容】
+{story_context}
+
+【额外要求】
+{extra_requirements}
+
+【识别规则】
+1. 只输出“角色/人物/具备行动主体的拟人个体”，不要把国家、城市、舰队、组织、地点、物品、能力体系当成角色。
+2. 角色信息必须来自已有文本，不要为了补全字段编造年龄、性别、外貌、关系或背景。
+3. 已有角色卡如果在正文里出现，请根据正文事实补强和校正；没有出现的新角色可以新增。
+4. role_type 只能是 protagonist、supporting、antagonist 之一。
+5. traits 是短标签数组，最多 8 个。
+6. 最多输出 {max_characters} 个角色，按重要性排序。
+
+【输出格式】
+严格只输出 JSON，不要 Markdown，不要解释：
+{{
+  "characters": [
+    {{
+      "name": "角色名",
+      "role_type": "protagonist/supporting/antagonist",
+      "age": "",
+      "gender": "",
+      "personality": "基于正文的性格与行为方式",
+      "appearance": "正文明确出现的外貌，不明确则留空",
+      "background": "身份、出场章节、关键行为、与主线关系",
+      "traits": ["标签1", "标签2"]
+    }}
+  ]
+}}"""
+
+    RELATIONSHIP_INCREMENTAL_GENERATION = """你是小说人物关系分析师。请基于项目已有角色、大纲和章节，补充生成尚未入库的角色关系。
+
+项目信息：
+{project_context}
+
+【已有角色】
+{character_context}
+
+【已入库关系】
+{existing_context}
+
+【已有大纲和章节依据】
+{story_context}
+
+用户要求：
+{requirements}
+
+生成要求：
+- 本次最多生成 {relationship_count} 条关系
+- 只能使用【已有角色】中的角色 ID，ID 必须完全匹配
+- 优先从已有大纲和章节中的同伴、敌对、上下级、旧识、亲属、师承、合作、利用等关系中提取
+- 不要重复已入库关系，不要生成没有文本依据的臆测关系
+- intimacy_level 使用 -100 到 100，敌对为负，疏离/复杂接近0，亲近为正
+- status 只能为 active、broken、past、complicated
+- 只输出 JSON，不要 Markdown，不要解释
+
+返回格式：
+{{
+  "relationships": [
+    {{
+      "character_from_id": "角色A的ID",
+      "character_to_id": "角色B的ID",
+      "character_from_name": "角色A名称",
+      "character_to_name": "角色B名称",
+      "relationship_name": "关系名称",
+      "intimacy_level": 50,
+      "status": "active",
+      "description": "关系依据和简述",
+      "started_at": "关系开始时间或章节，可选"
+    }}
+  ]
+}}"""
+
     # 情节分析提示词 V2（RTCO框架 + 伏笔ID追踪）
     PLOT_ANALYSIS = """<system>
 你是专业的小说编辑和剧情分析师，擅长深度剖析章节内容。
@@ -1672,6 +1795,12 @@ class PromptService:
 5. 确保新版本在艺术性、可读性和叙事质量上都有明显提升
 </task>
 
+<rewrite_scope>
+目标章节：第{chapter_number}章《{title}》
+原始字数：{word_count}字
+目标字数：约{target_word_count}字
+</rewrite_scope>
+
 <guidelines>
 【改写原则】
 - **问题导向**：针对修改指令中指出的每个问题进行改进
@@ -1824,154 +1953,6 @@ class PromptService:
 }}
 
 只返回纯JSON，不要有其他文字。"""
-    # 世界观资料收集提示词（MCP增强用）
-    MCP_WORLD_BUILDING_PLANNING = """你正在为小说《{title}》设计世界观。
-
-【小说信息】
-- 题材：{genre}
-- 主题：{theme}
-- 简介：{description}
-
-【任务】
-请使用可用工具搜索相关背景资料，帮助构建更真实、更有深度的世界观设定。
-你可以查询：
-1. 历史背景（如果是历史题材）
-2. 地理环境和文化特征
-3. 相关领域的专业知识
-4. 类似作品的设定参考
-
-请查询最关键的1个问题（不要超过1个）。"""
-
-    # 角色资料收集提示词（MCP增强用）
-    MCP_CHARACTER_PLANNING = """你正在为小说《{title}》设计角色。
-
-【小说信息】
-- 题材：{genre}
-- 主题：{theme}
-- 时代背景：{time_period}
-- 地理位置：{location}
-
-【任务】
-请使用可用工具搜索相关参考资料，帮助设计更真实、更有深度的角色。
-你可以查询：
-1. 该时代/地域的真实历史人物特征
-2. 文化背景和社会习俗
-3. 职业特点和生活方式
-4. 相关领域的人物原型
-
-请查询最关键的1个问题（不要超过1个）。"""
-
-    # 自动角色引入 - 预测性分析提示词 V2（RTCO框架）
-    AUTO_CHARACTER_ANALYSIS = """<system>
-你是专业的小说角色设计顾问，擅长预测剧情发展对角色的需求。
-</system>
-
-<task>
-【分析任务】
-预测在接下来的{chapter_count}章续写中，根据剧情发展方向和阶段，是否需要引入新角色。
-
-【重要说明】
-这是预测性分析，而非基于已生成内容的事后分析。
-</task>
-
-<project priority="P1">
-【项目信息】
-书名：{title}
-类型：{genre}
-主题：{theme}
-
-【世界观】
-时间背景：{time_period}
-地理位置：{location}
-氛围基调：{atmosphere}
-</project>
-
-<context priority="P0">
-【已有角色】
-{existing_characters}
-
-【已有章节概览】
-{all_chapters_brief}
-
-【续写计划】
-- 起始章节：第{start_chapter}章
-- 续写数量：{chapter_count}章
-- 剧情阶段：{plot_stage}
-- 发展方向：{story_direction}
-</context>
-
-<analysis_framework priority="P0">
-【预测分析维度】
-
-**1. 剧情需求预测**
-根据发展方向，哪些场景、冲突需要新角色参与？
-
-**2. 角色充分性**
-现有角色是否足以支撑即将发生的剧情？
-
-**3. 引入时机**
-新角色应该在哪个章节登场最合适？
-
-**4. 重要性判断**
-新角色对后续剧情的影响程度如何？
-
-【预测依据】
-- 剧情阶段的典型角色需求（如：高潮阶段可能需要强力对手）
-- 故事发展方向的逻辑需要（如：进入新地点需要当地角色）
-- 冲突升级的角色需求（如：更强的反派、意外的盟友）
-- 世界观扩展的需要（如：新组织、新势力的代表）
-</analysis_framework>
-
-<output priority="P0">
-【输出格式】
-返回纯JSON对象（两种情况之一）：
-
-**情况A：需要新角色**
-{{
-  "needs_new_characters": true,
-  "reason": "预测分析原因（150-200字），说明为什么即将的剧情需要新角色",
-  "character_count": 2,
-  "character_specifications": [
-    {{
-      "name": "建议的角色名字（可选）",
-      "role_description": "角色在剧情中的定位和作用（100-150字）",
-      "suggested_role_type": "supporting/antagonist/protagonist",
-      "importance": "high/medium/low",
-      "appearance_chapter": {start_chapter},
-      "key_abilities": ["能力1", "能力2"],
-      "plot_function": "在剧情中的具体功能",
-      "relationship_suggestions": [
-        {{
-          "target_character": "现有角色名",
-          "relationship_type": "建议的关系类型",
-          "reason": "为什么建立这种关系"
-        }}
-      ]
-    }}
-  ]
-}}
-
-**情况B：不需要新角色**
-{{
-  "needs_new_characters": false,
-  "reason": "现有角色足以支撑即将的剧情发展，说明理由"
-}}
-</output>
-
-<constraints>
-【必须遵守】
-✅ 这是预测性分析，面向未来剧情
-✅ 考虑剧情的自然发展和节奏
-✅ 确保引入必要性，不为引入而引入
-✅ 优先考虑角色的长期作用
-
-【禁止事项】
-❌ 输出markdown标记
-❌ 基于已生成内容做事后分析
-❌ 为了引入角色而强行引入
-❌ 设计一次性功能角色
-</constraints>"""
-
     # 自动角色引入 - 生成提示词 V2（RTCO框架）
     AUTO_CHARACTER_GENERATION = """<system>
 你是专业的角色设定师，擅长根据剧情需求创建完整的角色设定。
@@ -2104,135 +2085,6 @@ class PromptService:
 ❌ 在描述中使用特殊符号
 ❌ 引用不存在的角色或组织
 ❌ 使用职业ID而非职业名称
-</constraints>"""
-
-    # 自动组织引入 - 预测性分析提示词（RTCO框架）
-    AUTO_ORGANIZATION_ANALYSIS = """<system>
-你是专业的小说世界构建顾问，擅长预测剧情发展对组织/势力的需求。
-</system>
-
-<task>
-【分析任务】
-预测在接下来的{chapter_count}章续写中，根据剧情发展方向和阶段，是否需要引入新的组织或势力。
-
-【重要说明】
-这是预测性分析，而非基于已生成内容的事后分析。
-组织包括：帮派、门派、公司、政府机构、神秘组织、家族等。
-</task>
-
-<project priority="P1">
-【项目信息】
-书名：{title}
-类型：{genre}
-主题：{theme}
-
-【世界观】
-时间背景：{time_period}
-地理位置：{location}
-氛围基调：{atmosphere}
-</project>
-
-<context priority="P0">
-【已有组织】
-{existing_organizations}
-
-【已有角色】
-{existing_characters}
-
-【已有章节概览】
-{all_chapters_brief}
-
-【续写计划】
-- 起始章节：第{start_chapter}章
-- 续写数量：{chapter_count}章
-- 剧情阶段：{plot_stage}
-- 发展方向：{story_direction}
-</context>
-
-<analysis_framework priority="P0">
-【预测分析维度】
-
-**1. 世界观扩展需求**
-根据发展方向，是否需要新的势力或组织来丰富世界观？
-
-**2. 冲突升级需求**
-剧情是否需要新的对立势力、竞争组织或神秘集团？
-
-**3. 角色归属需求**
-现有角色是否需要加入或对抗某个新组织？
-
-**4. 剧情推动需求**
-新组织能否成为推动剧情的关键力量？
-
-**5. 引入时机**
-新组织应该在哪个章节出现最合适？
-
-【预测依据】
-- 剧情阶段的典型组织需求（如：高潮阶段可能需要强大的敌对势力）
-- 故事发展方向的逻辑需要（如：进入新地点需要当地势力）
-- 世界观完整性需要（如：权力格局需要多方势力）
-- 角色成长需要（如：主角需要加入或创建组织）
-</analysis_framework>
-
-<output priority="P0">
-【输出格式】
-返回纯JSON对象（两种情况之一）：
-
-**情况A：需要新组织**
-{{
-"needs_new_organizations": true,
-"reason": "预测分析原因（150-200字），说明为什么即将的剧情需要新组织",
-"organization_count": 1,
-"organization_specifications": [
-{{
-  "name": "建议的组织名字（可选）",
-  "organization_description": "组织在剧情中的定位和作用（100-150字）",
-  "organization_type": "帮派/门派/公司/政府/家族/神秘组织等",
-  "importance": "high/medium/low",
-  "appearance_chapter": {start_chapter},
-  "power_level": 70,
-  "plot_function": "在剧情中的具体功能",
-  "location": "组织所在地或活动区域",
-  "motto": "组织口号或宗旨（可选）",
-  "initial_members": [
-    {{
-      "character_name": "现有角色名（如需加入）",
-      "position": "职位",
-      "reason": "为什么加入"
-    }}
-  ],
-  "relationship_suggestions": [
-    {{
-      "target_organization": "已有组织名",
-      "relationship_type": "建议的关系类型（盟友/敌对/竞争/合作等）",
-      "reason": "为什么建立这种关系"
-    }}
-  ]
-}}
-]
-}}
-
-**情况B：不需要新组织**
-{{
-"needs_new_organizations": false,
-"reason": "现有组织足以支撑即将的剧情发展，说明理由"
-}}
-</output>
-
-<constraints>
-【必须遵守】
-✅ 这是预测性分析，面向未来剧情
-✅ 考虑世界观的丰富性和完整性
-✅ 确保引入必要性，不为引入而引入
-✅ 优先考虑组织的长期作用
-✅ 组织应该是推动剧情的关键力量
-
-【禁止事项】
-❌ 输出markdown标记
-❌ 基于已生成内容做事后分析
-❌ 为了引入组织而强行引入
-❌ 设计一次性功能组织
-❌ 创建与现有组织功能重复的组织
 </constraints>"""
 
     # 自动组织引入 - 生成提示词（RTCO框架）
@@ -2459,6 +2311,60 @@ class PromptService:
 ❌ 职业设计与世界观或简介脱节
 ❌ 忽略简介中提到的职业或能力设定
 </constraints>"""
+
+    CAREER_INCREMENTAL_GENERATION = """{project_context}
+
+{generation_requirements}
+
+请为这个小说项目生成新的补充职业（增量式）。要求：
+1. 仔细分析已有职业，避免生成重复或相似的职业
+2. 填补职业体系的空缺，让职业体系更加完善和多样化
+3. 如果已有职业较少，可以生成核心基础职业
+4. 如果已有职业较多，可以生成特色化、专精化的职业
+
+返回JSON格式，结构如下：
+
+{{
+  "main_careers": [
+    {{
+      "name": "职业名称",
+      "description": "职业描述",
+      "category": "职业分类（如：战斗系、法术系等）",
+      "stages": [
+        {{"level": 1, "name": "阶段名称", "description": "阶段描述"}},
+        {{"level": 2, "name": "阶段名称", "description": "阶段描述"}}
+      ],
+      "max_stage": 10,
+      "requirements": "职业要求",
+      "special_abilities": "特殊能力",
+      "worldview_rules": "世界观规则关联",
+      "attribute_bonuses": {{"strength": "+10%", "intelligence": "+5%"}}
+    }}
+  ],
+  "sub_careers": [
+    {{
+      "name": "副职业名称",
+      "description": "职业描述",
+      "category": "生产系/辅助系/特殊系",
+      "stages": [
+        {{"level": 1, "name": "阶段名称", "description": "阶段描述"}}
+      ],
+      "max_stage": 5,
+      "requirements": "职业要求",
+      "special_abilities": "特殊能力"
+    }}
+  ]
+}}
+
+注意事项：
+1. 避免重复：生成的职业名称和定位不能与已有职业重复
+2. 互补性：新职业应与已有职业形成互补，丰富职业体系
+3. 主职业的阶段设定要详细，体现明确的成长路径
+4. 阶段名称要符合世界观特色
+5. 副职业可以相对简化，但要有独特性
+6. 所有职业都要符合项目的整体世界观设定
+7. 如果提供了用户额外要求，请优先满足；若与世界观冲突，必须以世界观为准进行合理改写
+8. 只返回纯JSON，不要添加任何解释文字"""
 
     # 局部重写提示词（RTCO框架）
     PARTIAL_REGENERATE = """<system>
@@ -2794,17 +2700,6 @@ class PromptService:
 ---
 """)
         
-        # 写作风格要求
-        if style_content:
-            prompt_parts.append(f"""## 🎨 写作风格要求
-
-{style_content}
-
-请在重新创作时严格遵循上述写作风格。
-
----
-""")
-        
         # 创作要求
         prompt_parts.append(f"""## ✨ 创作要求
 
@@ -2969,6 +2864,24 @@ class PromptService:
                 "description": "用于润色文本、降低AI味并保留原意、事实、人设和叙事视角",
                 "parameters": ["original_text"]
             },
+            "OUTLINE_OPTIMIZE": {
+                "name": "大纲优化",
+                "category": "AI优化",
+                "description": "优化已有大纲的表达、层次、情节逻辑和可执行性",
+                "parameters": ["source"]
+            },
+            "CHARACTER_OPTIMIZE": {
+                "name": "角色设定优化",
+                "category": "AI优化",
+                "description": "优化角色设定表达，同时保留既有事实、人设和时间线",
+                "parameters": ["source"]
+            },
+            "ORGANIZATION_OPTIMIZE": {
+                "name": "组织/势力设定优化",
+                "category": "AI优化",
+                "description": "优化组织或势力设定表达，同时保留既有事实、阵营和世界观",
+                "parameters": ["source"]
+            },
             "WORLD_BUILDING": {
                 "name": "世界构建",
                 "category": "世界构建",
@@ -3002,11 +2915,23 @@ class PromptService:
                 "description": "生成单个角色的详细设定",
                 "parameters": ["project_context", "user_input"]
             },
+            "CHARACTER_TEXT_ANALYSIS": {
+                "name": "全文角色分析",
+                "category": "角色生成",
+                "description": "从项目已有大纲和章节内容中识别角色并整理角色卡",
+                "parameters": ["project_context", "existing_info", "story_context", "extra_requirements", "max_characters"]
+            },
             "SINGLE_ORGANIZATION_GENERATION": {
                 "name": "组织生成",
                 "category": "角色生成",
                 "description": "生成组织/势力的详细设定",
                 "parameters": ["project_context", "user_input"]
+            },
+            "RELATIONSHIP_INCREMENTAL_GENERATION": {
+                "name": "角色关系补全",
+                "category": "角色生成",
+                "description": "基于已有角色、大纲和章节补充尚未入库的角色关系",
+                "parameters": ["project_context", "character_context", "existing_context", "story_context", "requirements", "relationship_count"]
             },
             "OUTLINE_CREATE": {
                 "name": "大纲生成",
@@ -3062,8 +2987,7 @@ class PromptService:
                 "name": "章节重写系统提示",
                 "category": "章节重写",
                 "description": "用于章节重写的系统提示词",
-                "parameters": ["chapter_number", "title", "word_count", "content", "modification_instructions",
-                             "project_context", "style_content", "target_word_count"]
+                "parameters": ["chapter_number", "title", "word_count", "target_word_count"]
             },
             "PARTIAL_REGENERATE": {
                 "name": "局部重写",
@@ -3109,39 +3033,12 @@ class PromptService:
                 "description": "用于测试MCP插件功能的系统提示词",
                 "parameters": []
             },
-            "MCP_WORLD_BUILDING_PLANNING": {
-                "name": "MCP世界观规划",
-                "category": "MCP增强",
-                "description": "使用MCP工具搜索资料辅助世界观设计",
-                "parameters": ["title", "genre", "theme", "description"]
-            },
-            "MCP_CHARACTER_PLANNING": {
-                "name": "MCP角色规划",
-                "category": "MCP增强",
-                "description": "使用MCP工具搜索资料辅助角色设计",
-                "parameters": ["title", "genre", "theme", "time_period", "location"]
-            },
-            "AUTO_CHARACTER_ANALYSIS": {
-                "name": "自动角色分析",
-                "category": "自动角色引入",
-                "description": "分析新生成的大纲，判断是否需要引入新角色",
-                "parameters": ["title", "genre", "theme", "time_period", "location", "atmosphere",
-                             "existing_characters", "all_chapters_brief", "start_chapter", "chapter_count",
-                             "plot_stage", "story_direction"]
-            },
             "AUTO_CHARACTER_GENERATION": {
                 "name": "自动角色生成",
                 "category": "自动角色引入",
                 "description": "根据剧情需求自动生成新角色的完整设定",
                 "parameters": ["title", "genre", "theme", "time_period", "location", "atmosphere", "rules",
                              "existing_characters", "plot_context", "character_specification", "mcp_references"]
-            },
-            "AUTO_ORGANIZATION_ANALYSIS": {
-                "name": "自动组织分析",
-                "category": "自动组织引入",
-                "description": "分析新生成的大纲，判断是否需要引入新组织",
-                "parameters": ["title", "genre", "theme", "time_period", "location", "atmosphere",
-                             "existing_organizations", "existing_characters", "all_chapters_brief", "start_chapter", "chapter_count", "plot_stage", "story_direction"]
             },
             "AUTO_ORGANIZATION_GENERATION": {
                 "name": "自动组织生成",
@@ -3155,6 +3052,12 @@ class PromptService:
                 "category": "世界构建",
                 "description": "根据世界观和项目简介自动生成完整的职业体系，包括主职业和副职业",
                 "parameters": ["title", "genre", "theme", "description", "time_period", "location", "atmosphere", "rules"]
+            },
+            "CAREER_INCREMENTAL_GENERATION": {
+                "name": "职业体系增量补全",
+                "category": "世界构建",
+                "description": "基于已有职业、大纲和章节补充新的职业设定",
+                "parameters": ["project_context", "generation_requirements"]
             },
             "INSPIRATION_TITLE_SYSTEM": {
                 "name": "灵感模式-书名生成(系统提示词)",

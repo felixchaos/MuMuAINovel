@@ -193,6 +193,17 @@ class AIService:
             prompt_length=len(prompt or ""),
         )
 
+    def _merge_system_prompt(self, system_prompt: Optional[str] = None) -> Optional[str]:
+        """Merge global and per-call system prompts so neither silently drops."""
+        default_prompt = (self.default_system_prompt or "").strip()
+        call_prompt = (system_prompt or "").strip()
+
+        if default_prompt and call_prompt:
+            if call_prompt == default_prompt or call_prompt.startswith(f"{default_prompt}\n\n"):
+                return call_prompt
+            return f"{default_prompt}\n\n{call_prompt}"
+        return call_prompt or default_prompt or None
+
     def _log_call_metrics(self, metrics: AICallMetrics, title: Optional[str] = None):
         log_title = title or ("AI调用完成" if metrics.success else "AI调用失败")
         message = metrics.to_log_message(log_title)
@@ -411,7 +422,7 @@ class AIService:
                     model=kwargs.get("model") or self.default_model,
                     temperature=kwargs.get("temperature") or self.default_temperature,
                     max_tokens=kwargs.get("max_tokens") or self.default_max_tokens,
-                    system_prompt=kwargs.get("system_prompt") or self.default_system_prompt,
+                    system_prompt=self._merge_system_prompt(kwargs.get("system_prompt")),
                     tools=None if tool_choice == "none" else self._cached_tools,
                     tool_choice=tool_choice,
                 )
@@ -500,12 +511,13 @@ class AIService:
         
         try:
             prov = self._get_provider(provider)
+            effective_system_prompt = self._merge_system_prompt(system_prompt)
             response = await prov.generate(
                 prompt=prompt,
                 model=model or self.default_model,
                 temperature=temperature or self.default_temperature,
                 max_tokens=max_tokens or self.default_max_tokens,
-                system_prompt=system_prompt or self.default_system_prompt,
+                system_prompt=effective_system_prompt,
                 tools=tools,
                 tool_choice=tool_choice,
             )
@@ -604,13 +616,14 @@ class AIService:
         try:
             # 流式生成（Provider 层处理工具调用）
             prov = self._get_provider(provider)
+            effective_system_prompt = self._merge_system_prompt(system_prompt)
             logger.debug(f"🔧 开始流式生成，provider={provider or self.api_provider}, tools_count={len(tools_to_use) if tools_to_use else 0}")
             async for chunk in prov.generate_stream(
                 prompt=prompt,
                 model=model or self.default_model,
                 temperature=temperature or self.default_temperature,
                 max_tokens=max_tokens or self.default_max_tokens,
-                system_prompt=system_prompt or self.default_system_prompt,
+                system_prompt=effective_system_prompt,
                 tools=tools_to_use,
                 tool_choice=tool_choice,
                 user_id=self.user_id,

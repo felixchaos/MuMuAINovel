@@ -75,8 +75,7 @@ class PlotAnalyzer:
         logger.info(f"🔍 开始分析第{chapter_number}章: {title}")
         self.last_error = None
         
-        # 如果内容过长,截取前8000字(避免超token)
-        analysis_content = content[:8000] if len(content) > 8000 else content
+        analysis_content = self._prepare_analysis_content(content)
         
         # 获取自定义提示词模板
         try:
@@ -122,7 +121,8 @@ class PlotAnalyzer:
                 try:
                     async for chunk in self.ai_service.generate_text_stream(
                         prompt=prompt,
-                        temperature=0.3  # 降低温度以获得更稳定的JSON输出
+                        temperature=0.3,  # 降低温度以获得更稳定的JSON输出
+                        auto_mcp=False,
                     ):
                         accumulated_text += chunk
                 except GeneratorExit:
@@ -217,6 +217,26 @@ class PlotAnalyzer:
         logger.error(f"❌ 第{chapter_number}章分析失败: {last_error}")
         self.last_error = last_error
         return None
+
+    def _prepare_analysis_content(self, content: str, max_chars: int = 16000) -> str:
+        """Keep long-chapter analysis representative instead of only using the opening."""
+        text = content or ""
+        if len(text) <= max_chars:
+            return text
+
+        head_len = 6000
+        middle_len = 4000
+        tail_len = 6000
+        middle_start = max(head_len, (len(text) - middle_len) // 2)
+        middle_end = min(len(text) - tail_len, middle_start + middle_len)
+
+        return "\n\n".join([
+            text[:head_len],
+            f"【中段节选：原文过长，此处保留章节中段代表片段，省略约{middle_start - head_len}字】",
+            text[middle_start:middle_end],
+            f"【末尾节选：继续省略约{len(text) - tail_len - middle_end}字，以下为章节末尾】",
+            text[-tail_len:],
+        ])
     
     def _format_existing_foreshadows(self, foreshadows: Optional[List[Dict[str, Any]]]) -> str:
         """

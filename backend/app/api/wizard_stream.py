@@ -118,7 +118,8 @@ async def world_building_generator(
                     prompt=base_prompt,
                     provider=provider,
                     model=model,
-                    tool_choice="required",
+                    tool_choice="auto" if enable_mcp else None,
+                    auto_mcp=enable_mcp,
                 ):
                     chunk_count += 1
                     accumulated_text += chunk
@@ -748,7 +749,8 @@ async def characters_generator(
                         prompt=prompt,
                         provider=provider,
                         model=model,
-                        tool_choice="required",
+                        tool_choice="auto" if enable_mcp else None,
+                        auto_mcp=enable_mcp,
                     ):
                         chunk_count += 1
                         accumulated_text += chunk
@@ -1654,7 +1656,8 @@ async def world_building_regenerate_generator(
                     prompt=base_prompt,
                     provider=provider,
                     model=model,
-                    tool_choice="required",
+                    tool_choice="auto" if enable_mcp else None,
+                    auto_mcp=enable_mcp,
                 ):
                     chunk_count += 1
                     accumulated_text += chunk

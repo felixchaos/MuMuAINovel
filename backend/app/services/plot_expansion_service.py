@@ -683,9 +683,3 @@ class PlotExpansionService:
         # 5. 提交更新
         await db.commit()
         logger.info(f"重新排序完成，共更新 {updated_count} 个章节的序号")
-
-
-# 工厂函数
-def create_plot_expansion_service(ai_service: AIService) -> PlotExpansionService:
-    """创建剧情展开服务实例"""
-    return PlotExpansionService(ai_service)

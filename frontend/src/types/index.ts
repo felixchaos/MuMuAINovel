@@ -280,147 +280,60 @@ export interface ProjectWizardUpdate extends ProjectUpdate {
   wizard_step?: number;
 }
 
-export interface StoryEngineMetric {
-  key: string;
+export type StoryTimelineEventType =
+  | 'plot'
+  | 'character'
+  | 'scene'
+  | 'world'
+  | 'foreshadow'
+  | 'organization'
+  | 'hook'
+  | 'dialogue'
+  | 'other'
+  | string;
+
+export interface StoryTimelineEvent {
+  id: string;
+  event_type: StoryTimelineEventType;
   label: string;
-  value: number;
-  total?: number;
-  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
-  description?: string;
-}
-
-export interface StoryEngineItem {
-  id: string;
   title: string;
-  subtitle?: string;
-  summary?: string;
-  tags: string[];
-}
-
-export interface StoryEngineSection {
-  key: string;
-  title: string;
-  description?: string;
-  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
-  total: number;
-  coverage: number;
-  items: StoryEngineItem[];
-}
-
-export interface StoryEngineRecommendation {
-  key: string;
-  title: string;
-  detail: string;
-  priority: 'high' | 'medium' | 'low' | string;
-  source: string;
-}
-
-export interface StoryEngineLane {
-  key: string;
-  title: string;
-  lane_type: 'plot' | 'character' | 'faction' | 'promise' | 'continuity' | string;
-  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
-  progress: number;
-  summary: string;
-  items: StoryEngineItem[];
-  tags: string[];
-}
-
-export interface StoryEngineBeat {
-  id: string;
-  title: string;
-  beat_type: 'outline' | 'chapter' | 'analysis' | string;
-  chapter_number?: number;
-  progress: number;
-  status: 'ok' | 'warning' | 'empty' | 'neutral' | string;
-  stage?: string;
-  conflict_level?: number;
-  emotional_tone?: string;
-  summary?: string;
-  tags: string[];
-}
-
-export interface StoryEngineCardDraft {
-  id: string;
-  title: string;
-  card_type: 'plot' | 'character' | 'scene' | 'conflict' | 'hook' | 'promise' | string;
-  source: 'outline' | 'chapter' | 'analysis' | string;
-  source_title?: string;
-  chapter_number?: number;
   content: string;
-  tags: string[];
-}
-
-export interface StoryEngineFact {
-  id: string;
-  fact_type: string;
-  source_type: string;
-  source_id: string;
   chapter_id?: string | null;
   chapter_number?: number | null;
-  title: string;
-  content: string;
+  source_type: string;
+  source_id: string;
+  importance: number;
+  tags: string[];
   entities: string[];
   locations: string[];
-  tags: string[];
-  importance: number;
-  confidence: number;
-  evidence?: string | null;
+  status?: string | null;
+  position?: number | null;
   created_at?: string | null;
 }
 
-export interface StoryEngineFactsResponse {
-  project_id: string;
-  total: number;
-  counts_by_type: Record<string, number>;
-  facts: StoryEngineFact[];
-}
-
-export interface StoryEngineMatrixCell {
-  chapter_number: number;
-  count: number;
-  evidence?: string;
-}
-
-export interface StoryEngineMatrixRow {
-  entity: string;
-  total: number;
-  chapters: StoryEngineMatrixCell[];
-}
-
-export interface StoryEngineTimelineItem {
+export interface StoryTimelineChapter {
   id: string;
-  timeline_type: 'relationship' | 'foreshadow' | 'organization' | 'world' | 'fact' | string;
-  chapter_number?: number;
+  chapter_number: number;
   title: string;
-  content: string;
-  entities: string[];
-  tags: string[];
-  importance: number;
-  source_type: string;
+  status: string;
+  word_count: number;
+  summary?: string | null;
+  has_analysis: boolean;
+  plot_stage?: string | null;
+  conflict_level?: number | null;
+  emotional_tone?: string | null;
+  coherence_score?: number | null;
+  events: StoryTimelineEvent[];
 }
 
-export interface StoryEngineVisualization {
+export interface StoryTimelineResponse {
   project_id: string;
-  character_chapter_matrix: StoryEngineMatrixRow[];
-  relationship_timeline: StoryEngineTimelineItem[];
-  foreshadow_timeline: StoryEngineTimelineItem[];
-  organization_timeline: StoryEngineTimelineItem[];
-  world_timeline: StoryEngineTimelineItem[];
-}
-
-export interface StoryEngineSnapshot {
-  project_id: string;
-  title: string;
-  generated_at: string;
-  readiness_score: number;
-  metrics: StoryEngineMetric[];
-  sections: StoryEngineSection[];
-  lanes: StoryEngineLane[];
-  beats: StoryEngineBeat[];
-  cards: StoryEngineCardDraft[];
-  recommendations: StoryEngineRecommendation[];
-  context_text: string;
+  total_chapters: number;
+  analyzed_chapters: number;
+  total_events: number;
+  event_counts: Record<string, number>;
+  chapters: StoryTimelineChapter[];
+  unplaced_events: StoryTimelineEvent[];
 }
 
 // 项目创建向导

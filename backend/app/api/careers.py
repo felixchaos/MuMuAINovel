@@ -26,6 +26,7 @@ from app.schemas.career import (
 )
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
+from app.services.prompt_service import PromptService
 from app.services.project_story_context import build_project_story_context
 from app.logger import get_logger
 from app.api.settings import get_user_ai_service
@@ -259,60 +260,12 @@ async def generate_career_system(
             
             yield await tracker.preparing("构建AI提示词...")
             
-            # 构建提示词
-            prompt = f"""{project_context}
-
-{generation_requirements}
-
-请为这个小说项目生成新的补充职业（增量式）。要求：
-1. **仔细分析已有职业**，避免生成重复或相似的职业
-2. **填补职业体系的空缺**，让职业体系更加完善和多样化
-3. 如果已有职业较少，可以生成核心基础职业
-4. 如果已有职业较多，可以生成特色化、专精化的职业
-
-返回JSON格式，结构如下：
-
-{{
-  "main_careers": [
-    {{
-      "name": "职业名称",
-      "description": "职业描述",
-      "category": "职业分类（如：战斗系、法术系等）",
-      "stages": [
-        {{"level": 1, "name": "阶段名称", "description": "阶段描述"}},
-        {{"level": 2, "name": "阶段名称", "description": "阶段描述"}},
-        ...
-      ],
-      "max_stage": 10,
-      "requirements": "职业要求",
-      "special_abilities": "特殊能力",
-      "worldview_rules": "世界观规则关联",
-      "attribute_bonuses": {{"strength": "+10%", "intelligence": "+5%"}}
-    }}
-  ],
-  "sub_careers": [
-    {{
-      "name": "副职业名称",
-      "description": "职业描述",
-      "category": "生产系/辅助系/特殊系",
-      "stages": [...],
-      "max_stage": 5,
-      "requirements": "职业要求",
-      "special_abilities": "特殊能力"
-    }}
-  ]
-}}
-
-注意事项：
-1. **避免重复**：生成的职业名称和定位不能与已有职业重复
-2. **互补性**：新职业应与已有职业形成互补，丰富职业体系
-3. 主职业的阶段设定要详细，体现明确的成长路径
-4. 阶段名称要符合世界观特色
-5. 副职业可以相对简化，但要有独特性
-6. 所有职业都要符合项目的整体世界观设定
-7. 如果提供了用户额外要求，请优先满足；若与世界观冲突，必须以世界观为准进行合理改写
-8. 只返回纯JSON，不要添加任何解释文字
-"""
+            template = await PromptService.get_template("CAREER_INCREMENTAL_GENERATION", user_id, db)
+            prompt = PromptService.format_prompt(
+                template,
+                project_context=project_context,
+                generation_requirements=generation_requirements,
+            )
             
             yield await tracker.generating(0, max(3000, len(prompt) * 8), "调用AI生成新职业...")
             logger.info(f"🎯 开始为项目 {project_id} 生成新职业（增量式，已有{len(existing_careers)}个职业）")
@@ -324,7 +277,11 @@ async def generate_career_system(
                 estimated_total = max(3000, len(prompt) * 8)
                 
                 async for chunk in wrap_stream_with_heartbeat(
-                    user_ai_service.generate_text_stream(prompt=prompt),
+                    user_ai_service.generate_text_stream(
+                        prompt=prompt,
+                        tool_choice="auto" if request_data.enable_mcp else None,
+                        auto_mcp=request_data.enable_mcp,
+                    ),
                     heartbeat_interval=15.0
                 ):
                     # 心跳哨兵：发送心跳保活，不混入AI响应

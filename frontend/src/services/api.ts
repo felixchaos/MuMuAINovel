@@ -60,9 +60,7 @@ import type {
   BatchAnalysisStatusResponse,
   BatchAnalyzeUnanalyzedRequest,
   BatchAnalyzeUnanalyzedResponse,
-  StoryEngineFactsResponse,
-  StoryEngineSnapshot,
-  StoryEngineVisualization,
+  StoryTimelineResponse,
   AIUsageLog,
   AIUsageSummary,
 } from '../types';
@@ -362,18 +360,12 @@ export const projectApi = {
 
   getProject: (id: string) => api.get<unknown, Project>(`/projects/${id}`),
 
-  getStoryEngineSnapshot: (id: string, contextLimit: number = 12000) =>
-    api.get<unknown, StoryEngineSnapshot>(`/projects/${id}/story-engine/snapshot`, {
-      params: { context_limit: contextLimit },
-    }),
-
-  getStoryEngineFacts: (id: string, params?: { fact_type?: string; limit?: number }) =>
-    api.get<unknown, StoryEngineFactsResponse>(`/projects/${id}/story-engine/facts`, { params }),
-
-  getStoryEngineVisualization: (id: string, limit: number = 1000) =>
-    api.get<unknown, StoryEngineVisualization>(`/projects/${id}/story-engine/visualization`, {
-      params: { limit },
-    }),
+  getStoryTimeline: (id: string, params?: {
+    types?: string;
+    search?: string;
+    min_importance?: number;
+    limit?: number;
+  }) => api.get<unknown, StoryTimelineResponse>(`/projects/${id}/timeline`, { params }),
 
   createProject: (data: ProjectCreate) => api.post<unknown, Project>('/projects', data),
 

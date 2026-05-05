@@ -1693,6 +1693,7 @@ class BookImportService:
                     expected_type="array",
                     temperature=0.2,
                     max_tokens=2400,
+                    auto_mcp=False,
                 )
 
             by_name: dict[str, dict[str, Any]] = {}

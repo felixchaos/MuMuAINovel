@@ -222,39 +222,27 @@ def _build_character_optimize_source(character: Character, organization: Optiona
     }, ensure_ascii=False, indent=2)
 
 
-OUTLINE_OPTIMIZE_INSTRUCTION = "\n".join([
-    "你是小说大纲编辑，请优化已有大纲。",
-    "只优化表达、层次、情节逻辑和可执行性，不要续写，不要新增章节，不改变章节编号、标题、核心事实、人物关系和世界观设定。",
-    "严格只输出 JSON，不要 Markdown，不要解释。",
-    "JSON 字段：content、key_points、key_events、emotion、goal。其中 content 必填，其他字段可按原设定优化后返回。",
-])
-
-
-CHARACTER_OPTIMIZE_INSTRUCTION = "\n".join([
-    "你是小说设定编辑，请优化角色设定。",
-    "只优化表达、层次和可读性，不改变既有事实、姓名、定位、年龄、性别、阵营、能力来源和时间线。",
-    "严格只输出 JSON，不要 Markdown，不要解释。",
-    "JSON 字段：personality、appearance、background。",
-])
-
-
-ORGANIZATION_OPTIMIZE_INSTRUCTION = "\n".join([
-    "你是小说设定编辑，请优化组织/势力设定。",
-    "只优化表达、层次和可读性，不改变既有事实、名称、阵营、世界观和时间线。",
-    "严格只输出 JSON，不要 Markdown，不要解释。",
-    "JSON 字段：organization_purpose、motto、background。",
-])
-
-
 async def _generate_optimized_text(
     ai_service: AIService,
     source: str,
-    instruction: str,
+    template_key: str,
+    user_id: str,
+    db: AsyncSession,
     provider: Optional[str] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = 0.6,
 ) -> str:
-    prompt = f"{instruction}\n\n请处理以下内容：\n{source}"
+    template = await PromptService.get_template(template_key, user_id, db)
+    if not template:
+        template = getattr(PromptService, template_key, None)
+    if not template:
+        raise ValueError(f"未找到优化提示词模板: {template_key}")
+
+    if "{source}" in template:
+        prompt = PromptService.format_prompt(template, source=source)
+    else:
+        prompt = f"{template}\n\n请处理以下内容：\n{source}"
+
     response = await _generate_polish_response(
         ai_service,
         prompt=prompt,
@@ -600,7 +588,9 @@ async def _run_outline_optimize_background(task_id: str, user_id: str, data: Dic
                     optimized_text = await _generate_optimized_text(
                         ai_service=ai_service,
                         source=source,
-                        instruction=OUTLINE_OPTIMIZE_INSTRUCTION,
+                        template_key="OUTLINE_OPTIMIZE",
+                        user_id=user_id,
+                        db=bg_db,
                         provider=data.get("provider"),
                         model=data.get("model"),
                         temperature=data.get("temperature") or 0.6,
@@ -707,7 +697,9 @@ async def _run_character_optimize_background(task_id: str, user_id: str, data: D
                     optimized_text = await _generate_optimized_text(
                         ai_service=ai_service,
                         source=source,
-                        instruction=ORGANIZATION_OPTIMIZE_INSTRUCTION if character.is_organization else CHARACTER_OPTIMIZE_INSTRUCTION,
+                        template_key="ORGANIZATION_OPTIMIZE" if character.is_organization else "CHARACTER_OPTIMIZE",
+                        user_id=user_id,
+                        db=bg_db,
                         provider=data.get("provider"),
                         model=data.get("model"),
                         temperature=data.get("temperature") or 0.6,

@@ -2292,7 +2292,8 @@ async def generate_chapter_content_stream(
                 generate_kwargs = {
                     "prompt": prompt,
                     "system_prompt": system_prompt_with_style,
-                    "tool_choice": "required",
+                    "tool_choice": "auto" if generate_request.enable_mcp else None,
+                    "auto_mcp": generate_request.enable_mcp,
                     "max_tokens": calculated_max_tokens  # 添加 max_tokens 限制
                 }
                 if custom_model:
@@ -2584,6 +2585,7 @@ async def _run_chapter_generation_bg(
     chapter_id = task_input["chapter_id"]
     style_id = task_input.get("style_id")
     target_word_count = task_input.get("target_word_count", 3000)
+    enable_mcp = task_input.get("enable_mcp", True)
     custom_model = task_input.get("model")
     temp_narrative_perspective = task_input.get("narrative_perspective")
     write_lock = await get_db_write_lock(user_id)
@@ -2764,7 +2766,8 @@ async def _run_chapter_generation_bg(
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
-        "tool_choice": "required",
+        "tool_choice": "auto" if enable_mcp else None,
+        "auto_mcp": enable_mcp,
         "max_tokens": calculated_max_tokens
     }
     if custom_model:
@@ -4259,7 +4262,7 @@ async def generate_single_chapter_for_batch(
     generate_kwargs = {
         "prompt": prompt,
         "system_prompt": system_prompt_with_style,
-        "tool_choice": "required",
+        "tool_choice": "auto",
         "max_tokens": calculated_max_tokens  # 添加 max_tokens 限制
     }
     # 如果传入了自定义模型，使用指定的模型

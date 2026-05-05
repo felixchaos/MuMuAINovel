@@ -235,14 +235,3 @@ class ChapterRegenerator:
         diff_stats['new_paragraph_count'] = len(new_paragraphs)
         
         return diff_stats
-
-
-# 全局实例
-_regenerator_instance = None
-
-def get_chapter_regenerator(ai_service: AIService) -> ChapterRegenerator:
-    """获取章节重新生成器实例"""
-    global _regenerator_instance
-    if _regenerator_instance is None:
-        _regenerator_instance = ChapterRegenerator(ai_service)
-    return _regenerator_instance

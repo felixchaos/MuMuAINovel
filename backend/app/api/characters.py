@@ -1052,7 +1052,8 @@ async def generate_character_stream(
                 async for chunk in wrap_stream_with_heartbeat(
                     user_ai_service.generate_text_stream(
                         prompt=prompt,
-                        tool_choice="required",
+                        tool_choice="auto" if request.enable_mcp else None,
+                        auto_mcp=request.enable_mcp,
                     ),
                     heartbeat_interval=15.0
                 ):
@@ -1555,47 +1556,21 @@ async def analyze_characters_from_text_stream(
             yield await tracker.preparing("构建角色分析提示词...")
 
             extra_requirements = (request.requirements or "").strip() or "无"
-            prompt = f"""你是小说角色设定整理助手。请从项目已有大纲与章节内容中，识别所有重要“角色”，并按文内已有事实整理成角色卡。
-
-【项目基础信息】
-- 书名：{project.title}
-- 类型：{project.genre or '未设定'}
-- 主题：{project.theme or '未设定'}
-- 简介：{project.description or '未设定'}
-
-【已有角色卡】
-{existing_info}
-
-【已有大纲与章节内容】
-{story_context}
-
-【额外要求】
-{extra_requirements}
-
-【识别规则】
-1. 只输出“角色/人物/具备行动主体的拟人个体”，不要把国家、城市、舰队、组织、地点、物品、能力体系当成角色。
-2. 角色信息必须来自已有文本，不要为了补全字段编造年龄、性别、外貌、关系或背景。
-3. 已有角色卡如果在正文里出现，请根据正文事实补强和校正；没有出现的新角色可以新增。
-4. role_type 只能是 protagonist、supporting、antagonist 之一。
-5. traits 是短标签数组，最多 8 个。
-6. 最多输出 {request.max_characters} 个角色，按重要性排序。
-
-【输出格式】
-严格只输出 JSON，不要 Markdown，不要解释：
-{{
-  "characters": [
-    {{
-      "name": "角色名",
-      "role_type": "protagonist/supporting/antagonist",
-      "age": "",
-      "gender": "",
-      "personality": "基于正文的性格与行为方式",
-      "appearance": "正文明确出现的外貌，不明确则留空",
-      "background": "身份、出场章节、关键行为、与主线关系",
-      "traits": ["标签1", "标签2"]
-    }}
-  ]
-}}"""
+            project_context = "\n".join([
+                f"- 书名：{project.title}",
+                f"- 类型：{project.genre or '未设定'}",
+                f"- 主题：{project.theme or '未设定'}",
+                f"- 简介：{project.description or '未设定'}",
+            ])
+            template = await PromptService.get_template("CHARACTER_TEXT_ANALYSIS", user_id, db)
+            prompt = PromptService.format_prompt(
+                template,
+                project_context=project_context,
+                existing_info=existing_info,
+                story_context=story_context,
+                extra_requirements=extra_requirements,
+                max_characters=request.max_characters,
+            )
 
             yield await tracker.generating(0, max(6000, len(prompt) * 4), "调用AI分析全文角色...")
             ai_response = ""
