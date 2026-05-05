@@ -28,7 +28,8 @@ export const VERSION_INFO = {
   licenseUrl: 'https://www.gnu.org/licenses/gpl-3.0.html',
   
   // 作者信息
-  author: 'xiamuceer-j',
+  author: 'felixchaos',
+  authorUrl: 'https://felixchaos.link/',
 };
 
 /**

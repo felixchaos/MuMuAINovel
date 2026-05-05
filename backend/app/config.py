@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     WORKSHOP_MODE: str = "client"  # client: 本地部署实例, server: 云端中央服务器
     WORKSHOP_CLOUD_URL: str = "https://mumuverse.space:1566"  # 云端服务地址
     WORKSHOP_API_TIMEOUT: int = 30  # 云端API请求超时时间（秒）
+
+    # 作者公开资料（Gravatar Profile API）
+    GRAVATAR_API_KEY: Optional[str] = None
+    GRAVATAR_PROFILE_IDENTIFIER: str = "felixchaos"
+    AUTHOR_DISPLAY_NAME: str = "felixchaos"
+    AUTHOR_PROFILE_URL: str = "https://felixchaos.link/"
     
     class Config:
         env_file = ".env"

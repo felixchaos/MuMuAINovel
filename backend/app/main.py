@@ -146,13 +146,14 @@ from app.api import (
     auth, users, settings, writing_styles, memories,
     mcp_plugins, admin, inspiration, prompt_templates,
     changelog, careers, foreshadows, prompt_workshop, book_import,
-    project_covers, tasks, polish, story_engine, ai_usage
+    project_covers, tasks, polish, story_engine, ai_usage, public
 )
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(public.router, prefix="/api")
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(project_covers.router, prefix="/api")

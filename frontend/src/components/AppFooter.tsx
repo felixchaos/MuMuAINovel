@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Typography, Space, Divider, Badge, Button, Grid, theme } from 'antd';
+import { Typography, Space, Divider, Badge, Button, Grid, theme, Avatar } from 'antd';
 import { GithubOutlined, CopyrightOutlined, HeartFilled, ClockCircleOutlined, GiftOutlined } from '@ant-design/icons';
 import { VERSION_INFO, getVersionString } from '../config/version';
 import { FEATURE_FLAGS } from '../config/featureFlags';
 import { checkLatestVersion } from '../services/versionService';
+import { getAuthorProfile, type AuthorProfile } from '../services/authorProfileService';
 
 const { Text, Link } = Typography;
 const { useBreakpoint } = Grid;
@@ -18,6 +19,7 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [latestVersion, setLatestVersion] = useState('');
   const [releaseUrl, setReleaseUrl] = useState('');
+  const [authorProfile, setAuthorProfile] = useState<AuthorProfile | null>(null);
   const { token } = theme.useToken();
   const alphaColor = (color: string, alpha: number) => `color-mix(in srgb, ${color} ${(alpha * 100).toFixed(0)}%, transparent)`;
 
@@ -39,6 +41,14 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    getAuthorProfile()
+      .then(setAuthorProfile)
+      .catch(() => {
+        // 静默失败，使用构建时作者信息
+      });
+  }, []);
+
   // 点击版本号查看更新
   const handleVersionClick = () => {
     if (hasUpdate && releaseUrl) {
@@ -48,6 +58,9 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
 
   // 计算左边距：桌面端有侧边栏时需要偏移
   const leftOffset = isMobile ? 0 : sidebarWidth;
+  const authorName = authorProfile?.display_name || VERSION_INFO.author;
+  const authorUrl = authorProfile?.profile_url || VERSION_INFO.authorUrl;
+  const authorAvatar = authorProfile?.avatar_url || undefined;
 
   return (
     <div
@@ -282,7 +295,10 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
             </Text>
 
             {/* 致谢信息 */}
-            <Text
+            <Link
+              href={authorUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               style={{
                 fontSize: 12,
                 display: 'flex',
@@ -294,8 +310,9 @@ export default function AppFooter({ sidebarWidth = 0 }: AppFooterProps) {
             >
               <span>Made with</span>
               <HeartFilled style={{ color: token.colorError, fontSize: 11 }} />
-              <span>by {VERSION_INFO.author}</span>
-            </Text>
+              <span>by {authorName}</span>
+              {authorAvatar && <Avatar size={16} src={authorAvatar} />}
+            </Link>
           </Space>
         )}
       </div>
