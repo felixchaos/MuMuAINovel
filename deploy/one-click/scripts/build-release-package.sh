@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-v1.4.8-story-engine.2}"
+VERSION="${1:-v1.4.8-story-engine.3}"
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 PACKAGE_BASENAME="MuMuAINovel-StoryEngine-OneClick-${VERSION}"

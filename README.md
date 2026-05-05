@@ -1,6 +1,6 @@
 # MuMuAINovel Story Engine Fork
 
-当前 fork 并行版本：`v1.4.8-story-engine.2`
+当前 fork 并行版本：`v1.4.8-story-engine.3`
 
 官方兼容基线：`xiamuceer-j/MuMuAINovel v1.4.8`
 
@@ -18,15 +18,15 @@ Fork 维护者主页：[felixchaos.link](https://felixchaos.link/)
 v{官方基线版本}-story-engine.{fork迭代号}
 ```
 
-当前版本 `v1.4.8-story-engine.2` 表示：
+当前版本 `v1.4.8-story-engine.3` 表示：
 
 - `v1.4.8`：基于官方 `v1.4.8` 代码线，尽量保持官方数据结构、部署方式和工作流兼容。
 - `story-engine`：本 fork 的主增强方向，聚焦拆书导入、实体预扫描、章节事实维护、重写上下文和后台任务收敛。
-- `.2`：在该官方基线上的第 2 个公开 fork 迭代。
+- `.3`：在该官方基线上的第 3 个公开 fork 迭代。
 
 后续迭代规则：
 
-- 只改本 fork 功能：递增 fork 迭代号，例如 `v1.4.8-story-engine.2`。
+- 只改本 fork 功能：递增 fork 迭代号，例如 `v1.4.8-story-engine.3`。
 - 跟进新的官方版本：更新官方基线并重新开始 fork 迭代，例如 `v1.4.9-story-engine.1`。
 - 涉及仅供本地部署的小修：优先记录在提交历史和更新日志中，必要时再提升 fork 迭代号。
 
@@ -118,7 +118,7 @@ API Key、SMTP、注册开关等都可以在网页里配置；一键启动时可
 这是新装推荐路线。适合已经安装 Docker Desktop / Docker Engine / Docker Compose 的用户，不需要本地构建源码，直接拉公开镜像启动。
 
 ```text
-felixchaos/mumuainovel:v1.4.8-story-engine.2
+felixchaos/mumuainovel:v1.4.8-story-engine.3
 felixchaos/mumuainovel:story-engine
 felixchaos/mumuainovel:latest
 ```

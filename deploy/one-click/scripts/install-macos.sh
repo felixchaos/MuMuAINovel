@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-FORK_VERSION="v1.4.8-story-engine.2"
+FORK_VERSION="v1.4.8-story-engine.3"
 ROOT_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 ENV_FILE="$ROOT_DIR/.env"
 STATE_DIR="$ROOT_DIR/.oneclick"

@@ -35,7 +35,6 @@ class PromptTemplateResponse(PromptTemplateBase):
     model_config = ConfigDict(from_attributes=True)
     
     id: str
-    user_id: str
     is_system_default: bool
     created_at: datetime
     updated_at: datetime

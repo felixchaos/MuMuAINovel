@@ -35,7 +35,6 @@ const { Title, Text, Paragraph } = Typography;
 
 interface PromptTemplate {
   id: string;
-  user_id: string;
   template_key: string;
   template_name: string;
   template_content: string;
@@ -104,6 +103,7 @@ export default function PromptTemplates() {
 
     try {
       setLoading(true);
+      const createsAccountCopy = editingTemplate.is_system_default;
       await axios.post('/api/prompt-templates', {
         template_key: editingTemplate.template_key,
         template_name: editingTemplate.template_name,
@@ -113,7 +113,7 @@ export default function PromptTemplates() {
         parameters: editingTemplate.parameters,
         is_active: editingTemplate.is_active
       });
-      message.success('保存成功');
+      message.success(createsAccountCopy ? '已保存为当前账户的自定义副本' : '保存成功');
       setEditorVisible(false);
       loadTemplates();
     } catch (error: unknown) {
@@ -128,7 +128,7 @@ export default function PromptTemplates() {
   const handleReset = async (templateKey: string) => {
     modal.confirm({
       title: '确认重置',
-      content: '确定要重置为系统默认模板吗？这将覆盖您的自定义内容。',
+      content: '确定要删除当前账户的自定义副本并恢复系统默认吗？这不会影响其他账户。',
       okText: '确定',
       cancelText: '取消',
       centered: true,
@@ -295,7 +295,7 @@ export default function PromptTemplates() {
                   提示词模板管理
                 </Title>
                 <Text style={{ fontSize: isMobile ? 12 : 14, color: token.colorTextLightSolid, opacity: 0.85, marginLeft: isMobile ? 40 : 48 }}>
-                  自定义AI生成提示词，打造个性化创作体验
+                  按账户隔离自定义AI生成提示词
                 </Text>
               </Space>
             </Col>
@@ -354,10 +354,10 @@ export default function PromptTemplates() {
             description={
               <div>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block', marginBottom: 8 }}>
-                  • <strong>系统默认模板</strong>（灰色头部）：始终启用，无需手动开关。点击"编辑"后将创建您的自定义副本。
+                  • <strong>系统默认模板</strong>（灰色头部）：始终启用，无需手动开关。点击"编辑"后将创建仅当前账户生效的自定义副本。
                 </Text>
                 <Text style={{ fontSize: isMobile ? 12 : 13, display: 'block' }}>
-                  • <strong>已自定义模板</strong>（紫色头部）：可通过开关控制启用/禁用，使用 <Text code>{'{variable_name}'}</Text> 格式表示变量占位符。点击"重置"可恢复为系统默认。
+                  • <strong>已自定义模板</strong>（紫色头部）：仅当前账户生效，可通过开关控制启用/禁用，使用 <Text code>{'{variable_name}'}</Text> 格式表示变量占位符。点击"重置"可恢复为系统默认。
                 </Text>
               </div>
             }

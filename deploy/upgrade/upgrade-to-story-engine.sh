@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="${VERSION:-v1.4.8-story-engine.2}"
+VERSION="${VERSION:-v1.4.8-story-engine.3}"
 IMAGE="${IMAGE:-felixchaos/mumuainovel:${VERSION}}"
 BRANCH="${BRANCH:-main}"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/felixchaos/MuMuAINovel/${BRANCH}}"

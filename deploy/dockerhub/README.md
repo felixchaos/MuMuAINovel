@@ -5,7 +5,7 @@
 公开镜像：
 
 ```text
-felixchaos/mumuainovel:v1.4.8-story-engine.2
+felixchaos/mumuainovel:v1.4.8-story-engine.3
 felixchaos/mumuainovel:story-engine
 felixchaos/mumuainovel:latest
 ```
@@ -63,7 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\upgrade-to-story-engine.ps1
 
 ```bash
 DOCKERHUB_IMAGE=felixchaos/mumuainovel \
-VERSION=v1.4.8-story-engine.2 \
+VERSION=v1.4.8-story-engine.3 \
 deploy/dockerhub/publish-dockerhub.sh
 ```
 
@@ -73,7 +73,7 @@ deploy/dockerhub/publish-dockerhub.sh
 DOCKER_BUILD_PROXY=http://host.docker.internal:7890 \
 RESET_BUILDER=true \
 DOCKERHUB_IMAGE=felixchaos/mumuainovel \
-VERSION=v1.4.8-story-engine.2 \
+VERSION=v1.4.8-story-engine.3 \
 deploy/dockerhub/publish-dockerhub.sh
 ```
 
