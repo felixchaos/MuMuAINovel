@@ -100,6 +100,34 @@ admin / admin123
 
 API Key、SMTP、注册开关等都可以在网页里配置；一键启动时可以全部跳过。真正必须具备的是 Docker Desktop，因为本项目通过 Docker Compose 启动数据库和应用。Windows/macOS 首次安装 Docker Desktop 时，系统可能弹出管理员授权或要求重启，这是操作系统和 Docker 的限制。
 
+## Docker Hub 镜像部署
+
+如果已经有 Docker Compose，也可以直接使用公开镜像，不需要本地构建：
+
+```text
+felixchaos/mumuainovel:v1.4.8-story-engine.1
+felixchaos/mumuainovel:story-engine
+felixchaos/mumuainovel:latest
+```
+
+快速启动：
+
+```bash
+mkdir mumuainovel-story-engine
+cd mumuainovel-story-engine
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/felixchaos/MuMuAINovel/codex/official-compatible-story-engine/deploy/dockerhub/.env.example
+docker compose up -d
+```
+
+访问：
+
+```text
+http://localhost:8000
+```
+
+镜像版默认关闭赞助入口、公告弹窗、MuMu API 外链和右侧节日挂件。首次使用建议修改 `.env` 里的 `LOCAL_AUTH_PASSWORD` 和 `POSTGRES_PASSWORD`。
+
 ## 源码快速部署
 
 熟悉命令行的用户可以使用 Docker Compose 从源码构建。不要直接使用官方 Docker Hub 镜像来部署本 fork，因为镜像可能不包含本 fork 的改动。
@@ -356,6 +384,7 @@ FRONTEND_URL=https://your-domain.example
 ├── backend/                 # FastAPI 后端、数据库模型、AI 服务与迁移
 ├── frontend/                # React + TypeScript 前端
 ├── deploy/cloudflare/       # 可选 Cloudflare Worker 路由示例
+├── deploy/dockerhub/        # Docker Hub 镜像部署与发布脚本
 ├── deploy/one-click/        # Windows/macOS 一键部署包入口
 ├── docker-compose.yml       # Docker Compose 编排
 ├── Dockerfile               # 前后端一体镜像构建
