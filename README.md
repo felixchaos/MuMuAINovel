@@ -4,6 +4,8 @@
 
 官方兼容基线：`xiamuceer-j/MuMuAINovel v1.4.8`
 
+Fork 维护者主页：[felixchaos.link](https://felixchaos.link/)
+
 基于 [xiamuceer-j/MuMuAINovel](https://github.com/xiamuceer-j/MuMuAINovel) 的个人增强版 fork，目标是在保持官方版本兼容性的基础上，补强长篇小说创作里的剧情工程能力、章节重写流程、后台任务可控性和多人部署体验。
 
 本仓库不是官方发行版。需要最稳定的官方版本时，请优先查看上游仓库；需要本 fork 的增强功能时，可以按本文档使用一键包、Docker Hub 镜像或源码部署。
