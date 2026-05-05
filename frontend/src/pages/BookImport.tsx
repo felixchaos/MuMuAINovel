@@ -1107,6 +1107,67 @@ export default function BookImport() {
             <p className="ant-upload-hint">首版仅支持 .txt，建议不超过 50MB</p>
           </Dragger>
 
+          <Card size="small" title="拆书导入工作流说明">
+            <Space direction="vertical" style={{ width: '100%' }} size={14}>
+              <Row gutter={[12, 12]}>
+                <Col xs={24} md={12} xl={6}>
+                  <Space direction="vertical" size={4}>
+                    <Tag color="blue">1 上传解析</Tag>
+                    <Text strong>先切章节，再做质量诊断</Text>
+                    <Text type="secondary">
+                      系统会识别标准标题、分页标题、篇章小节等格式，并给出切分模式、置信度和异常原因。
+                    </Text>
+                  </Space>
+                </Col>
+                <Col xs={24} md={12} xl={6}>
+                  <Space direction="vertical" size={4}>
+                    <Tag color="cyan">2 设定预览</Tag>
+                    <Text strong>AI反推或纯手动都支持</Text>
+                    <Text type="secondary">
+                      AI模式会根据所选范围预填项目设定和章节大纲；手动模式只拆书并保留可编辑字段。
+                    </Text>
+                  </Space>
+                </Col>
+                <Col xs={24} md={12} xl={6}>
+                  <Space direction="vertical" size={4}>
+                    <Tag color="orange">3 人工复核</Tag>
+                    <Text strong>疑似边界可以直接修正</Text>
+                    <Text type="secondary">
+                      预览页支持只看疑似边界、拆分本章、合并下一章，并可修改标题、摘要、正文。
+                    </Text>
+                  </Space>
+                </Col>
+                <Col xs={24} md={12} xl={6}>
+                  <Space direction="vertical" size={4}>
+                    <Tag color="purple">4 导入补全</Tag>
+                    <Text strong>实体候选和后续设定可选择</Text>
+                    <Text type="secondary">
+                      可勾选人物/组织候选入库；导入后可选择继续 AI 生成世界观、职业、角色和组织，或全部手动维护。
+                    </Text>
+                  </Space>
+                </Col>
+              </Row>
+              <Alert
+                type="info"
+                showIcon
+                message="推荐选择"
+                description={
+                  <Space direction="vertical" size={4}>
+                    <Text>
+                      已有完整小说、希望快速建项目：使用 <Text strong>整本反向生成 + AI反向生成预览设定</Text>。
+                    </Text>
+                    <Text>
+                      只想接续最近剧情：使用 <Text strong>截取末 x 章反向生成</Text>，减少上下文噪音和 API 消耗。
+                    </Text>
+                    <Text>
+                      想自己先定框架：使用 <Text strong>手动填写预览设定</Text>，仍可在预览页逐个字段使用 AI 生成/润色。
+                    </Text>
+                  </Space>
+                }
+              />
+            </Space>
+          </Card>
+
           <Card size="small" title="解析范围设置">
             <Space direction="vertical" style={{ width: '100%' }} size={12}>
               {rangeLocked && (
@@ -1145,6 +1206,12 @@ export default function BookImport() {
                     ? '当前输入已超过 50 章，将自动按整本拆处理。'
                     : '当前将基于整本内容进行反向生成，适合完整拆书但耗时可能更长。'}
               </Text>
+              <Alert
+                type="info"
+                showIcon
+                message="解析范围只影响 AI 反向生成设定的上下文，不会限制章节切分本身"
+                description="TXT 仍会完整切分成章节预览；选择末尾章节时，AI只用最近若干章推断项目基础信息和大纲，适合续写项目。选择整本时，设定更完整，但任务时间和 Token 预算会更高。"
+              />
             </Space>
           </Card>
 
@@ -1174,7 +1241,12 @@ export default function BookImport() {
                     <Radio value="auto">
                       <Space direction="vertical" size={4}>
                         <Text strong>AI反向生成预览设定</Text>
-                        <Text type="secondary">解析章节后，自动推断项目信息和章节大纲，可在预览页修改。</Text>
+                        <Text type="secondary">
+                          解析章节后自动推断项目基础信息、世界设定和章节大纲，预览页仍可手动修改。
+                        </Text>
+                        <Text type="secondary">
+                          适合想快速生成完整项目结构的导入；会使用 API，预览页会显示 Token 预算参考。
+                        </Text>
                       </Space>
                     </Radio>
                   </Card>
@@ -1193,7 +1265,12 @@ export default function BookImport() {
                     <Radio value="manual">
                       <Space direction="vertical" size={4}>
                         <Text strong>手动填写预览设定</Text>
-                        <Text type="secondary">只拆章节并生成可编辑预览，不强制等待AI生成项目信息和后续设定。</Text>
+                        <Text type="secondary">
+                          只做章节切分、切分诊断、实体预扫描和可编辑预览，不强制等待 AI 生成项目设定。
+                        </Text>
+                        <Text type="secondary">
+                          适合先自己定框架；项目信息、世界设定字段仍可点 AI 生成/润色后确认写入。
+                        </Text>
                       </Space>
                     </Radio>
                   </Card>
@@ -1202,30 +1279,87 @@ export default function BookImport() {
             </Radio.Group>
           </Card>
 
-          <Alert
-            type="info"
-            showIcon
-            message="支持的拆书 TXT 格式要求"
-            description={
-              <div style={{ lineHeight: 1.8 }}>
-                <div>1. 仅支持 <strong>.txt</strong> 文件，建议每章使用单独的章节标题行。</div>
-                <div>2. 推荐格式：<strong>第1章 标题</strong>，下一行开始写正文内容。</div>
-                <div>3. 正文建议按自然段换行，首行可缩进两个字符。</div>
-                <div>4. 章节之间保留空行即可，不要添加多余的分割线、全文完、导出时间等干扰内容。</div>
-                <div style={{ marginTop: 8 }}>
-                  示例：
-                  <pre style={{ margin: '8px 0 0', padding: 12, borderRadius: 8, background: token.colorFillAlter, whiteSpace: 'pre-wrap' }}>
+          <Card size="small" title="拆书导入检查清单">
+            <Collapse
+              size="small"
+              defaultActiveKey={['format', 'preview']}
+              items={[
+                {
+                  key: 'format',
+                  label: 'TXT 格式与切分支持',
+                  children: (
+                    <div style={{ lineHeight: 1.8 }}>
+                      <div>1. 仅支持 <strong>.txt</strong> 文件，建议每章标题独占一行，下一行开始正文。</div>
+                      <div>2. 推荐标题：<strong>第1章 标题</strong>、<strong>第一章 标题</strong>、<strong>第001回 标题</strong>。</div>
+                      <div>3. 也支持 <strong>卷/部/篇/幕/场/节</strong>、楔子/引子/序章/番外/终章、Markdown 标题、Chapter/Part/Prologue/Epilogue。</div>
+                      <div>4. 对 <strong>书名（1）/书名（2）</strong> 这类分页标题，以及“第一幕”下的 <strong>（1）/（2）</strong> 小节，会使用专门模式切分。</div>
+                      <div>5. 如果标题不稳定，系统会进入固定窗口兜底并降低置信度；此时请在预览页优先复核疑似边界。</div>
+                      <div>6. 尽量删除导出时间、广告、作者备注、全文完、分割线等干扰内容；正文保留自然段换行即可。</div>
+                      <div style={{ marginTop: 8 }}>
+                        示例：
+                        <pre style={{ margin: '8px 0 0', padding: 12, borderRadius: 8, background: token.colorFillAlter, whiteSpace: 'pre-wrap' }}>
 {`第1章 初入江湖
 这里是第1章正文第一段。
 这里是第1章正文第二段。
 
 第2章 雨夜追踪
 这里是第2章正文内容。`}
-                  </pre>
-                </div>
-              </div>
-            }
-          />
+                        </pre>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  key: 'preview',
+                  label: '预览页怎么判断拆分是否可靠',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                      <Text>1. 先看“章节切分诊断”：切分模式、置信度、问题分类、章节数、平均字数、长度波动和标题密度。</Text>
+                      <Text>2. 置信度偏低、出现“标题过密/过稀/固定窗口兜底”时，不要直接导入，先打开“只看疑似边界”。</Text>
+                      <Text>3. 对明显误切的章节使用“拆分本章”；对被切碎的连续段落使用“合并下一章”。</Text>
+                      <Text>4. 修改后的标题、摘要、正文会直接进入最终导入 payload，不会绕过原来的导入工作流。</Text>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'entities',
+                  label: '实体预扫描与候选导入',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                      <Text>1. 预扫描会给出候选名称、类型、出现次数、首次出现章节、证据片段和分类置信度。</Text>
+                      <Text>2. 人物和组织可以勾选后导入现有角色/组织表；地点和物品暂作为证据保留，不写入角色表。</Text>
+                      <Text>3. 泛称、称谓和高风险误识别名称会经过名称权威规则过滤，避免“大哥”“那人”等被当成稳定角色。</Text>
+                      <Text>4. 导入后如果选择 AI 自动补全设定，候选实体会作为后续角色、组织、关系生成的锚点。</Text>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'cost',
+                  label: 'Token 预算、恢复与失败处理',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                      <Text>1. 预览页会展示输入、输出、合计 Token 和预计 API 调用次数，仅用于估算，不等同于最终账单。</Text>
+                      <Text>2. 价格参考来自 OpenRouter 模型价格缓存，供应商价格和缓存时间可能存在差异。</Text>
+                      <Text>3. 拆书任务由后台任务管理，刷新页面后会优先从服务端恢复任务状态和预览结果。</Text>
+                      <Text>4. 导入生成世界观、职业、角色等后续步骤失败时，可在完成页只重试失败步骤。</Text>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'manual',
+                  label: '手动模式适合什么情况',
+                  children: (
+                    <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                      <Text>1. 想先自己定项目框架、世界观和角色方向时，选择“手动填写预览设定”。</Text>
+                      <Text>2. 手动模式不会强制等待 AI 反推项目设定，但仍会保留拆分诊断、实体候选和章节预览。</Text>
+                      <Text>3. 预览页中的标题、类型、主题、简介、世界规则等字段可以单独调用 AI 生成/润色，结果需要确认后才写入。</Text>
+                      <Text>4. 确认导入前可选择“手动填写设定”，只导入项目、大纲和章节，后续再逐项维护。</Text>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          </Card>
           
           <Space wrap>
             <Button
