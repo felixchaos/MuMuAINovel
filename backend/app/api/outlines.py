@@ -56,6 +56,43 @@ def _build_characters_info(characters: List[Character]) -> str:
     ])
 
 
+async def _get_normalized_outline_chapters(
+    db: AsyncSession,
+    project_id: str,
+    outline_id: str
+) -> List[Chapter]:
+    """Fetch outline chapters and repair duplicated/missing local sub indexes."""
+    chapters_result = await db.execute(
+        select(Chapter)
+        .where(
+            Chapter.project_id == project_id,
+            Chapter.outline_id == outline_id
+        )
+        .order_by(Chapter.chapter_number, Chapter.created_at, Chapter.id)
+    )
+    chapters = chapters_result.scalars().all()
+
+    changed = False
+    for idx, chapter in enumerate(chapters, start=1):
+        if chapter.sub_index != idx:
+            logger.warning(
+                "修正大纲展开章节子序号: outline=%s chapter=%s %s -> %s",
+                outline_id,
+                chapter.id,
+                chapter.sub_index,
+                idx,
+            )
+            chapter.sub_index = idx
+            changed = True
+
+    if changed:
+        await db.commit()
+        for chapter in chapters:
+            await db.refresh(chapter)
+
+    return chapters
+
+
 @router.post("", response_model=OutlineResponse, summary="创建大纲")
 async def create_outline(
     outline: OutlineCreate,
@@ -2983,13 +3020,8 @@ async def get_outline_chapters(
     user_id = getattr(request.state, 'user_id', None)
     await verify_project_access(outline.project_id, user_id, db)
     
-    # 查询该大纲关联的章节
-    chapters_result = await db.execute(
-        select(Chapter)
-        .where(Chapter.outline_id == outline_id)
-        .order_by(Chapter.sub_index)
-    )
-    chapters = chapters_result.scalars().all()
+    # 查询该大纲关联的章节，并修复旧版本可能写入的重复子序号
+    chapters = await _get_normalized_outline_chapters(db, outline.project_id, outline_id)
     
     # 如果有章节,解析展开规划
     expansion_plans = []
@@ -3005,6 +3037,7 @@ async def get_outline_chapters(
             
             expansion_plans.append({
                 "sub_index": chapter.sub_index,
+                "chapter_number": chapter.chapter_number,
                 "title": chapter.title,
                 "plot_summary": chapter.summary or "",
                 "key_events": plan_data.get("key_events", []) if plan_data else [],

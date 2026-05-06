@@ -1253,6 +1253,7 @@ export default function Outline() {
       chapters: Array<{ id: string; chapter_number: number; title: string }>;
       expansion_plans: Array<{
         sub_index: number;
+        chapter_number: number;
         title: string;
         plot_summary: string;
         key_events: string[];
@@ -1363,7 +1364,7 @@ export default function Outline() {
                       fontSize: isMobile ? 12 : 14
                     }}
                   >
-                    {plan.sub_index}. {plan.title}
+                    第{plan.chapter_number}章 · {plan.sub_index}. {plan.title}
                   </span>
                 </Space>
               ),

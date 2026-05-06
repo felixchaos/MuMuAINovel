@@ -21,6 +21,14 @@ class PlotExpansionService:
     
     def __init__(self, ai_service: AIService):
         self.ai_service = ai_service
+
+    @staticmethod
+    def _normalize_plan_sub_indexes(chapter_plans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep outline-local chapter indexes deterministic regardless of AI output."""
+        for idx, plan in enumerate(chapter_plans):
+            if isinstance(plan, dict):
+                plan["sub_index"] = idx + 1
+        return chapter_plans
     
     async def analyze_outline_for_chapters(
         self,
@@ -146,7 +154,9 @@ class PlotExpansionService:
         ai_content = accumulated_text
         
         # 解析AI响应
-        chapter_plans = self._parse_expansion_response(ai_content, outline.id)
+        chapter_plans = self._normalize_plan_sub_indexes(
+            self._parse_expansion_response(ai_content, outline.id)
+        )
         
         logger.info(f"成功生成 {len(chapter_plans)} 个章节规划")
         return chapter_plans
@@ -456,7 +466,7 @@ class PlotExpansionService:
                 project_id=project_id,
                 outline_id=outline_id,
                 chapter_number=start_chapter_number + idx,
-                sub_index=plan.get("sub_index", idx + 1),
+                sub_index=idx + 1,
                 title=plan.get("title", f"第{start_chapter_number + idx}章"),
                 summary=plan.get("plot_summary", ""),
                 expansion_plan=expansion_plan_json,
@@ -668,12 +678,16 @@ class PlotExpansionService:
                     Chapter.project_id == project_id,
                     Chapter.outline_id == outline.id
                 )
-                .order_by(Chapter.sub_index)
+                .order_by(Chapter.chapter_number, Chapter.sub_index, Chapter.created_at, Chapter.id)
             )
             chapters = chapters_result.scalars().all()
             
             # 更新每个章节的chapter_number
-            for chapter in chapters:
+            for sub_idx, chapter in enumerate(chapters, start=1):
+                if chapter.sub_index != sub_idx:
+                    logger.debug(f"修正章节 {chapter.id} 子序号: {chapter.sub_index} -> {sub_idx}")
+                    chapter.sub_index = sub_idx
+                    updated_count += 1
                 if chapter.chapter_number != current_chapter_number:
                     logger.debug(f"更新章节 {chapter.id}: {chapter.chapter_number} -> {current_chapter_number}")
                     chapter.chapter_number = current_chapter_number

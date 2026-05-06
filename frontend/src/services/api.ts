@@ -602,6 +602,7 @@ export const outlineApi = {
       }>;
       expansion_plans: Array<{
         sub_index: number;
+        chapter_number: number;
         title: string;
         plot_summary: string;
         key_events: string[];

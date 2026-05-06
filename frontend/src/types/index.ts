@@ -576,6 +576,7 @@ export interface OutlineReorderRequest {
 // 大纲展开相关类型定义
 export interface ChapterPlanItem {
   sub_index: number;
+  chapter_number?: number;
   title: string;
   plot_summary: string;
   key_events: string[];
