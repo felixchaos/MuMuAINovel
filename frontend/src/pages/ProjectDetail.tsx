@@ -11,7 +11,6 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ApartmentOutlined,
-  BankOutlined,
   EditOutlined,
   FundOutlined,
   HeartOutlined,
@@ -136,11 +135,6 @@ export default function ProjectDetail() {
           label: <Link to={`/project/${projectId}/characters`}>角色管理</Link>,
         },
         {
-          key: 'organizations',
-          icon: <BankOutlined />,
-          label: <Link to={`/project/${projectId}/organizations`}>组织管理</Link>,
-        },
-        {
           key: 'careers',
           icon: <TrophyOutlined />,
           label: <Link to={`/project/${projectId}/careers`}>职业管理</Link>,
@@ -222,11 +216,6 @@ export default function ProjectDetail() {
       label: <Link to={`/project/${projectId}/relationships`}>关系管理</Link>,
     },
     {
-      key: 'organizations',
-      icon: <BankOutlined />,
-      label: <Link to={`/project/${projectId}/organizations`}>组织管理</Link>,
-    },
-    {
       key: 'outline',
       icon: <FileTextOutlined />,
       label: <Link to={`/project/${projectId}/outline`}>大纲管理</Link>,
@@ -269,7 +258,7 @@ export default function ProjectDetail() {
     if (path.includes('/world-setting')) return 'world-setting';
     if (path.includes('/careers')) return 'careers';
     if (path.includes('/relationships')) return 'relationships';
-    if (path.includes('/organizations')) return 'organizations';
+    if (path.includes('/organizations')) return 'characters';
     if (path.includes('/outline')) return 'outline';
     if (path.includes('/characters')) return 'characters';
     if (path.includes('/chapter-analysis')) return 'chapter-analysis';

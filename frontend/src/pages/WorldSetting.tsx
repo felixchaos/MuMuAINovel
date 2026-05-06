@@ -21,6 +21,7 @@ export default function WorldSetting() {
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [regenerateProgress, setRegenerateProgress] = useState(0);
   const [regenerateMessage, setRegenerateMessage] = useState('');
+  const [regenerateForm] = Form.useForm();
   const [isPreviewModalVisible, setIsPreviewModalVisible] = useState(false);
   const [newWorldData, setNewWorldData] = useState<{
     time_period: string;
@@ -32,25 +33,42 @@ export default function WorldSetting() {
   const [modal, contextHolder] = Modal.useModal();
   const { token } = theme.useToken();
 
-  // AI重新生成世界观
+  // AI智能修正世界观
   const handleRegenerate = async () => {
     if (!currentProject) return;
 
     modal.confirm({
-      title: '确认重新生成',
-      content: '确定要使用AI重新生成世界观设定吗？这将替换当前的世界观内容。',
+      title: 'AI智能修正世界观',
+      width: 620,
+      content: (
+        <Form form={regenerateForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            label="修正要求"
+            name="requirements"
+            tooltip="指出当前世界观哪里不对，AI会结合现有设定进行修正"
+          >
+            <TextArea
+              rows={5}
+              placeholder="例如：去掉现代科技元素；把世界规则改成低武体系；修正时间背景与大纲冲突的地方..."
+            />
+          </Form.Item>
+        </Form>
+      ),
       centered: true,
-      okText: '确认重新生成',
+      okText: '开始修正',
       cancelText: '取消',
       onOk: async () => {
+        const values = await regenerateForm.validateFields();
         setIsRegenerating(true);
         setRegenerateProgress(0);
-        setRegenerateMessage('准备重新生成世界观...');
+        setRegenerateMessage('准备智能修正世界观...');
 
         try {
           await wizardStreamApi.regenerateWorldBuildingStream(
             currentProject.id,
-            {},
+            {
+              requirements: values.requirements?.trim(),
+            },
             {
               onProgress: (msg: string, progress: number) => {
                 setRegenerateProgress(progress);
@@ -71,8 +89,8 @@ export default function WorldSetting() {
                 setNewWorldData(newData);
               },
               onError: (errorMsg: string) => {
-                console.error('重新生成失败:', errorMsg);
-                message.error(errorMsg || '重新生成失败，请重试');
+                console.error('智能修正失败:', errorMsg);
+                message.error(errorMsg || '智能修正失败，请重试');
               },
               onComplete: () => {
                 setIsRegenerating(false);
@@ -80,12 +98,13 @@ export default function WorldSetting() {
                 setRegenerateMessage('');
                 // 显示预览对话框
                 setIsPreviewModalVisible(true);
+                regenerateForm.resetFields();
               }
             }
           );
         } catch (error) {
-          console.error('重新生成出错:', error);
-          message.error('重新生成出错，请重试');
+          console.error('智能修正出错:', error);
+          message.error('智能修正出错，请重试');
           setIsRegenerating(false);
           setRegenerateProgress(0);
           setRegenerateMessage('');
@@ -94,7 +113,7 @@ export default function WorldSetting() {
     });
   };
 
-  // 确认保存重新生成的内容
+  // 确认保存智能修正后的内容
   const handleConfirmSave = async () => {
     if (!currentProject || !newWorldData) return;
 
@@ -201,7 +220,7 @@ export default function WorldSetting() {
                 flex: '1 1 auto'
               }}
             >
-              <span className="button-text-mobile">AI重新生成</span>
+              <span className="button-text-mobile">AI智能修正</span>
             </Button>
             <Button
               type="primary"
@@ -606,16 +625,16 @@ export default function WorldSetting() {
         </Form>
       </Modal>
 
-      {/* AI重新生成加载遮罩 */}
+      {/* AI智能修正加载遮罩 */}
       <SSELoadingOverlay
         loading={isRegenerating}
         progress={regenerateProgress}
         message={regenerateMessage}
       />
 
-      {/* 预览重新生成的内容模态框 */}
+      {/* 预览智能修正后的内容模态框 */}
       <Modal
-        title="预览重新生成的世界观"
+        title="预览修正后的世界观"
         open={isPreviewModalVisible}
         centered
         width={900}

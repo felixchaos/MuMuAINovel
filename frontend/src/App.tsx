@@ -10,7 +10,6 @@ import Characters from './pages/Characters';
 import Careers from './pages/Careers';
 import Relationships from './pages/Relationships';
 import RelationshipGraph from './pages/RelationshipGraph';
-import Organizations from './pages/Organizations';
 import Chapters from './pages/Chapters';
 import ChapterReader from './pages/ChapterReader';
 import ChapterAnalysis from './pages/ChapterAnalysis';
@@ -70,7 +69,7 @@ function App() {
             <Route path="characters" element={<Characters />} />
             <Route path="relationships" element={<Relationships />} />
             <Route path="relationships-graph" element={<RelationshipGraph />} />
-            <Route path="organizations" element={<Organizations />} />
+            <Route path="organizations" element={<Navigate to="../characters?tab=organization" replace />} />
             <Route path="chapters" element={<Chapters />} />
             <Route path="chapter-analysis" element={<ChapterAnalysis />} />
             <Route path="timeline" element={<StoryTimeline />} />

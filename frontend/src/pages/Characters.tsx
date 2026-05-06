@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Button, Modal, Form, Input, Select, message, Row, Col, Empty, Tabs, Divider, Typography, Space, InputNumber, Checkbox, theme } from 'antd';
 import { ThunderboltOutlined, UserOutlined, TeamOutlined, PlusOutlined, ExportOutlined, ImportOutlined, DownloadOutlined, HighlightOutlined } from '@ant-design/icons';
 import { useStore } from '../store';
@@ -139,6 +140,7 @@ export default function Characters() {
   const [generateForm] = Form.useForm();
   const [generateOrgForm] = Form.useForm();
   const [analyzeCharactersForm] = Form.useForm();
+  const [batchRegenerateForm] = Form.useForm();
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -153,6 +155,7 @@ export default function Characters() {
   const [isOptimizingBatch, setIsOptimizingBatch] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const characterOptimizePollCancelRef = useRef<ReturnType<typeof pollTaskUntilComplete> | null>(null);
+  const [searchParams] = useSearchParams();
 
   const {
     refreshCharacters,
@@ -173,6 +176,14 @@ export default function Characters() {
       characterOptimizePollCancelRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'all' || tab === 'character' || tab === 'organization') {
+      setActiveTab(tab);
+    }
+  }, [searchParams]);
+
   const [modal, contextHolder] = Modal.useModal();
 
   const fetchCareers = async () => {
@@ -349,6 +360,71 @@ export default function Characters() {
       await refreshCharacters();
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : '全文角色分析失败';
+      message.error(errorMessage);
+    } finally {
+      setTimeout(() => {
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage('');
+      }, 500);
+    }
+  };
+
+  const getBatchRegenerateTargets = () => {
+    const currentDisplayList = activeTab === 'character'
+      ? characters.filter(item => !item.is_organization)
+      : activeTab === 'organization'
+        ? characters.filter(item => item.is_organization)
+        : characters;
+    const targetIds = selectedCharacters.length > 0
+      ? selectedCharacters
+      : currentDisplayList.map(item => item.id);
+    return characters.filter(item => targetIds.includes(item.id));
+  };
+
+  const handleBatchRegenerate = async (values: { requirements: string }) => {
+    const targets = getBatchRegenerateTargets();
+    if (targets.length === 0) {
+      message.warning('请先选择要修正的角色或组织');
+      return;
+    }
+
+    try {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage('准备智能修正角色/组织...');
+
+      const client = new SSEPostClient(
+        '/api/characters/batch-regenerate-stream',
+        {
+          project_id: currentProject.id,
+          character_ids: targets.map(item => item.id),
+          requirements: values.requirements.trim(),
+        },
+        {
+          onProgress: (msg, prog) => {
+            setProgress(prog);
+            setProgressMessage(msg);
+          },
+          onError: (error) => {
+            message.error(`修正失败: ${error}`);
+          },
+          onComplete: () => {
+            setProgress(100);
+            setProgressMessage('修正完成！');
+          }
+        }
+      );
+
+      const result = await client.connect();
+      const updatedCount = result?.updated_count || targets.length;
+      message.success(`AI已修正 ${updatedCount} 个角色/组织`);
+      Modal.destroyAll();
+      batchRegenerateForm.resetFields();
+      setSelectedCharacters([]);
+      await refreshCharacters();
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'AI修正失败';
       message.error(errorMessage);
     } finally {
       setTimeout(() => {
@@ -902,6 +978,38 @@ export default function Characters() {
     });
   };
 
+  const showBatchRegenerateModal = () => {
+    const targets = getBatchRegenerateTargets();
+    modal.confirm({
+      title: 'AI智能修正角色/组织',
+      width: 680,
+      centered: true,
+      content: (
+        <Form form={batchRegenerateForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            将修正{selectedCharacters.length > 0 ? `已选的 ${targets.length}` : `当前列表的 ${targets.length}`} 个角色/组织。
+          </Typography.Paragraph>
+          <Form.Item
+            label="修正要求"
+            name="requirements"
+            rules={[{ required: true, whitespace: true, message: '请输入修正要求' }]}
+          >
+            <TextArea
+              rows={5}
+              placeholder="例如：把误生成的现代职业改成修真体系；统一年龄和背景冲突；修正组织目的，避免与世界规则矛盾..."
+            />
+          </Form.Item>
+        </Form>
+      ),
+      okText: '开始修正',
+      cancelText: '取消',
+      onOk: async () => {
+        const values = await batchRegenerateForm.validateFields();
+        await handleBatchRegenerate(values);
+      },
+    });
+  };
+
   const characterList = characters.filter(c => !c.is_organization);
   const organizationList = characters.filter(c => c.is_organization);
 
@@ -985,6 +1093,15 @@ export default function Characters() {
             size={isMobile ? 'small' : 'middle'}
           >
             AI生成组织
+          </Button>
+          <Button
+            icon={<ThunderboltOutlined />}
+            onClick={showBatchRegenerateModal}
+            loading={isGenerating}
+            disabled={characters.length === 0}
+            size={isMobile ? 'small' : 'middle'}
+          >
+            AI修正{selectedCharacters.length > 0 ? ` (${selectedCharacters.length})` : ''}
           </Button>
           <Button
             icon={<ImportOutlined />}
@@ -1515,17 +1632,17 @@ export default function Characters() {
                 label="主要成员"
                 name="organization_members"
                 style={{ marginBottom: 4 }}
-                tooltip="成员信息由组织管理模块维护，此处仅展示"
+                tooltip="成员信息由结构化组织成员关系生成，此处仅展示"
               >
                 <TextArea
                   disabled
                   autoSize={{ minRows: 1, maxRows: 4 }}
-                  placeholder="暂无成员，请在组织管理中添加"
+                  placeholder="暂无成员"
                   style={{ color: token.colorText, backgroundColor: token.colorFillAlter }}
                 />
               </Form.Item>
               <div style={{ marginBottom: 12, fontSize: 12, color: token.colorTextTertiary }}>
-                💡 请前往「组织管理」页面添加或管理组织成员
+                成员信息会从组织成员关系自动汇总展示。
               </div>
 
               {/* 第四行：所在地、代表颜色 */}

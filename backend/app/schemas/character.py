@@ -125,6 +125,16 @@ class CharacterAnalyzeFromTextRequest(BaseModel):
     max_characters: int = Field(40, ge=1, le=80, description="最多生成/更新的角色数量")
 
 
+class CharacterBatchRegenerateRequest(BaseModel):
+    """AI批量修正已有角色/组织的请求模型"""
+    project_id: str = Field(..., description="项目ID")
+    character_ids: List[str] = Field(..., min_length=1, description="要修正的角色/组织ID列表")
+    requirements: str = Field(..., min_length=1, description="修正要求")
+    provider: Optional[str] = Field(None, description="AI提供商")
+    model: Optional[str] = Field(None, description="AI模型")
+    enable_mcp: bool = Field(True, description="是否启用MCP工具增强")
+
+
 class CharacterListResponse(BaseModel):
     """角色列表响应模型"""
     total: int

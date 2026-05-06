@@ -18,7 +18,8 @@ from app.schemas.character import (
     CharacterResponse,
     CharacterListResponse,
     CharacterAnalyzeFromTextRequest,
-    CharacterGenerateRequest
+    CharacterGenerateRequest,
+    CharacterBatchRegenerateRequest
 )
 from app.services.ai_service import AIService
 from app.services.json_helper import loads_json
@@ -909,6 +910,479 @@ async def create_character(
     except Exception as e:
         logger.error(f"手动创建角色失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"创建角色失败: {str(e)}")
+
+
+@router.post("/batch-regenerate-stream", summary="AI批量修正已有角色/组织（流式）")
+async def batch_regenerate_characters_stream(
+    request: CharacterBatchRegenerateRequest,
+    http_request: Request,
+    db: AsyncSession = Depends(get_db),
+    user_ai_service: AIService = Depends(get_user_ai_service)
+):
+    """使用AI批量修正已有角色/组织，只更新现有记录，不新建也不删除。"""
+    async def generate() -> AsyncGenerator[str, None]:
+        from app.models.career import CharacterCareer, Career
+
+        tracker = WizardProgressTracker("角色修正")
+        db_committed = False
+
+        def to_json_text(value):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+
+        def parse_jsonish(value):
+            if value is None:
+                return None
+            if isinstance(value, (list, dict)):
+                return value
+            if isinstance(value, str):
+                try:
+                    return loads_json(value)
+                except Exception:
+                    return value
+            return value
+
+        def as_clean_text(value):
+            if value is None:
+                return None
+            if isinstance(value, (list, dict)):
+                return json.dumps(value, ensure_ascii=False)
+            return str(value).strip()
+
+        def as_stage(value, default=1, maximum=999):
+            try:
+                stage = int(value)
+            except Exception:
+                stage = default
+            return max(1, min(stage, maximum or 999))
+
+        def normalize_career_name(value):
+            if value is None:
+                return ""
+            return str(value).strip()
+
+        try:
+            user_id = getattr(http_request.state, 'user_id', None)
+
+            yield await tracker.start("开始AI批量修正角色/组织...")
+            yield await tracker.loading("验证项目权限...", 0.2)
+            project = await verify_project_access(request.project_id, user_id, db)
+
+            requested_ids = list(dict.fromkeys(request.character_ids))
+            selected_result = await db.execute(
+                select(Character).where(
+                    Character.project_id == request.project_id,
+                    Character.id.in_(requested_ids)
+                )
+            )
+            selected_characters = selected_result.scalars().all()
+            characters_by_id = {char.id: char for char in selected_characters}
+            missing_ids = [char_id for char_id in requested_ids if char_id not in characters_by_id]
+            if missing_ids:
+                yield await tracker.error(f"部分角色不存在或不属于当前项目：{', '.join(missing_ids[:5])}", 404)
+                return
+
+            if not selected_characters:
+                yield await tracker.error("没有可修正的角色/组织", 400)
+                return
+
+            yield await tracker.loading("加载项目上下文...", 0.6)
+            all_chars_result = await db.execute(
+                select(Character)
+                .where(Character.project_id == request.project_id)
+                .order_by(Character.is_organization.desc(), Character.created_at)
+            )
+            all_characters = all_chars_result.scalars().all()
+
+            org_result = await db.execute(
+                select(Organization).where(
+                    Organization.character_id.in_([char.id for char in selected_characters if char.is_organization])
+                )
+            )
+            org_by_character_id = {org.character_id: org for org in org_result.scalars().all()}
+
+            careers_result = await db.execute(
+                select(Career)
+                .where(Career.project_id == request.project_id)
+                .order_by(Career.type, Career.name)
+            )
+            careers = careers_result.scalars().all()
+            career_by_name = {
+                (career.type, normalize_career_name(career.name)): career
+                for career in careers
+            }
+
+            selected_payload = []
+            for char in selected_characters:
+                org = org_by_character_id.get(char.id)
+                selected_payload.append({
+                    "id": char.id,
+                    "name": char.name,
+                    "is_organization": char.is_organization,
+                    "role_type": char.role_type,
+                    "age": char.age,
+                    "gender": char.gender,
+                    "personality": char.personality,
+                    "appearance": char.appearance,
+                    "background": char.background,
+                    "relationships": await _build_relationships_summary(char.id, char.project_id, db),
+                    "organization_type": char.organization_type,
+                    "organization_purpose": char.organization_purpose,
+                    "organization_members": await _build_org_members_summary(char.id, db) if char.is_organization else "",
+                    "traits": parse_jsonish(char.traits),
+                    "main_career_id": char.main_career_id,
+                    "main_career_stage": char.main_career_stage,
+                    "sub_careers": parse_jsonish(char.sub_careers) if char.sub_careers else [],
+                    "power_level": org.power_level if org else None,
+                    "location": org.location if org else None,
+                    "motto": org.motto if org else None,
+                    "color": org.color if org else None,
+                })
+
+            all_entities_context = [
+                {
+                    "id": char.id,
+                    "name": char.name,
+                    "type": "organization" if char.is_organization else "character",
+                    "role_type": char.role_type,
+                    "organization_type": char.organization_type,
+                }
+                for char in all_characters
+            ]
+            careers_context = [
+                {
+                    "name": career.name,
+                    "type": career.type,
+                    "max_stage": career.max_stage,
+                    "description": career.description,
+                }
+                for career in careers
+            ]
+
+            story_context = await build_project_story_context(db, request.project_id)
+
+            yield await tracker.preparing("构建AI修正提示词...")
+            prompt = f"""
+你是小说设定修正助手。请根据用户要求，批量修正已有角色/组织设定。
+
+【硬性规则】
+1. 只能修正下面 selected_entities 中已有的记录，禁止新增、删除或合并记录。
+2. 每条更新必须保留原始 id，is_organization 必须与原记录一致。
+3. 如果某个字段不需要修改，可以省略；如果返回字段，系统会写回数据库。
+4. 角色与组织必须符合世界观；明显错误、冲突、穿帮、AI幻觉信息要智能修正。
+5. 关系字段仅作为参考，本接口不直接改结构化关系表；不要输出 relationships 更新。
+6. 职业只能使用 available_careers 中存在的名称。没有合适职业时省略 career_info。
+7. 只输出合法 JSON，不要 Markdown，不要解释。
+
+【项目世界观】
+- 书名：{project.title}
+- 主题：{project.theme or '未设定'}
+- 类型：{project.genre or '未设定'}
+- 时间背景：{project.world_time_period or '未设定'}
+- 地理位置：{project.world_location or '未设定'}
+- 氛围基调：{project.world_atmosphere or '未设定'}
+- 世界规则：{project.world_rules or '未设定'}
+
+【故事上下文】
+{story_context}
+
+【用户修正要求】
+{request.requirements.strip()}
+
+【项目全部实体索引】
+{to_json_text(all_entities_context)}
+
+【可用职业 available_careers】
+{to_json_text(careers_context)}
+
+【待修正实体 selected_entities】
+{to_json_text(selected_payload)}
+
+【输出格式】
+{{
+  "updates": [
+    {{
+      "id": "必须是 selected_entities 中的原始id",
+      "name": "修正后的名称，可省略",
+      "age": "角色年龄，可省略",
+      "gender": "角色性别，可省略",
+      "role_type": "protagonist/supporting/antagonist，可省略",
+      "personality": "性格或组织特性，可省略",
+      "appearance": "外貌或组织形象，可省略",
+      "background": "背景故事，可省略",
+      "traits": ["标签1", "标签2"],
+      "organization_type": "组织类型，仅组织可用",
+      "organization_purpose": "组织目的，仅组织可用",
+      "power_level": 50,
+      "location": "组织所在地，仅组织可用",
+      "motto": "组织口号，仅组织可用",
+      "color": "组织代表颜色，仅组织可用",
+      "career_info": {{
+        "main_career_name": "available_careers 中的主职业名称",
+        "main_career_stage": 1,
+        "sub_careers": [
+          {{"career_name": "available_careers 中的副职业名称", "stage": 1}}
+        ]
+      }}
+    }}
+  ]
+}}
+"""
+
+            if user_id:
+                user_ai_service.user_id = user_id
+                user_ai_service.db_session = db
+
+            yield await tracker.generating(0, max(4000, len(prompt) * 2), "调用AI服务修正角色/组织...")
+            ai_response = ""
+            chunk_count = 0
+            estimated_total = max(4000, len(prompt) * 2)
+
+            async for chunk in wrap_stream_with_heartbeat(
+                user_ai_service.generate_text_stream(
+                    prompt=prompt,
+                    provider=request.provider,
+                    model=request.model,
+                    tool_choice="auto" if request.enable_mcp else None,
+                    auto_mcp=request.enable_mcp,
+                ),
+                heartbeat_interval=15.0
+            ):
+                if chunk is HEARTBEAT:
+                    yield await tracker.heartbeat()
+                    continue
+
+                content = chunk.get("content", "") if isinstance(chunk, dict) else chunk
+                if not content:
+                    continue
+
+                ai_response += content
+                yield await SSEResponse.send_chunk(content)
+                chunk_count += 1
+                if chunk_count % 8 == 0:
+                    yield await tracker.generating(len(ai_response), estimated_total, "AI修正角色/组织中...")
+
+            if not ai_response.strip():
+                yield await tracker.error("AI服务返回空响应")
+                return
+
+            yield await tracker.parsing("解析AI修正结果...")
+            try:
+                cleaned_response = user_ai_service._clean_json_response(ai_response)
+                parsed_response = loads_json(cleaned_response)
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ 批量修正角色JSON解析失败: {e}")
+                logger.error(f"   原始响应预览: {ai_response[:300]}")
+                yield await tracker.error(f"AI返回的内容无法解析为JSON：{str(e)}")
+                return
+
+            updates = parsed_response.get("updates") if isinstance(parsed_response, dict) else parsed_response
+            if not isinstance(updates, list):
+                yield await tracker.error("AI返回格式错误：updates 必须是数组")
+                return
+
+            characters_by_name = {char.name: char for char in selected_characters}
+
+            async def sync_main_career(character: Character, career_info: dict):
+                main_name = career_info.get("main_career_name", career_info.get("main_career"))
+                if "main_career_name" not in career_info and "main_career" not in career_info:
+                    return
+
+                main_rel_result = await db.execute(
+                    select(CharacterCareer).where(
+                        CharacterCareer.character_id == character.id,
+                        CharacterCareer.career_type == "main"
+                    )
+                )
+                main_rel = main_rel_result.scalar_one_or_none()
+
+                normalized = normalize_career_name(main_name)
+                if not normalized or normalized in {"无", "none", "null", "None"}:
+                    if main_rel:
+                        await db.delete(main_rel)
+                    character.main_career_id = None
+                    character.main_career_stage = None
+                    return
+
+                career = career_by_name.get(("main", normalized))
+                if not career:
+                    logger.warning(f"AI修正返回的主职业不存在，已忽略: {normalized}")
+                    return
+
+                stage = as_stage(career_info.get("main_career_stage", career_info.get("main_stage", 1)), 1, career.max_stage)
+                if main_rel:
+                    main_rel.career_id = career.id
+                    main_rel.current_stage = stage
+                else:
+                    db.add(CharacterCareer(
+                        character_id=character.id,
+                        career_id=career.id,
+                        career_type="main",
+                        current_stage=stage,
+                        stage_progress=0
+                    ))
+                character.main_career_id = career.id
+                character.main_career_stage = stage
+
+            async def sync_sub_careers(character: Character, career_info: dict):
+                if "sub_careers" not in career_info:
+                    return
+
+                existing_subs = await db.execute(
+                    select(CharacterCareer).where(
+                        CharacterCareer.character_id == character.id,
+                        CharacterCareer.career_type == "sub"
+                    )
+                )
+                for sub_rel in existing_subs.scalars():
+                    await db.delete(sub_rel)
+
+                sub_career_list = []
+                raw_subs = career_info.get("sub_careers") or []
+                if not isinstance(raw_subs, list):
+                    raw_subs = []
+
+                for sub_data in raw_subs[:2]:
+                    if isinstance(sub_data, str):
+                        sub_name = sub_data
+                        sub_stage = 1
+                    elif isinstance(sub_data, dict):
+                        sub_name = sub_data.get("career_name", sub_data.get("career"))
+                        sub_stage = sub_data.get("stage", 1)
+                    else:
+                        continue
+
+                    normalized = normalize_career_name(sub_name)
+                    if not normalized:
+                        continue
+                    career = career_by_name.get(("sub", normalized))
+                    if not career:
+                        logger.warning(f"AI修正返回的副职业不存在，已忽略: {normalized}")
+                        continue
+
+                    stage = as_stage(sub_stage, 1, career.max_stage)
+                    db.add(CharacterCareer(
+                        character_id=character.id,
+                        career_id=career.id,
+                        career_type="sub",
+                        current_stage=stage,
+                        stage_progress=0
+                    ))
+                    sub_career_list.append({"career_id": career.id, "stage": stage})
+
+                character.sub_careers = json.dumps(sub_career_list, ensure_ascii=False) if sub_career_list else None
+
+            yield await tracker.saving("写入修正结果...", 0.3)
+            applied_ids = []
+            ignored_updates = 0
+            text_fields = [
+                "name", "age", "gender", "role_type", "personality",
+                "background", "appearance", "organization_type", "organization_purpose"
+            ]
+            org_fields = ["power_level", "location", "motto", "color"]
+
+            for update_item in updates:
+                if not isinstance(update_item, dict):
+                    ignored_updates += 1
+                    continue
+
+                char_id = update_item.get("id") or update_item.get("character_id")
+                character = characters_by_id.get(char_id)
+                if not character:
+                    original_name = update_item.get("original_name") or update_item.get("old_name") or update_item.get("name")
+                    character = characters_by_name.get(original_name)
+
+                if not character:
+                    ignored_updates += 1
+                    continue
+
+                for field in text_fields:
+                    if field not in update_item:
+                        continue
+                    if field.startswith("organization_") and not character.is_organization:
+                        continue
+                    if field == "role_type" and character.is_organization:
+                        continue
+                    setattr(character, field, as_clean_text(update_item.get(field)))
+
+                if "traits" in update_item:
+                    traits_value = update_item.get("traits")
+                    if traits_value is None:
+                        character.traits = None
+                    elif isinstance(traits_value, (list, dict)):
+                        character.traits = json.dumps(traits_value, ensure_ascii=False)
+                    else:
+                        character.traits = as_clean_text(traits_value)
+
+                if character.is_organization:
+                    org = org_by_character_id.get(character.id)
+                    if not org:
+                        org = Organization(
+                            character_id=character.id,
+                            project_id=character.project_id,
+                            member_count=0
+                        )
+                        db.add(org)
+                        await db.flush()
+                        org_by_character_id[character.id] = org
+
+                    for field in org_fields:
+                        if field not in update_item:
+                            continue
+                        value = update_item.get(field)
+                        if field == "power_level" and value is not None:
+                            try:
+                                value = max(0, min(int(value), 100))
+                            except Exception:
+                                value = org.power_level
+                        setattr(org, field, as_clean_text(value) if field != "power_level" else value)
+                else:
+                    career_info = update_item.get("career_info") or update_item.get("career_assignment")
+                    if isinstance(career_info, dict):
+                        await sync_main_career(character, career_info)
+                        await sync_sub_careers(character, career_info)
+
+                applied_ids.append(character.id)
+
+            if not applied_ids:
+                yield await tracker.error("AI没有返回任何可应用的已有角色/组织更新")
+                return
+
+            history = GenerationHistory(
+                project_id=request.project_id,
+                prompt=prompt,
+                generated_content=ai_response,
+                model=user_ai_service.default_model
+            )
+            db.add(history)
+
+            await db.commit()
+            db_committed = True
+
+            unique_applied_ids = list(dict.fromkeys(applied_ids))
+            yield await tracker.complete(f"已修正{len(unique_applied_ids)}个角色/组织")
+            yield await tracker.result({
+                "updated_count": len(unique_applied_ids),
+                "updated_ids": unique_applied_ids,
+                "ignored_updates": ignored_updates,
+            })
+            yield await tracker.done()
+
+            logger.info(f"✅ AI批量修正完成: project={request.project_id}, updated={len(unique_applied_ids)}")
+
+        except HTTPException as he:
+            logger.error(f"批量修正角色HTTP异常: {he.detail}")
+            yield await tracker.error(str(he.detail), he.status_code)
+        except GeneratorExit:
+            logger.warning("角色批量修正生成器被提前关闭")
+            if not db_committed and db.in_transaction():
+                await db.rollback()
+        except Exception as e:
+            logger.error(f"批量修正角色失败: {str(e)}")
+            if not db_committed and db.in_transaction():
+                await db.rollback()
+            yield await tracker.error(f"批量修正失败: {str(e)}")
+
+    return create_sse_response(generate())
 
 
 @router.post("/generate-stream", summary="AI生成角色（流式）")

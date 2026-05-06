@@ -1197,6 +1197,7 @@ export const wizardStreamApi = {
   regenerateWorldBuildingStream: (
     projectId: string,
     data?: {
+      requirements?: string;
       provider?: string;
       model?: string;
     },

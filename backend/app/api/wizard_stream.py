@@ -1602,6 +1602,7 @@ async def world_building_regenerate_generator(
         provider = data.get("provider")
         model = data.get("model")
         enable_mcp = data.get("enable_mcp", True)
+        requirements = (data.get("requirements") or data.get("correction_instructions") or "").strip()
         user_id = data.get("user_id")
 
         # 获取项目信息
@@ -1621,6 +1622,24 @@ async def world_building_regenerate_generator(
             genre=project.genre or "通用",
             description=project.description or "暂无简介"
         )
+        correction_context = f"""
+
+【当前已有世界观】
+- 时间背景：{project.world_time_period or '未设定'}
+- 地理位置：{project.world_location or '未设定'}
+- 氛围基调：{project.world_atmosphere or '未设定'}
+- 世界规则：{project.world_rules or '未设定'}
+
+【修正模式】
+请优先保留当前世界观中合理、可用、与项目主题一致的部分，只修正错误、冲突、穿帮、AI幻觉或用户明确指出的问题。
+如果用户要求整体重做，也要保持项目标题、题材、主题和简介的核心方向一致。
+
+【用户修正要求】
+{requirements or '未提供具体修正要求；请基于当前世界观做一次更严谨、更一致的智能修正。'}
+
+输出仍必须是原世界观模板要求的 JSON 字段：time_period、location、atmosphere、rules。
+"""
+        base_prompt = f"{base_prompt}\n{correction_context}"
         
         # 设置用户信息以启用MCP
         if user_id:
