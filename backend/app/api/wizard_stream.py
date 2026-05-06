@@ -27,6 +27,56 @@ from app.api.settings import get_user_ai_service
 router = APIRouter(prefix="/wizard-stream", tags=["项目创建向导(流式)"])
 logger = get_logger(__name__)
 
+WORLD_BUILDING_FIELDS = ("time_period", "location", "atmosphere", "rules")
+WORLD_BUILDING_FIELD_LABELS = {
+    "time_period": "时间设定",
+    "location": "地点设定",
+    "atmosphere": "氛围设定",
+    "rules": "规则设定",
+}
+WORLD_BUILDING_FIELD_ALIASES = {
+    "time_period": ["time_period", "timePeriod", "world_time_period", "时间设定", "时间背景", "时代背景"],
+    "location": ["location", "world_location", "地点设定", "地理位置", "地点背景", "地点"],
+    "atmosphere": ["atmosphere", "world_atmosphere", "氛围设定", "氛围基调", "社会氛围", "氛围"],
+    "rules": ["rules", "world_rules", "规则设定", "世界规则", "规则"],
+}
+
+
+def _clean_world_field(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value).strip()
+
+
+def _normalize_world_building_data(data: Any) -> Dict[str, str]:
+    """Normalize AI world-building JSON into the four canonical fields."""
+    normalized = {field: "" for field in WORLD_BUILDING_FIELDS}
+    if not isinstance(data, dict):
+        return normalized
+
+    for field, aliases in WORLD_BUILDING_FIELD_ALIASES.items():
+        for alias in aliases:
+            if alias in data:
+                normalized[field] = _clean_world_field(data.get(alias))
+                break
+
+    return normalized
+
+
+def _project_world_data(project: Project) -> Dict[str, str]:
+    return {
+        "time_period": project.world_time_period or "",
+        "location": project.world_location or "",
+        "atmosphere": project.world_atmosphere or "",
+        "rules": project.world_rules or "",
+    }
+
+
+def _missing_world_fields(world_data: Dict[str, str], required_fields: tuple[str, ...] = WORLD_BUILDING_FIELDS) -> list[str]:
+    return [field for field in required_fields if not _clean_world_field(world_data.get(field))]
+
 
 async def get_owned_project(db: AsyncSession, project_id: str, user_id: str | None) -> Project | None:
     if not project_id or not user_id:
@@ -1603,7 +1653,12 @@ async def world_building_regenerate_generator(
         model = data.get("model")
         enable_mcp = data.get("enable_mcp", True)
         requirements = (data.get("requirements") or data.get("correction_instructions") or "").strip()
+        target_field = (data.get("target_field") or "").strip()
         user_id = data.get("user_id")
+
+        if target_field and target_field not in WORLD_BUILDING_FIELDS:
+            yield await tracker.error("target_field 参数无效", 400)
+            return
 
         # 获取项目信息
         yield await tracker.loading("加载项目信息...")
@@ -1611,6 +1666,13 @@ async def world_building_regenerate_generator(
         if not project:
             yield await tracker.error("项目不存在或无权访问", 404)
             return
+        existing_world_data = _project_world_data(project)
+        required_world_fields = (target_field,) if target_field else WORLD_BUILDING_FIELDS
+        output_requirement = (
+            f"输出必须是严格 JSON，且必须包含四个字段：time_period、location、atmosphere、rules；其中 {target_field} 必须是非空字符串，其他字段必须原样返回当前已有内容。"
+            if target_field
+            else "输出必须是严格 JSON，且必须同时包含四个非空字符串字段：time_period、location、atmosphere、rules。"
+        )
         
         # 获取基础提示词（支持自定义）
         yield await tracker.preparing("准备AI提示词...")
@@ -1633,13 +1695,60 @@ async def world_building_regenerate_generator(
 【修正模式】
 请优先保留当前世界观中合理、可用、与项目主题一致的部分，只修正错误、冲突、穿帮、AI幻觉或用户明确指出的问题。
 如果用户要求整体重做，也要保持项目标题、题材、主题和简介的核心方向一致。
+{"本次只允许重新生成「" + WORLD_BUILDING_FIELD_LABELS[target_field] + "」，其他三个字段必须原样返回当前已有内容。" if target_field else "本次需要同时修正并完整返回四个字段，不能只写其中一项。"}
 
 【用户修正要求】
 {requirements or '未提供具体修正要求；请基于当前世界观做一次更严谨、更一致的智能修正。'}
 
-输出仍必须是原世界观模板要求的 JSON 字段：time_period、location、atmosphere、rules。
+{output_requirement}
 """
         base_prompt = f"{base_prompt}\n{correction_context}"
+
+        async def repair_world_data(raw_text: str, parsed_data: Any, reason: str) -> Dict[str, str]:
+            """Ask the model to repair malformed/partial world-building output into four fields."""
+            repair_prompt = f"""
+你需要把一次失败的世界观生成结果修复成严格 JSON。
+
+【失败原因】
+{reason}
+
+【硬性要求】
+1. 只输出 JSON，不要 Markdown，不要解释。
+2. {output_requirement}
+3. 不允许把四类信息揉进一个字段里；必须拆分到对应字段。
+4. 如果原始输出只是一整段，请根据语义拆分：时间/历史属于 time_period，地理/地点属于 location，社会情绪/战争气氛属于 atmosphere，超自然/科技/物理/限制规则属于 rules。
+5. {"只重新生成并修复 " + target_field + "，其他字段必须逐字使用当前已有内容。" if target_field else "四个字段都要基于原始输出和当前设定完整修复。"}
+
+【当前已有世界观】
+{json.dumps(existing_world_data, ensure_ascii=False, indent=2)}
+
+【用户修正要求】
+{requirements or '未提供'}
+
+【已解析到的数据】
+{json.dumps(parsed_data, ensure_ascii=False, indent=2) if isinstance(parsed_data, (dict, list)) else str(parsed_data)}
+
+【AI原始输出】
+{raw_text}
+
+请输出：
+{{
+  "time_period": "...",
+  "location": "...",
+  "atmosphere": "...",
+  "rules": "..."
+}}
+"""
+            response = await user_ai_service.generate_text(
+                prompt=repair_prompt,
+                provider=provider,
+                model=model,
+                temperature=0.2,
+                auto_mcp=False,
+                tool_choice="none",
+            )
+            repaired_text = user_ai_service._clean_json_response(response.get("content", ""))
+            return _normalize_world_building_data(loads_json(repaired_text))
         
         # 设置用户信息以启用MCP
         if user_id:
@@ -1724,7 +1833,45 @@ async def world_building_regenerate_generator(
                     cleaned_text = user_ai_service._clean_json_response(accumulated_text)
                     logger.info(f"✅ JSON清洗完成，清洗后长度: {len(cleaned_text)}")
                     
-                    world_data = loads_json(cleaned_text)
+                    parsed_world_data = loads_json(cleaned_text)
+                    world_data = _normalize_world_building_data(parsed_world_data)
+
+                    if target_field:
+                        for field in WORLD_BUILDING_FIELDS:
+                            if field != target_field:
+                                world_data[field] = existing_world_data[field]
+
+                    missing_fields = _missing_world_fields(world_data, required_world_fields)
+                    if missing_fields:
+                        missing_labels = "、".join(WORLD_BUILDING_FIELD_LABELS[field] for field in missing_fields)
+                        logger.warning(f"⚠️ 世界观字段缺失，尝试结构化修复：{missing_labels}")
+                        yield await tracker.parsing(f"补全缺失字段：{missing_labels}", 0.8)
+                        try:
+                            repaired_data = await repair_world_data(
+                                raw_text=accumulated_text,
+                                parsed_data=parsed_world_data,
+                                reason=f"缺失字段：{missing_labels}"
+                            )
+                            if target_field:
+                                for field in WORLD_BUILDING_FIELDS:
+                                    if field != target_field:
+                                        repaired_data[field] = existing_world_data[field]
+                            world_data = repaired_data
+                            missing_fields = _missing_world_fields(world_data, required_world_fields)
+                        except Exception as repair_error:
+                            logger.error(f"❌ 世界观结构化修复失败: {repair_error}")
+
+                    if missing_fields:
+                        missing_labels = "、".join(WORLD_BUILDING_FIELD_LABELS[field] for field in missing_fields)
+                        world_retry_count += 1
+                        if world_retry_count < MAX_WORLD_RETRIES:
+                            yield await tracker.retry(world_retry_count, MAX_WORLD_RETRIES, f"AI返回缺失字段：{missing_labels}")
+                            base_prompt += f"\n\n【上次失败原因】AI返回缺失字段：{missing_labels}。下一次必须输出四个非空字段，不允许空字符串。"
+                            continue
+
+                        yield await tracker.error(f"AI返回内容缺失：{missing_labels}，请补充修正要求后重试")
+                        return
+
                     logger.info(f"✅ 世界观重新生成JSON解析成功（尝试{world_retry_count+1}/{MAX_WORLD_RETRIES}）")
                     world_generation_success = True
                             

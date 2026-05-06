@@ -10,6 +10,15 @@ import { PolishableTextArea } from '../components/AIFieldAssistant';
 const { Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
+type WorldFieldKey = 'time_period' | 'location' | 'atmosphere' | 'rules';
+
+const worldFieldLabels: Record<WorldFieldKey, string> = {
+  time_period: '时间设定',
+  location: '地点设定',
+  atmosphere: '氛围设定',
+  rules: '规则设定',
+};
+
 export default function WorldSetting() {
   const { currentProject, setCurrentProject } = useStore();
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
@@ -34,11 +43,13 @@ export default function WorldSetting() {
   const { token } = theme.useToken();
 
   // AI智能修正世界观
-  const handleRegenerate = async () => {
+  const handleRegenerate = async (targetField?: WorldFieldKey) => {
     if (!currentProject) return;
 
+    const targetLabel = targetField ? worldFieldLabels[targetField] : '世界观';
+
     modal.confirm({
-      title: 'AI智能修正世界观',
+      title: `AI智能修正${targetLabel}`,
       width: 620,
       content: (
         <Form form={regenerateForm} layout="vertical" style={{ marginTop: 16 }}>
@@ -49,7 +60,9 @@ export default function WorldSetting() {
           >
             <TextArea
               rows={5}
-              placeholder="例如：去掉现代科技元素；把世界规则改成低武体系；修正时间背景与大纲冲突的地方..."
+              placeholder={targetField
+                ? `例如：只修正${targetLabel}中不合理或为空的部分，保持其他世界观字段不变...`
+                : '例如：去掉现代科技元素；把世界规则改成低武体系；修正时间背景与大纲冲突的地方...'}
             />
           </Form.Item>
         </Form>
@@ -61,13 +74,15 @@ export default function WorldSetting() {
         const values = await regenerateForm.validateFields();
         setIsRegenerating(true);
         setRegenerateProgress(0);
-        setRegenerateMessage('准备智能修正世界观...');
+        setRegenerateMessage(`准备智能修正${targetLabel}...`);
+        let hasValidResult = false;
 
         try {
           await wizardStreamApi.regenerateWorldBuildingStream(
             currentProject.id,
             {
               requirements: values.requirements?.trim(),
+              target_field: targetField,
             },
             {
               onProgress: (msg: string, progress: number) => {
@@ -81,11 +96,31 @@ export default function WorldSetting() {
               onResult: (result: { time_period: string; location: string; atmosphere: string; rules: string }) => {
                 // 保存新生成的数据
                 const newData = {
-                  time_period: result.time_period,
-                  location: result.location,
-                  atmosphere: result.atmosphere,
-                  rules: result.rules,
+                  time_period: result.time_period || '',
+                  location: result.location || '',
+                  atmosphere: result.atmosphere || '',
+                  rules: result.rules || '',
                 };
+
+                if (targetField) {
+                  newData.time_period = targetField === 'time_period' ? newData.time_period : (currentProject.world_time_period || '');
+                  newData.location = targetField === 'location' ? newData.location : (currentProject.world_location || '');
+                  newData.atmosphere = targetField === 'atmosphere' ? newData.atmosphere : (currentProject.world_atmosphere || '');
+                  newData.rules = targetField === 'rules' ? newData.rules : (currentProject.world_rules || '');
+                }
+
+                const requiredFields = targetField
+                  ? [targetField]
+                  : (Object.keys(worldFieldLabels) as WorldFieldKey[]);
+                const missingFields = requiredFields
+                  .filter((field) => !newData[field]?.trim());
+                if (missingFields.length > 0) {
+                  message.error(`AI返回缺失：${missingFields.map(field => worldFieldLabels[field]).join('、')}，已拦截空预览`);
+                  setNewWorldData(null);
+                  return;
+                }
+
+                hasValidResult = true;
                 setNewWorldData(newData);
               },
               onError: (errorMsg: string) => {
@@ -97,7 +132,9 @@ export default function WorldSetting() {
                 setRegenerateProgress(0);
                 setRegenerateMessage('');
                 // 显示预览对话框
-                setIsPreviewModalVisible(true);
+                if (hasValidResult) {
+                  setIsPreviewModalVisible(true);
+                }
                 regenerateForm.resetFields();
               }
             }
@@ -213,7 +250,7 @@ export default function WorldSetting() {
           <Flex gap={8} wrap="wrap" style={{ flex: '0 1 auto' }}>
             <Button
               icon={<SyncOutlined />}
-              onClick={handleRegenerate}
+              onClick={() => handleRegenerate()}
               disabled={isRegenerating}
               style={{
                 minWidth: 'fit-content',
@@ -306,11 +343,20 @@ export default function WorldSetting() {
           }
         >
           <div style={{ padding: '16px 0' }}>
-            {currentProject.world_time_period && (
-              <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
-                  时间设定
-                </Title>
+            <div style={{ marginBottom: 24 }}>
+                <Flex justify="space-between" align="center" gap={8} wrap="wrap" style={{ marginBottom: 12 }}>
+                  <Title level={5} style={{ color: token.colorPrimary, margin: 0 }}>
+                    时间设定
+                  </Title>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    onClick={() => handleRegenerate('time_period')}
+                    disabled={isRegenerating}
+                  >
+                    修正本项
+                  </Button>
+                </Flex>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
@@ -319,16 +365,24 @@ export default function WorldSetting() {
                   borderRadius: 8,
                   borderLeft: `4px solid ${token.colorPrimary}`
                 }}>
-                  {currentProject.world_time_period}
+                  {currentProject.world_time_period || '未设定'}
                 </Paragraph>
               </div>
-            )}
 
-            {currentProject.world_location && (
-              <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
-                  地点设定
-                </Title>
+            <div style={{ marginBottom: 24 }}>
+                <Flex justify="space-between" align="center" gap={8} wrap="wrap" style={{ marginBottom: 12 }}>
+                  <Title level={5} style={{ color: token.colorSuccess, margin: 0 }}>
+                    地点设定
+                  </Title>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    onClick={() => handleRegenerate('location')}
+                    disabled={isRegenerating}
+                  >
+                    修正本项
+                  </Button>
+                </Flex>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
@@ -337,16 +391,24 @@ export default function WorldSetting() {
                   borderRadius: 8,
                   borderLeft: `4px solid ${token.colorSuccess}`
                 }}>
-                  {currentProject.world_location}
+                  {currentProject.world_location || '未设定'}
                 </Paragraph>
               </div>
-            )}
 
-            {currentProject.world_atmosphere && (
-              <div style={{ marginBottom: 24 }}>
-                <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
-                  氛围设定
-                </Title>
+            <div style={{ marginBottom: 24 }}>
+                <Flex justify="space-between" align="center" gap={8} wrap="wrap" style={{ marginBottom: 12 }}>
+                  <Title level={5} style={{ color: token.colorWarning, margin: 0 }}>
+                    氛围设定
+                  </Title>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    onClick={() => handleRegenerate('atmosphere')}
+                    disabled={isRegenerating}
+                  >
+                    修正本项
+                  </Button>
+                </Flex>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
@@ -355,16 +417,24 @@ export default function WorldSetting() {
                   borderRadius: 8,
                   borderLeft: `4px solid ${token.colorWarning}`
                 }}>
-                  {currentProject.world_atmosphere}
+                  {currentProject.world_atmosphere || '未设定'}
                 </Paragraph>
               </div>
-            )}
 
-            {currentProject.world_rules && (
-              <div style={{ marginBottom: 0 }}>
-                <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
-                  规则设定
-                </Title>
+            <div style={{ marginBottom: 0 }}>
+                <Flex justify="space-between" align="center" gap={8} wrap="wrap" style={{ marginBottom: 12 }}>
+                  <Title level={5} style={{ color: token.colorError, margin: 0 }}>
+                    规则设定
+                  </Title>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    onClick={() => handleRegenerate('rules')}
+                    disabled={isRegenerating}
+                  >
+                    修正本项
+                  </Button>
+                </Flex>
                 <Paragraph style={{
                   fontSize: 15,
                   lineHeight: 1.8,
@@ -373,10 +443,9 @@ export default function WorldSetting() {
                   borderRadius: 8,
                   borderLeft: `4px solid ${token.colorError}`
                 }}>
-                  {currentProject.world_rules}
+                  {currentProject.world_rules || '未设定'}
                 </Paragraph>
               </div>
-            )}
           </div>
         </Card>
       </div>
@@ -665,7 +734,7 @@ export default function WorldSetting() {
                 borderRadius: 8,
                 borderLeft: `4px solid ${token.colorPrimary}`
               }}>
-                {newWorldData.time_period}
+                {newWorldData.time_period || '未设定'}
               </Paragraph>
             </div>
 
@@ -681,7 +750,7 @@ export default function WorldSetting() {
                 borderRadius: 8,
                 borderLeft: `4px solid ${token.colorSuccess}`
               }}>
-                {newWorldData.location}
+                {newWorldData.location || '未设定'}
               </Paragraph>
             </div>
 
@@ -697,7 +766,7 @@ export default function WorldSetting() {
                 borderRadius: 8,
                 borderLeft: `4px solid ${token.colorWarning}`
               }}>
-                {newWorldData.atmosphere}
+                {newWorldData.atmosphere || '未设定'}
               </Paragraph>
             </div>
 
@@ -713,7 +782,7 @@ export default function WorldSetting() {
                 borderRadius: 8,
                 borderLeft: `4px solid ${token.colorError}`
               }}>
-                {newWorldData.rules}
+                {newWorldData.rules || '未设定'}
               </Paragraph>
             </div>
           </div>

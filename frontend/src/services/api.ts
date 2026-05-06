@@ -1198,6 +1198,7 @@ export const wizardStreamApi = {
     projectId: string,
     data?: {
       requirements?: string;
+      target_field?: 'time_period' | 'location' | 'atmosphere' | 'rules';
       provider?: string;
       model?: string;
     },
