@@ -22,6 +22,7 @@ import {
 } from '@ant-design/icons';
 import { ssePost } from '../utils/sseClient';
 import { SSEProgressModal } from './SSEProgressModal';
+import { AIDialogConfigPanel, resolveAIDialogConfig } from './AIDialogConfigPanel';
 
 const { TextArea } = Input;
 const { Panel } = Collapse;
@@ -94,6 +95,7 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
+      const aiConfig = await resolveAIDialogConfig(values);
       
       // 验证至少提供一种修改指令
       if (values.modification_source === 'custom' && !values.custom_instructions?.trim()) {
@@ -132,11 +134,17 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
         style_id?: string;
         target_word_count: number;
         focus_areas: string[];
+        preset_id?: string;
+        provider?: string;
+        model?: string;
       }
 
       const requestData: RegenerationRequest = {
         modification_source: values.modification_source,
         custom_instructions: values.custom_instructions,
+        preset_id: aiConfig.preset_id,
+        provider: aiConfig.provider,
+        model: aiConfig.model,
         selected_suggestion_indices: selectedSuggestions,
         preserve_elements: {
           preserve_structure: values.preserve_structure,
@@ -350,6 +358,8 @@ const ChapterRegenerationModal: React.FC<ChapterRegenerationModalProps> = ({
             />
           </Form.Item>
         )}
+
+        <AIDialogConfigPanel form={form} disabled={loading || status === 'success'} compact />
 
         {/* 高级选项 */}
         <Collapse ghost>

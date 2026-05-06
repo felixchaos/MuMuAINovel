@@ -11,6 +11,12 @@ import { outlineApi, chapterApi, projectApi, characterApi, polishApi } from '../
 import type { ApiError, Character, Outline as OutlineItem, Project } from '../types';
 import { taskMessage } from '../utils/taskMessage';
 import { PolishableTextArea, type AIFieldModalApi } from '../components/AIFieldAssistant';
+import {
+  AIDialogConfigPanel,
+  resolveAIDialogConfig,
+  type AIDialogConfigValues,
+  type ResolvedAIDialogConfig,
+} from '../components/AIDialogConfigPanel';
 
 // 大纲生成请求数据类型
 interface OutlineGenerateRequestData {
@@ -444,7 +450,8 @@ export default function Outline() {
   const [expansionForm] = Form.useForm();
   const [modalApi, contextHolder] = Modal.useModal();
   const [batchExpansionForm] = Form.useForm();
-  const [outlineOptimizeForm] = Form.useForm<OutlineOptimizeFormValues>();
+  const [outlineOptimizeForm] = Form.useForm<OutlineOptimizeFormValues & AIDialogConfigValues>();
+  const [singleOutlineOptimizeForm] = Form.useForm<AIDialogConfigValues>();
   const [manualCreateForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [isExpanding, setIsExpanding] = useState(false);
@@ -1606,7 +1613,11 @@ export default function Outline() {
     });
   };
 
-  const submitOutlineOptimizeTask = async (targets: OutlineItem[], singleOutline?: OutlineItem) => {
+  const submitOutlineOptimizeTask = async (
+    targets: OutlineItem[],
+    singleOutline?: OutlineItem,
+    aiConfig?: ResolvedAIDialogConfig,
+  ) => {
     if (!currentProject?.id) {
       message.warning('请先选择项目');
       return;
@@ -1646,6 +1657,9 @@ export default function Outline() {
       const response = await polishApi.optimizeOutlinesBackground({
         project_id: currentProject.id,
         outline_ids: targets.map(outline => outline.id),
+        preset_id: aiConfig?.preset_id,
+        provider: aiConfig?.provider,
+        model: aiConfig?.model,
         temperature: 0.6,
       });
 
@@ -1693,12 +1707,36 @@ export default function Outline() {
     }
   };
 
-  const handleOptimizeSingleOutline = async (outline: OutlineItem) => {
-    await submitOutlineOptimizeTask([outline], outline);
+  const handleOptimizeSingleOutline = async (outline: OutlineItem, aiConfig?: ResolvedAIDialogConfig) => {
+    await submitOutlineOptimizeTask([outline], outline, aiConfig);
   };
 
-  const runBatchOptimizeOutlines = async (targets: OutlineItem[]) => {
-    await submitOutlineOptimizeTask(targets);
+  const showOptimizeSingleOutlineModal = (outline: OutlineItem) => {
+    singleOutlineOptimizeForm.resetFields();
+    modalApi.confirm({
+      title: `AI优化大纲：${outline.title}`,
+      width: 620,
+      centered: true,
+      content: (
+        <Form form={singleOutlineOptimizeForm} layout="vertical" style={{ marginTop: 16 }}>
+          <div style={{ color: token.colorTextSecondary, marginBottom: 12 }}>
+            将优化当前大纲的表达与可执行性，完成后会直接写回该大纲。
+          </div>
+          <AIDialogConfigPanel form={singleOutlineOptimizeForm} compact />
+        </Form>
+      ),
+      okText: '开始优化',
+      cancelText: '取消',
+      onOk: async () => {
+        const values = await singleOutlineOptimizeForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
+        await handleOptimizeSingleOutline(outline, aiConfig);
+      },
+    });
+  };
+
+  const runBatchOptimizeOutlines = async (targets: OutlineItem[], aiConfig?: ResolvedAIDialogConfig) => {
+    await submitOutlineOptimizeTask(targets, undefined, aiConfig);
   };
 
   const showOptimizeOutlinesModal = () => {
@@ -1713,7 +1751,7 @@ export default function Outline() {
 
     modalApi.confirm({
       title: 'AI优化已有大纲',
-      width: 560,
+      width: 620,
       centered: true,
       content: (
         <Form
@@ -1739,6 +1777,9 @@ export default function Outline() {
           <div style={{ color: token.colorTextSecondary, fontSize: 13 }}>
             使用现有后台任务流程优化表达与可执行性，不改变章节编号、标题和核心设定；提交后可在右下角后台任务面板查看进度或取消。
           </div>
+          <div style={{ marginTop: 12 }}>
+            <AIDialogConfigPanel form={outlineOptimizeForm} compact />
+          </div>
         </Form>
       ),
       okText: '开始优化',
@@ -1756,7 +1797,8 @@ export default function Outline() {
           return;
         }
 
-        await runBatchOptimizeOutlines(targets);
+        const aiConfig = await resolveAIDialogConfig(values);
+        await runBatchOptimizeOutlines(targets, aiConfig);
       }
     });
   };
@@ -2599,7 +2641,7 @@ export default function Outline() {
                           )}
                           <Button
                             icon={<HighlightOutlined />}
-                            onClick={() => handleOptimizeSingleOutline(item)}
+                            onClick={() => showOptimizeSingleOutlineModal(item)}
                             loading={optimizingOutlineId === item.id}
                             disabled={isOptimizingOutlines}
                             size={isMobile ? 'middle' : 'small'}

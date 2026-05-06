@@ -830,6 +830,9 @@ export const chapterApi = {
       start_position: number;
       end_position: number;
       user_instructions: string;
+      preset_id?: string;
+      provider?: string;
+      model?: string;
       context_chars?: number;
       style_id?: number;
       length_mode?: 'similar' | 'expand' | 'condense' | 'custom';
@@ -1017,6 +1020,7 @@ export const polishApi = {
     project_id: string;
     is_organization: boolean;
     source: Record<string, unknown>;
+    preset_id?: string;
     provider?: string;
     model?: string;
     temperature?: number;
@@ -1029,6 +1033,7 @@ export const polishApi = {
   optimizeOutlinesBackground: (data: {
     project_id: string;
     outline_ids?: string[];
+    preset_id?: string;
     provider?: string;
     model?: string;
     temperature?: number;
@@ -1041,6 +1046,7 @@ export const polishApi = {
   optimizeCharactersBackground: (data: {
     project_id: string;
     character_ids: string[];
+    preset_id?: string;
     provider?: string;
     model?: string;
     temperature?: number;
@@ -1199,6 +1205,7 @@ export const wizardStreamApi = {
     data?: {
       requirements?: string;
       target_field?: 'time_period' | 'location' | 'atmosphere' | 'rules';
+      preset_id?: string;
       provider?: string;
       model?: string;
     },

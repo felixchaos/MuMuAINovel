@@ -1,9 +1,11 @@
-import React, { useMemo, useState } from 'react';
-import { Modal, Button, Card, Statistic, Row, Col, message, theme } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Modal, Button, Card, Input, Statistic, Row, Col, message, theme } from 'antd';
 import { CheckOutlined, CloseOutlined, SwapOutlined } from '@ant-design/icons';
 import ReactDiffViewer from 'react-diff-viewer-continued';
 import { useThemeMode } from '../theme/useThemeMode';
 import { taskMessage } from '../utils/taskMessage';
+
+const { TextArea } = Input;
 
 interface ChapterContentComparisonProps {
   visible: boolean;
@@ -24,7 +26,6 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
   chapterTitle,
   originalContent,
   newContent,
-  wordCount,
   onApply,
   onDiscard
 }) => {
@@ -32,12 +33,18 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
   const { resolvedMode } = useThemeMode();
   const [applying, setApplying] = useState(false);
   const [viewMode, setViewMode] = useState<'split' | 'unified'>('split');
+  const [editedContent, setEditedContent] = useState(newContent);
   const [modal, contextHolder] = Modal.useModal();
 
   const originalWordCount = originalContent.length;
-  const wordCountDiff = wordCount - originalWordCount;
+  const editedWordCount = editedContent.length;
+  const wordCountDiff = editedWordCount - originalWordCount;
   const wordCountDiffPercent = ((wordCountDiff / originalWordCount) * 100).toFixed(1);
   const isDarkMode = resolvedMode === 'dark';
+  useEffect(() => {
+    setEditedContent(newContent);
+  }, [newContent]);
+
   const diffViewerStyles = useMemo(() => ({
     variables: {
       light: {
@@ -95,7 +102,7 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          content: newContent
+          content: editedContent
         })
       });
 
@@ -204,7 +211,7 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
           <Col span={6}>
             <Statistic
               title="新内容字数"
-              value={wordCount}
+              value={editedWordCount}
               suffix="字"
             />
           </Col>
@@ -229,6 +236,15 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
         </Row>
       </Card>
 
+      <Card size="small" title="新内容（可编辑）" style={{ marginBottom: 16 }}>
+        <TextArea
+          value={editedContent}
+          onChange={(event) => setEditedContent(event.target.value)}
+          rows={10}
+          style={{ lineHeight: 1.8 }}
+        />
+      </Card>
+
       {/* 内容对比 */}
       <div style={{
         maxHeight: 'calc(90vh - 300px)',
@@ -239,7 +255,7 @@ const ChapterContentComparison: React.FC<ChapterContentComparisonProps> = ({
       }}>
         <ReactDiffViewer
           oldValue={originalContent}
-          newValue={newContent}
+          newValue={editedContent}
           splitView={viewMode === 'split'}
           leftTitle="原内容"
           rightTitle="新内容"

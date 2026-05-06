@@ -88,6 +88,8 @@ class ChapterRegenerator:
             
             async for chunk in self.ai_service.generate_text_stream(
                 prompt=full_prompt,
+                provider=regenerate_request.provider,
+                model=regenerate_request.model,
                 system_prompt=system_prompt_with_style,
                 temperature=0.7
             ):

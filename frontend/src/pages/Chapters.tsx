@@ -17,6 +17,11 @@ import ChapterReader from '../components/ChapterReader';
 import PartialRegenerateToolbar from '../components/PartialRegenerateToolbar';
 import PartialRegenerateModal from '../components/PartialRegenerateModal';
 import { taskMessage } from '../utils/taskMessage';
+import {
+  AIDialogConfigPanel,
+  resolveAIDialogConfig,
+  type ResolvedAIDialogConfig,
+} from '../components/AIDialogConfigPanel';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
@@ -73,6 +78,7 @@ export default function Chapters() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [editorForm] = Form.useForm();
+  const [chapterAiConfigForm] = Form.useForm();
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const contentTextAreaRef = useRef<TextAreaRef>(null);
   const manualContentTextAreaRef = useRef<TextAreaRef>(null);
@@ -886,7 +892,8 @@ export default function Chapters() {
     resultText: string,
     progress: number,
     progressMessage: string,
-    status: 'processing' | 'success' | 'error'
+    status: 'processing' | 'success' | 'error',
+    onResultChange?: (value: string) => void
   ) => {
     const isDone = status === 'success';
     const isError = status === 'error';
@@ -918,20 +925,32 @@ export default function Chapters() {
             </div>
           </div>
           <div>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果（流式）</div>
-            <div style={{
-              minHeight: 120,
-              maxHeight: 260,
-              overflowY: 'auto',
-              whiteSpace: 'pre-wrap',
-              lineHeight: 1.7,
-              padding: '8px 10px',
-              border: `1px solid ${isError ? token.colorErrorBorder : token.colorPrimaryBorder}`,
-              borderRadius: token.borderRadius,
-              background: token.colorBgContainer,
-            }}>
-              {resultText || '等待生成...'}
-            </div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>AI结果（完成后可编辑）</div>
+            {isDone ? (
+              <TextArea
+                defaultValue={resultText}
+                rows={8}
+                onChange={(event) => onResultChange?.(event.target.value)}
+                style={{
+                  lineHeight: 1.7,
+                  borderColor: token.colorPrimaryBorder,
+                }}
+              />
+            ) : (
+              <div style={{
+                minHeight: 120,
+                maxHeight: 260,
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+                lineHeight: 1.7,
+                padding: '8px 10px',
+                border: `1px solid ${isError ? token.colorErrorBorder : token.colorPrimaryBorder}`,
+                borderRadius: token.borderRadius,
+                background: token.colorBgContainer,
+              }}>
+                {resultText || '等待生成...'}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -943,7 +962,8 @@ export default function Chapters() {
     sourceText: string,
     instruction: string,
     temperature: number,
-    onApply: (resultText: string) => void
+    onApply: (resultText: string) => void,
+    aiConfig?: ResolvedAIDialogConfig,
   ) => {
     let resultText = '';
     let progress = 0;
@@ -982,7 +1002,16 @@ export default function Chapters() {
       lastRenderAt = now;
 
       resultModal.update({
-        content: renderChapterAiStreamContent(sourceText, resultText, progress, progressMessage, status),
+        content: renderChapterAiStreamContent(
+          sourceText,
+          resultText,
+          progress,
+          progressMessage,
+          status,
+          (value) => {
+            resultText = value;
+          }
+        ),
         okButtonProps: {
           disabled: !completed || !resultText.trim() || status === 'error',
           loading: !completed && status !== 'error',
@@ -995,7 +1024,9 @@ export default function Chapters() {
       const result = await polishApi.polishTextStream({
         original_text: sourceText,
         project_id: currentProject.id,
-        model: selectedModel || undefined,
+        preset_id: aiConfig?.preset_id,
+        provider: aiConfig?.provider,
+        model: aiConfig?.model || selectedModel || undefined,
         temperature,
         instruction,
       }, {
@@ -1045,7 +1076,8 @@ export default function Chapters() {
     field: ChapterAiField,
     label: string,
     mode: ChapterAiMode,
-    extraInstruction: string
+    extraInstruction: string,
+    aiConfig?: ResolvedAIDialogConfig,
   ) => {
     const currentValue = getChapterFormText(targetForm, field).trim();
     const contextText = buildChapterFormContext(targetForm);
@@ -1077,7 +1109,8 @@ export default function Chapters() {
       mode === 'polish' ? 0.7 : 0.55,
       (aiText) => {
         targetForm.setFieldsValue({ [field]: aiText });
-      }
+      },
+      aiConfig,
     );
   };
 
@@ -1087,12 +1120,12 @@ export default function Chapters() {
     label: string,
     mode: ChapterAiMode
   ) => {
-    let extraInstruction = '';
     const actionText = mode === 'generate_title' || mode === 'generate_summary'
       ? '生成'
       : mode === 'rewrite'
         ? '重写'
         : '润色';
+    chapterAiConfigForm.resetFields();
 
     modal.confirm({
       title: `${label}${actionText}要求`,
@@ -1102,22 +1135,24 @@ export default function Chapters() {
       okText: `开始${actionText}`,
       cancelText: '取消',
       content: (
-        <div style={{ marginTop: 12 }}>
+        <Form form={chapterAiConfigForm} layout="vertical" style={{ marginTop: 12 }}>
           <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
             输入本次希望 AI 如何处理；留空则使用默认规则。
           </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：更凝练；强化悬疑感；保留所有事实；不要新增设定；标题更有番茄风格..."
-            autoFocus
-            onChange={(event) => {
-              extraInstruction = event.target.value;
-            }}
-          />
-        </div>
+          <Form.Item name="instruction" style={{ marginBottom: 12 }}>
+            <TextArea
+              rows={4}
+              placeholder="例如：更凝练；强化悬疑感；保留所有事实；不要新增设定；标题更有番茄风格..."
+              autoFocus
+            />
+          </Form.Item>
+          <AIDialogConfigPanel form={chapterAiConfigForm} compact />
+        </Form>
       ),
-      onOk: () => {
-        void runChapterAiTool(targetForm, field, label, mode, extraInstruction);
+      onOk: async () => {
+        const values = await chapterAiConfigForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
+        void runChapterAiTool(targetForm, field, label, mode, values.instruction || '', aiConfig);
       },
     });
   };
@@ -1141,7 +1176,7 @@ export default function Chapters() {
       return;
     }
 
-    let extraInstruction = '';
+    chapterAiConfigForm.resetFields();
     modal.confirm({
       title: '选中内容编辑要求',
       icon: <HighlightOutlined />,
@@ -1150,18 +1185,18 @@ export default function Chapters() {
       okText: '开始编辑',
       cancelText: '取消',
       content: (
-        <div style={{ marginTop: 12 }}>
+        <Form form={chapterAiConfigForm} layout="vertical" style={{ marginTop: 12 }}>
           <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
             AI 只会处理选中的这段文字，确认后才会替换选区。
           </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：改成更自然的对白；补足动作细节；压缩这段；保持设定不变..."
-            autoFocus
-            onChange={(event) => {
-              extraInstruction = event.target.value;
-            }}
-          />
+          <Form.Item name="instruction" style={{ marginBottom: 12 }}>
+            <TextArea
+              rows={4}
+              placeholder="例如：改成更自然的对白；补足动作细节；压缩这段；保持设定不变..."
+              autoFocus
+            />
+          </Form.Item>
+          <AIDialogConfigPanel form={chapterAiConfigForm} compact />
           <div style={{
             marginTop: 12,
             maxHeight: 120,
@@ -1176,16 +1211,18 @@ export default function Chapters() {
           }}>
             {selectedText}
           </div>
-        </div>
+        </Form>
       ),
-      onOk: () => {
+      onOk: async () => {
+        const values = await chapterAiConfigForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
         const contextText = buildChapterFormContext(targetForm);
         void runChapterAiStream(
           '选中内容',
           selectedText,
           [
             '你是中文小说编辑。请只处理用户选中的片段，保持章节上下文、人设、事实和叙事视角一致。只输出处理后的选中片段，不要解释，不要补前后缀。',
-            extraInstruction.trim() ? `用户要求：${extraInstruction.trim()}` : '用户要求：自然润色并改善表达。',
+            values.instruction?.trim() ? `用户要求：${values.instruction.trim()}` : '用户要求：自然润色并改善表达。',
             `章节上下文：\n${contextText}`,
           ].join('\n\n'),
           0.65,
@@ -1206,7 +1243,8 @@ export default function Chapters() {
 
             const nextContent = currentContent.substring(0, replaceStart) + aiText + currentContent.substring(replaceEnd);
             targetForm.setFieldsValue({ content: nextContent });
-          }
+          },
+          aiConfig,
         );
       },
     });

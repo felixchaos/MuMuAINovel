@@ -22,7 +22,7 @@ from app.services.prompt_service import prompt_service, PromptService
 from app.services.plot_expansion_service import PlotExpansionService
 from app.logger import get_logger
 from app.utils.sse_response import SSEResponse, create_sse_response, WizardProgressTracker
-from app.api.settings import get_user_ai_service
+from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_preset
 
 router = APIRouter(prefix="/wizard-stream", tags=["项目创建向导(流式)"])
 logger = get_logger(__name__)
@@ -1947,4 +1947,11 @@ async def regenerate_world_building_stream(
     # 从中间件注入user_id到data中
     if hasattr(request.state, 'user_id'):
         data['user_id'] = request.state.user_id
+    if getattr(request.state, 'user_id', None):
+        user_ai_service = await get_user_ai_service_from_db_by_preset(
+            request.state.user_id,
+            db,
+            preset_id=data.get("preset_id"),
+            fallback_usage="polish",
+        )
     return create_sse_response(world_building_regenerate_generator(project_id, data, db, user_ai_service))

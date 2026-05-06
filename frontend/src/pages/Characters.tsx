@@ -14,6 +14,12 @@ import { SSEPostClient } from '../utils/sseClient';
 import api from '../services/api';
 import { pollTaskUntilComplete } from '../services/backgroundTaskService';
 import { taskMessage } from '../utils/taskMessage';
+import {
+  AIDialogConfigPanel,
+  resolveAIDialogConfig,
+  type AIDialogConfigValues,
+  type ResolvedAIDialogConfig,
+} from '../components/AIDialogConfigPanel';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -141,6 +147,8 @@ export default function Characters() {
   const [generateOrgForm] = Form.useForm();
   const [analyzeCharactersForm] = Form.useForm();
   const [batchRegenerateForm] = Form.useForm();
+  const [singleOptimizeForm] = Form.useForm();
+  const [batchOptimizeForm] = Form.useForm();
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -382,12 +390,13 @@ export default function Characters() {
     return characters.filter(item => targetIds.includes(item.id));
   };
 
-  const handleBatchRegenerate = async (values: { requirements: string }) => {
+  const handleBatchRegenerate = async (values: { requirements: string } & AIDialogConfigValues) => {
     const targets = getBatchRegenerateTargets();
     if (targets.length === 0) {
       message.warning('请先选择要修正的角色或组织');
       return;
     }
+    const aiConfig = await resolveAIDialogConfig(values);
 
     try {
       setIsGenerating(true);
@@ -400,6 +409,9 @@ export default function Characters() {
           project_id: currentProject.id,
           character_ids: targets.map(item => item.id),
           requirements: values.requirements.trim(),
+          preset_id: aiConfig.preset_id,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
         },
         {
           onProgress: (msg, prog) => {
@@ -527,7 +539,10 @@ export default function Characters() {
     }
   };
 
-  const optimizeCharacterSettings = async (source: CharacterSettingsSource) => {
+  const optimizeCharacterSettings = async (
+    source: CharacterSettingsSource,
+    aiConfig?: ResolvedAIDialogConfig,
+  ) => {
     if (!currentProject?.id) {
       throw new Error('请先选择项目');
     }
@@ -536,6 +551,9 @@ export default function Characters() {
       project_id: currentProject.id,
       is_organization: Boolean(source.is_organization),
       source: buildCharacterOptimizeSource(source),
+      preset_id: aiConfig?.preset_id,
+      provider: aiConfig?.provider,
+      model: aiConfig?.model,
       temperature: 0.6,
     });
     const updateData = result.fields as CharacterUpdateData;
@@ -547,7 +565,7 @@ export default function Characters() {
     return updateData;
   };
 
-  const handleOptimizeEditingCharacter = async () => {
+  const handleOptimizeEditingCharacter = async (aiConfig?: ResolvedAIDialogConfig) => {
     if (!editingCharacter) return;
 
     try {
@@ -557,7 +575,7 @@ export default function Characters() {
         ...editingCharacter,
         ...values,
         is_organization: editingCharacter.is_organization
-      });
+      }, aiConfig);
 
       editForm.setFieldsValue(updateData);
       message.success('AI优化结果已填入表单，请检查后保存');
@@ -567,6 +585,32 @@ export default function Characters() {
     } finally {
       setIsOptimizingCharacter(false);
     }
+  };
+
+  const showOptimizeEditingCharacterModal = () => {
+    if (!editingCharacter) return;
+    singleOptimizeForm.resetFields();
+
+    modal.confirm({
+      title: editingCharacter.is_organization ? 'AI优化组织设定' : 'AI优化角色设定',
+      width: 620,
+      centered: true,
+      okText: '开始优化',
+      cancelText: '取消',
+      content: (
+        <Form form={singleOptimizeForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            将优化当前编辑表单中的设定，结果会先回填到表单，保存前仍可手动检查。
+          </Typography.Paragraph>
+          <AIDialogConfigPanel form={singleOptimizeForm} compact />
+        </Form>
+      ),
+      onOk: async () => {
+        const values = await singleOptimizeForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
+        await handleOptimizeEditingCharacter(aiConfig);
+      },
+    });
   };
 
   const handleBatchOptimizeSelected = () => {
@@ -580,22 +624,26 @@ export default function Characters() {
       message.warning('未找到已选择的角色或组织');
       return;
     }
+    batchOptimizeForm.resetFields();
 
     modal.confirm({
       title: '批量优化角色设定',
       centered: true,
-      width: 560,
+      width: 620,
       content: (
-        <div>
-          <p>将使用 AI 优化已选的 {selectedItems.length} 个角色/组织设定。</p>
-          <p style={{ color: token.colorTextSecondary, marginBottom: 0 }}>
+        <Form form={batchOptimizeForm} layout="vertical" style={{ marginTop: 16 }}>
+          <p style={{ marginTop: 0 }}>将使用 AI 优化已选的 {selectedItems.length} 个角色/组织设定。</p>
+          <p style={{ color: token.colorTextSecondary, marginBottom: 12 }}>
             会保留名称、身份、阵营、能力来源等既有事实，优化完成后会直接更新角色设定。
           </p>
-        </div>
+          <AIDialogConfigPanel form={batchOptimizeForm} compact />
+        </Form>
       ),
       okText: '开始优化',
       cancelText: '取消',
       onOk: async () => {
+        const values = await batchOptimizeForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
         const messageKey = 'batch-character-optimize';
 
         if (!currentProject?.id) {
@@ -616,6 +664,9 @@ export default function Characters() {
           const response = await polishApi.optimizeCharactersBackground({
             project_id: currentProject.id,
             character_ids: selectedItems.map(character => character.id),
+            preset_id: aiConfig.preset_id,
+            provider: aiConfig.provider,
+            model: aiConfig.model,
             temperature: 0.6,
           });
 
@@ -980,6 +1031,7 @@ export default function Characters() {
 
   const showBatchRegenerateModal = () => {
     const targets = getBatchRegenerateTargets();
+    batchRegenerateForm.resetFields();
     modal.confirm({
       title: 'AI智能修正角色/组织',
       width: 680,
@@ -999,6 +1051,7 @@ export default function Characters() {
               placeholder="例如：把误生成的现代职业改成修真体系；统一年龄和背景冲突；修正组织目的，避免与世界规则矛盾..."
             />
           </Form.Item>
+          <AIDialogConfigPanel form={batchRegenerateForm} compact />
         </Form>
       ),
       okText: '开始修正',
@@ -1371,7 +1424,7 @@ export default function Characters() {
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, width: '100%', flexWrap: 'wrap' }}>
             <Button
               icon={<HighlightOutlined />}
-              onClick={handleOptimizeEditingCharacter}
+              onClick={showOptimizeEditingCharacterModal}
               loading={isOptimizingCharacter}
               disabled={!editingCharacter}
             >

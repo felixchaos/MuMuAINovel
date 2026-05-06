@@ -328,6 +328,53 @@ async def get_user_ai_service_from_db_by_usage(
     )
 
 
+async def get_user_ai_service_from_db_by_preset(
+    user_id: str,
+    db: AsyncSession,
+    preset_id: Optional[str] = None,
+    fallback_usage: str = "default",
+) -> AIService:
+    """按显式预设创建AI服务；未传预设时按用途配置回退。"""
+    normalized_preset_id = (preset_id or "").strip()
+    if not normalized_preset_id:
+        return await get_user_ai_service_from_db_by_usage(user_id, db, usage=fallback_usage)
+
+    from app.models.mcp_plugin import MCPPlugin
+
+    result = await db.execute(
+        select(Settings).where(Settings.user_id == user_id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        env_defaults = read_env_defaults()
+        settings = Settings(user_id=user_id, **env_defaults)
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+
+    prefs = _safe_load_preferences(settings.preferences)
+    api_presets = _get_api_presets_payload(prefs)
+    presets = api_presets.get('presets', [])
+    target_preset = next((p for p in presets if p.get('id') == normalized_preset_id), None)
+    if not target_preset or not isinstance(target_preset.get('config'), dict):
+        raise HTTPException(status_code=400, detail="选择的API配置文件不存在，请重新选择")
+
+    mcp_result = await db.execute(
+        select(MCPPlugin).where(MCPPlugin.user_id == user_id)
+    )
+    mcp_plugins = mcp_result.scalars().all()
+    enable_mcp = any(plugin.enabled for plugin in mcp_plugins) if mcp_plugins else False
+
+    logger.info(f"用户 {user_id} 使用弹窗指定API预设: {target_preset.get('name')}")
+    return _build_ai_service_from_config(
+        config=target_preset['config'],
+        user_id=user_id,
+        db=db,
+        enable_mcp=enable_mcp,
+    )
+
+
 @router.get("", response_model=SettingsResponse)
 async def get_settings(
     user: User = Depends(require_login),

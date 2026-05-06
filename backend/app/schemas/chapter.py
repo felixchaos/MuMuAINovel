@@ -240,6 +240,9 @@ class PartialRegenerateRequest(BaseModel):
     start_position: int = Field(..., description="在章节内容中的起始位置（字符索引）", ge=0)
     end_position: int = Field(..., description="在章节内容中的结束位置（字符索引）", ge=0)
     user_instructions: str = Field(..., description="用户的修改要求", min_length=1, max_length=1000)
+    preset_id: Optional[str] = Field(None, description="本次使用的API配置预设ID")
+    provider: Optional[str] = Field(None, description="AI提供商")
+    model: Optional[str] = Field(None, description="AI模型")
     
     # 可选参数
     context_chars: int = Field(

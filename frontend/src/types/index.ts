@@ -652,6 +652,7 @@ export interface GenerateCharacterRequest {
 export interface PolishTextRequest {
   original_text: string;
   project_id?: string;
+  preset_id?: string;
   provider?: string;
   model?: string;
   temperature?: number;

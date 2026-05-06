@@ -6,6 +6,7 @@ import { worldSettingCardStyles } from '../components/CardStyles';
 import { projectApi, wizardStreamApi } from '../services/api';
 import { SSELoadingOverlay } from '../components/SSELoadingOverlay';
 import { PolishableTextArea } from '../components/AIFieldAssistant';
+import { AIDialogConfigPanel, resolveAIDialogConfig } from '../components/AIDialogConfigPanel';
 
 const { Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -47,6 +48,7 @@ export default function WorldSetting() {
     if (!currentProject) return;
 
     const targetLabel = targetField ? worldFieldLabels[targetField] : '世界观';
+    regenerateForm.resetFields();
 
     modal.confirm({
       title: `AI智能修正${targetLabel}`,
@@ -65,6 +67,7 @@ export default function WorldSetting() {
                 : '例如：去掉现代科技元素；把世界规则改成低武体系；修正时间背景与大纲冲突的地方...'}
             />
           </Form.Item>
+          <AIDialogConfigPanel form={regenerateForm} compact />
         </Form>
       ),
       centered: true,
@@ -72,6 +75,7 @@ export default function WorldSetting() {
       cancelText: '取消',
       onOk: async () => {
         const values = await regenerateForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
         setIsRegenerating(true);
         setRegenerateProgress(0);
         setRegenerateMessage(`准备智能修正${targetLabel}...`);
@@ -83,6 +87,9 @@ export default function WorldSetting() {
             {
               requirements: values.requirements?.trim(),
               target_field: targetField,
+              preset_id: aiConfig.preset_id,
+              provider: aiConfig.provider,
+              model: aiConfig.model,
             },
             {
               onProgress: (msg: string, progress: number) => {
@@ -726,64 +733,48 @@ export default function WorldSetting() {
               <Title level={5} style={{ color: token.colorPrimary, marginBottom: 12 }}>
                 时间设定
               </Title>
-              <Paragraph style={{
-                fontSize: 15,
-                lineHeight: 1.8,
-                padding: 16,
-                background: token.colorBgLayout,
-                borderRadius: 8,
-                borderLeft: `4px solid ${token.colorPrimary}`
-              }}>
-                {newWorldData.time_period || '未设定'}
-              </Paragraph>
+              <TextArea
+                value={newWorldData.time_period}
+                rows={5}
+                onChange={(event) => setNewWorldData(prev => prev ? { ...prev, time_period: event.target.value } : prev)}
+                style={{ lineHeight: 1.8, borderLeft: `4px solid ${token.colorPrimary}` }}
+              />
             </div>
 
             <div style={{ marginBottom: 24 }}>
               <Title level={5} style={{ color: token.colorSuccess, marginBottom: 12 }}>
                 地点设定
               </Title>
-              <Paragraph style={{
-                fontSize: 15,
-                lineHeight: 1.8,
-                padding: 16,
-                background: token.colorBgLayout,
-                borderRadius: 8,
-                borderLeft: `4px solid ${token.colorSuccess}`
-              }}>
-                {newWorldData.location || '未设定'}
-              </Paragraph>
+              <TextArea
+                value={newWorldData.location}
+                rows={5}
+                onChange={(event) => setNewWorldData(prev => prev ? { ...prev, location: event.target.value } : prev)}
+                style={{ lineHeight: 1.8, borderLeft: `4px solid ${token.colorSuccess}` }}
+              />
             </div>
 
             <div style={{ marginBottom: 24 }}>
               <Title level={5} style={{ color: token.colorWarning, marginBottom: 12 }}>
                 氛围设定
               </Title>
-              <Paragraph style={{
-                fontSize: 15,
-                lineHeight: 1.8,
-                padding: 16,
-                background: token.colorBgLayout,
-                borderRadius: 8,
-                borderLeft: `4px solid ${token.colorWarning}`
-              }}>
-                {newWorldData.atmosphere || '未设定'}
-              </Paragraph>
+              <TextArea
+                value={newWorldData.atmosphere}
+                rows={5}
+                onChange={(event) => setNewWorldData(prev => prev ? { ...prev, atmosphere: event.target.value } : prev)}
+                style={{ lineHeight: 1.8, borderLeft: `4px solid ${token.colorWarning}` }}
+              />
             </div>
 
             <div style={{ marginBottom: 0 }}>
               <Title level={5} style={{ color: token.colorError, marginBottom: 12 }}>
                 规则设定
               </Title>
-              <Paragraph style={{
-                fontSize: 15,
-                lineHeight: 1.8,
-                padding: 16,
-                background: token.colorBgLayout,
-                borderRadius: 8,
-                borderLeft: `4px solid ${token.colorError}`
-              }}>
-                {newWorldData.rules || '未设定'}
-              </Paragraph>
+              <TextArea
+                value={newWorldData.rules}
+                rows={5}
+                onChange={(event) => setNewWorldData(prev => prev ? { ...prev, rules: event.target.value } : prev)}
+                style={{ lineHeight: 1.8, borderLeft: `4px solid ${token.colorError}` }}
+              />
             </div>
           </div>
         )}

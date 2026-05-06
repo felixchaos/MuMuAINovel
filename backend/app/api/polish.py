@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.common import verify_project_access
-from app.api.settings import get_user_ai_service_from_db_by_usage
+from app.api.settings import get_user_ai_service_from_db_by_preset
 from app.database import get_db, get_engine
 from app.models.generation_history import GenerationHistory
 from app.models.character import Character
@@ -47,11 +47,17 @@ async def _get_polish_ai_service(
     *,
     request: Request,
     db: AsyncSession,
+    preset_id: Optional[str] = None,
 ) -> AIService:
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         raise HTTPException(status_code=401, detail="未登录")
-    return await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
+    return await get_user_ai_service_from_db_by_preset(
+        user_id,
+        db,
+        preset_id=preset_id,
+        fallback_usage="polish",
+    )
 
 
 def _extract_generated_text(response) -> str:
@@ -338,7 +344,7 @@ async def polish_text(
     try:
         # 获取用户ID
         user_id = getattr(http_request.state, 'user_id', None)
-        user_ai_service = await _get_polish_ai_service(request=http_request, db=db)
+        user_ai_service = await _get_polish_ai_service(request=http_request, db=db, preset_id=request.preset_id)
 
         if request.project_id:
             await verify_project_access(request.project_id, user_id, db)
@@ -412,7 +418,7 @@ async def polish_text_stream(
     前端可边生成边预览，完成后再决定是否应用。
     """
     user_id = getattr(http_request.state, 'user_id', None)
-    user_ai_service = await _get_polish_ai_service(request=http_request, db=db)
+    user_ai_service = await _get_polish_ai_service(request=http_request, db=db, preset_id=request.preset_id)
 
     if request.project_id:
         await verify_project_access(request.project_id, user_id, db)
@@ -606,7 +612,7 @@ async def optimize_character_settings(
 
     await verify_project_access(data.project_id, user_id, db)
 
-    user_ai_service = await _get_polish_ai_service(request=request, db=db)
+    user_ai_service = await _get_polish_ai_service(request=request, db=db, preset_id=data.preset_id)
     source = json.dumps(data.source, ensure_ascii=False, indent=2)
     optimized_text = await _generate_optimized_text(
         ai_service=user_ai_service,
@@ -658,7 +664,12 @@ async def _run_outline_optimize_background(task_id: str, user_id: str, data: Dic
             if not outlines:
                 raise ValueError("没有可优化的大纲")
 
-            ai_service = await get_user_ai_service_from_db_by_usage(user_id, bg_db, usage="polish")
+            ai_service = await get_user_ai_service_from_db_by_preset(
+                user_id,
+                bg_db,
+                preset_id=data.get("preset_id"),
+                fallback_usage="polish",
+            )
             total = len(outlines)
             succeeded = 0
             failed: list[Dict[str, str]] = []
@@ -761,7 +772,12 @@ async def _run_character_optimize_background(task_id: str, user_id: str, data: D
             if not characters:
                 raise ValueError("没有可优化的角色或组织")
 
-            ai_service = await get_user_ai_service_from_db_by_usage(user_id, bg_db, usage="polish")
+            ai_service = await get_user_ai_service_from_db_by_preset(
+                user_id,
+                bg_db,
+                preset_id=data.get("preset_id"),
+                fallback_usage="polish",
+            )
             total = len(characters)
             succeeded = 0
             failed: list[Dict[str, str]] = []
@@ -883,15 +899,22 @@ async def polish_batch(
         user_id = getattr(http_request.state, 'user_id', None) if http_request else None
         if not user_id:
             raise HTTPException(status_code=401, detail="未登录")
-        user_ai_service = await get_user_ai_service_from_db_by_usage(user_id, db, usage="polish")
-
         if isinstance(payload, dict):
             texts = payload.get("texts") or []
             project_id = payload.get("project_id") or project_id
             provider = payload.get("provider") or provider
             model = payload.get("model") or model
+            preset_id = payload.get("preset_id")
         else:
             texts = payload
+            preset_id = None
+
+        user_ai_service = await get_user_ai_service_from_db_by_preset(
+            user_id,
+            db,
+            preset_id=preset_id,
+            fallback_usage="polish",
+        )
 
         if project_id:
             await verify_project_access(project_id, user_id, db)

@@ -29,7 +29,7 @@ from app.services.import_export_service import ImportExportService
 from app.services.project_story_context import build_project_story_context
 from app.schemas.import_export import CharactersExportRequest, CharactersImportResult
 from app.logger import get_logger
-from app.api.settings import get_user_ai_service
+from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_preset
 from app.api.common import verify_project_access
 
 router = APIRouter(prefix="/characters", tags=["角色管理"])
@@ -962,6 +962,15 @@ async def batch_regenerate_characters_stream(
 
         try:
             user_id = getattr(http_request.state, 'user_id', None)
+            if not user_id:
+                yield await tracker.error("未登录", 401)
+                return
+            selected_ai_service = await get_user_ai_service_from_db_by_preset(
+                user_id,
+                db,
+                preset_id=request.preset_id,
+                fallback_usage="polish",
+            )
 
             yield await tracker.start("开始AI批量修正角色/组织...")
             yield await tracker.loading("验证项目权限...", 0.2)
@@ -1129,8 +1138,8 @@ async def batch_regenerate_characters_stream(
 """
 
             if user_id:
-                user_ai_service.user_id = user_id
-                user_ai_service.db_session = db
+                selected_ai_service.user_id = user_id
+                selected_ai_service.db_session = db
 
             yield await tracker.generating(0, max(4000, len(prompt) * 2), "调用AI服务修正角色/组织...")
             ai_response = ""
@@ -1138,7 +1147,7 @@ async def batch_regenerate_characters_stream(
             estimated_total = max(4000, len(prompt) * 2)
 
             async for chunk in wrap_stream_with_heartbeat(
-                user_ai_service.generate_text_stream(
+                selected_ai_service.generate_text_stream(
                     prompt=prompt,
                     provider=request.provider,
                     model=request.model,

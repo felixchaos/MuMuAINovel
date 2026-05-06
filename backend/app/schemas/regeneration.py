@@ -23,6 +23,11 @@ class ChapterRegenerateRequest(BaseModel):
     
     # 自定义修改指令
     custom_instructions: Optional[str] = Field(None, description="用户自定义的修改要求")
+
+    # AI配置
+    preset_id: Optional[str] = Field(None, description="本次使用的API配置预设ID")
+    provider: Optional[str] = Field(None, description="AI提供商")
+    model: Optional[str] = Field(None, description="AI模型")
     
     # 保留配置
     preserve_elements: Optional[PreserveElementsConfig] = Field(None, description="保留元素配置")
@@ -62,4 +67,3 @@ class RegenerationTaskStatus(BaseModel):
     original_word_count: Optional[int] = None
     regenerated_word_count: Optional[int] = None
     version_number: Optional[int] = None
-

@@ -1,9 +1,14 @@
 import { useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react';
-import { Button, Input, Modal, message, theme } from 'antd';
+import { Button, Form, Input, Modal, message, theme } from 'antd';
 import type { ButtonProps } from 'antd';
 import type { FormInstance } from 'antd/es/form';
 import { HighlightOutlined } from '@ant-design/icons';
 import { polishApi } from '../services/api';
+import {
+  AIDialogConfigPanel,
+  resolveAIDialogConfig,
+  type ResolvedAIDialogConfig,
+} from './AIDialogConfigPanel';
 
 const { TextArea } = Input;
 
@@ -51,6 +56,37 @@ function ResultPreview({ title, content, tone = 'normal', maxHeight = 180 }: Res
   );
 }
 
+type EditableResultPreviewProps = ResultPreviewProps & {
+  onChange: (value: string) => void;
+};
+
+function EditableResultPreview({ title, content, onChange, tone = 'primary', maxHeight = 240 }: EditableResultPreviewProps) {
+  const { token } = theme.useToken();
+  const borderColor = tone === 'info'
+    ? token.colorInfoBorder
+    : tone === 'primary'
+      ? token.colorPrimaryBorder
+      : token.colorBorderSecondary;
+
+  return (
+    <div>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>{title}</div>
+      <TextArea
+        defaultValue={content}
+        autoSize={{ minRows: 5, maxRows: 12 }}
+        onChange={(event) => onChange(event.target.value)}
+        style={{
+          maxHeight,
+          overflowY: 'auto',
+          lineHeight: 1.7,
+          borderColor,
+          background: token.colorBgContainer,
+        }}
+      />
+    </div>
+  );
+}
+
 type ConfirmAIResultOptions = {
   modalApi: AIFieldModalApi;
   label: string;
@@ -62,7 +98,7 @@ type ConfirmAIResultOptions = {
   okText?: string;
   cancelText?: string;
   sourceTitle?: string;
-  onApply: () => void;
+  onApply: (aiText: string) => void;
 };
 
 export function confirmAIFieldResult({
@@ -78,6 +114,8 @@ export function confirmAIFieldResult({
   sourceTitle,
   onApply,
 }: ConfirmAIResultOptions) {
+  let editedAiText = aiText;
+
   modalApi.confirm({
     title: `${label} AI结果`,
     icon: <HighlightOutlined />,
@@ -101,11 +139,19 @@ export function confirmAIFieldResult({
               maxHeight={160}
             />
           )}
-          <ResultPreview title="AI结果" content={aiText} tone="primary" maxHeight={240} />
+          <EditableResultPreview
+            title="AI结果（可编辑）"
+            content={aiText}
+            tone="primary"
+            maxHeight={240}
+            onChange={(value) => {
+              editedAiText = value;
+            }}
+          />
         </div>
       </div>
     ),
-    onOk: onApply,
+    onOk: () => onApply(editedAiText.trim()),
   });
 }
 
@@ -176,9 +222,15 @@ export function AIFieldAssistButton({
   sourceTitle,
 }: AIFieldAssistButtonProps) {
   const [loading, setLoading] = useState(false);
+  const [assistForm] = Form.useForm();
   const { token } = theme.useToken();
 
-  const runAI = async (sourceText: string, instruction: string, currentValue: string) => {
+  const runAI = async (
+    sourceText: string,
+    instruction: string,
+    currentValue: string,
+    aiConfig: ResolvedAIDialogConfig,
+  ) => {
     const mode = currentValue ? 'polish' : 'complete';
     const trimmedInstruction = instruction.trim();
     const closeLoading = message.loading(`正在处理${label}...`, 0);
@@ -188,8 +240,9 @@ export function AIFieldAssistButton({
       const result = await polishApi.polishText({
         original_text: sourceText,
         project_id: projectId,
-        provider,
-        model,
+        preset_id: aiConfig.preset_id,
+        provider: aiConfig.provider || provider,
+        model: aiConfig.model || model,
         temperature: mode === 'polish'
           ? temperature?.polish ?? 0.65
           : temperature?.complete ?? 0.8,
@@ -212,7 +265,7 @@ export function AIFieldAssistButton({
         instruction: trimmedInstruction,
         notice: resultNotice,
         sourceTitle,
-        onApply: () => onApply(nextText),
+        onApply: (editedText) => onApply(maxLength ? editedText.slice(0, maxLength) : editedText),
       });
     } catch (error) {
       console.error(`${label} AI处理失败:`, error);
@@ -226,7 +279,7 @@ export function AIFieldAssistButton({
   const handleClick = () => {
     const currentValue = getCurrentValue().trim();
     const sourceText = currentValue || getSourceText();
-    let instruction = '';
+    assistForm.resetFields();
 
     modalApi.confirm({
       title: `${label} AI处理要求`,
@@ -236,18 +289,18 @@ export function AIFieldAssistButton({
       okText: currentValue ? '开始润色' : '开始补全',
       cancelText: '取消',
       content: (
-        <div style={{ marginTop: 12 }}>
+        <Form form={assistForm} layout="vertical" style={{ marginTop: 12 }}>
           <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
             {currentValue ? filledHelpText : emptyHelpText}
           </div>
-          <TextArea
-            rows={4}
-            placeholder={placeholder}
-            autoFocus
-            onChange={(event) => {
-              instruction = event.target.value;
-            }}
-          />
+          <Form.Item name="instruction" style={{ marginBottom: 12 }}>
+            <TextArea
+              rows={4}
+              placeholder={placeholder}
+              autoFocus
+            />
+          </Form.Item>
+          <AIDialogConfigPanel form={assistForm} compact />
           <div style={{ marginTop: 12 }}>
             <ResultPreview
               title={currentValue ? '当前内容' : '生成依据'}
@@ -255,9 +308,13 @@ export function AIFieldAssistButton({
               maxHeight={120}
             />
           </div>
-        </div>
+        </Form>
       ),
-      onOk: () => runAI(sourceText, instruction, currentValue),
+      onOk: async () => {
+        const values = await assistForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
+        await runAI(sourceText, values.instruction || '', currentValue, aiConfig);
+      },
     });
   };
 
@@ -321,9 +378,14 @@ export function PolishableTextArea({
   textAreaStyle,
 }: PolishableTextAreaProps) {
   const [isPolishing, setIsPolishing] = useState(false);
+  const [polishForm] = Form.useForm();
   const { token } = theme.useToken();
 
-  const runPolish = async (currentValue: string, instruction: string) => {
+  const runPolish = async (
+    currentValue: string,
+    instruction: string,
+    aiConfig: ResolvedAIDialogConfig,
+  ) => {
     const closeLoading = message.loading(`正在润色${label}...`, 0);
     try {
       setIsPolishing(true);
@@ -333,8 +395,9 @@ export function PolishableTextArea({
       const result = await polishApi.polishText({
         original_text: currentValue,
         project_id: projectId,
-        provider: selectedProvider || undefined,
-        model: selectedModel || undefined,
+        preset_id: aiConfig.preset_id,
+        provider: aiConfig.provider || selectedProvider || undefined,
+        model: aiConfig.model || selectedModel || undefined,
         temperature: 0.7,
         instruction: trimmedInstruction || undefined,
       });
@@ -355,8 +418,8 @@ export function PolishableTextArea({
         okText: '应用润色结果',
         cancelText: '保留原文',
         sourceTitle: '原文',
-        onApply: () => {
-          form.setFieldsValue({ [name]: maxLength ? polishedText.slice(0, maxLength) : polishedText });
+        onApply: (editedText) => {
+          form.setFieldsValue({ [name]: maxLength ? editedText.slice(0, maxLength) : editedText });
           message.success(`${label}已应用润色结果`);
         },
       });
@@ -376,7 +439,7 @@ export function PolishableTextArea({
       return;
     }
 
-    let instruction = '';
+    polishForm.resetFields();
     modalApi.confirm({
       title: `${label}润色要求`,
       icon: <HighlightOutlined />,
@@ -385,24 +448,28 @@ export function PolishableTextArea({
       okText: '开始润色',
       cancelText: '取消',
       content: (
-        <div style={{ marginTop: 12 }}>
+        <Form form={polishForm} layout="vertical" style={{ marginTop: 12 }}>
           <div style={{ marginBottom: 12, color: token.colorTextSecondary }}>
             输入本次希望 AI 如何处理这段内容；留空则使用默认去 AI 味润色。
           </div>
-          <TextArea
-            rows={4}
-            placeholder="例如：保留原意，只让表达更自然；压缩到两句话；强化时代感；不要新增设定..."
-            autoFocus
-            onChange={(event) => {
-              instruction = event.target.value;
-            }}
-          />
+          <Form.Item name="instruction" style={{ marginBottom: 12 }}>
+            <TextArea
+              rows={4}
+              placeholder="例如：保留原意，只让表达更自然；压缩到两句话；强化时代感；不要新增设定..."
+              autoFocus
+            />
+          </Form.Item>
+          <AIDialogConfigPanel form={polishForm} compact />
           <div style={{ marginTop: 12 }}>
             <ResultPreview title="原文" content={currentValue} maxHeight={120} />
           </div>
-        </div>
+        </Form>
       ),
-      onOk: () => runPolish(currentValue, instruction),
+      onOk: async () => {
+        const values = await polishForm.validateFields();
+        const aiConfig = await resolveAIDialogConfig(values);
+        await runPolish(currentValue, values.instruction || '', aiConfig);
+      },
     });
   };
 

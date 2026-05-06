@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Modal, Input, Button, Space, Radio, InputNumber, Card, message, Alert, Spin, Typography, Divider, theme } from 'antd';
+import { Modal, Form, Input, Button, Space, Radio, InputNumber, Card, message, Alert, Spin, Typography, Divider, theme } from 'antd';
 import { ThunderboltOutlined, CheckOutlined, ReloadOutlined, EditOutlined, LoadingOutlined } from '@ant-design/icons';
 import { chapterApi } from '../services/api';
+import { AIDialogConfigPanel, resolveAIDialogConfig } from './AIDialogConfigPanel';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -46,6 +47,7 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
   const [progressMessage, setProgressMessage] = useState('');
   const [appliedStartPosition, setAppliedStartPosition] = useState(startPosition);
   const [appliedEndPosition, setAppliedEndPosition] = useState(endPosition);
+  const [aiConfigForm] = Form.useForm();
   const abortControllerRef = useRef<AbortController | null>(null);
   const generatedTextRef = useRef<HTMLDivElement>(null);
 
@@ -62,8 +64,9 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       setProgressMessage('');
       setAppliedStartPosition(startPosition);
       setAppliedEndPosition(endPosition);
+      aiConfigForm.resetFields();
     }
-  }, [visible, selectedText, startPosition, endPosition]);
+  }, [visible, selectedText, startPosition, endPosition, aiConfigForm]);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -77,6 +80,8 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
       message.warning('请输入重写要求');
       return;
     }
+    const aiConfigValues = await aiConfigForm.validateFields();
+    const aiConfig = await resolveAIDialogConfig(aiConfigValues);
 
     setIsGenerating(true);
     setGeneratedText('');
@@ -99,6 +104,9 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
           start_position: startPosition,
           end_position: endPosition,
           user_instructions: userInstructions,
+          preset_id: aiConfig.preset_id,
+          provider: aiConfig.provider,
+          model: aiConfig.model,
           context_chars: 1000,
           style_id: styleId,
           length_mode: lengthMode,
@@ -324,6 +332,12 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
         />
       </div>
 
+      <div style={{ marginBottom: 16 }}>
+        <Form form={aiConfigForm} layout="vertical">
+          <AIDialogConfigPanel form={aiConfigForm} disabled={isGenerating} compact />
+        </Form>
+      </div>
+
       {/* 长度模式选择 */}
       <div style={{ marginBottom: 16 }}>
         <Text strong style={{ display: 'block', marginBottom: 8 }}>
@@ -429,27 +443,36 @@ export const PartialRegenerateModal: React.FC<PartialRegenerateModalProps> = ({
             }}
           >
             {generatedText ? (
-              <Paragraph
-                style={{
-                  margin: 0,
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: 1.8,
-                }}
-              >
-                {generatedText}
-                {isGenerating && (
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: 8,
-                      height: 16,
-                      background: token.colorPrimary,
-                      marginLeft: 2,
-                      animation: 'blink 1s infinite',
-                    }}
-                  />
-                )}
-              </Paragraph>
+              hasGenerated && !isGenerating ? (
+                <TextArea
+                  value={generatedText}
+                  onChange={(event) => setGeneratedText(event.target.value)}
+                  rows={8}
+                  style={{ lineHeight: 1.8 }}
+                />
+              ) : (
+                <Paragraph
+                  style={{
+                    margin: 0,
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.8,
+                  }}
+                >
+                  {generatedText}
+                  {isGenerating && (
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: 8,
+                        height: 16,
+                        background: token.colorPrimary,
+                        marginLeft: 2,
+                        animation: 'blink 1s infinite',
+                      }}
+                    />
+                  )}
+                </Paragraph>
+              )
             ) : (
               <div style={{ textAlign: 'center', padding: 20, color: token.colorTextTertiary }}>
                 {isGenerating ? '正在生成内容...' : '等待生成...'}

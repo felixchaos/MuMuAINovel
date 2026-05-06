@@ -61,7 +61,11 @@ from app.services.chapter_regenerator import ChapterRegenerator
 from app.services.txt_parser_service import txt_parser_service
 from app.services.name_authority_service import build_name_authority
 from app.logger import get_logger
-from app.api.settings import get_user_ai_service, get_user_ai_service_from_db_by_usage
+from app.api.settings import (
+    get_user_ai_service,
+    get_user_ai_service_from_db_by_preset,
+    get_user_ai_service_from_db_by_usage,
+)
 from app.utils.sse_response import (
     HEARTBEAT,
     SSEResponse,
@@ -4348,6 +4352,12 @@ async def regenerate_chapter_stream(
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
         raise HTTPException(status_code=401, detail="未登录")
+    user_ai_service = await get_user_ai_service_from_db_by_preset(
+        user_id,
+        db,
+        preset_id=regenerate_request.preset_id,
+        fallback_usage="polish",
+    )
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -4825,6 +4835,12 @@ async def partial_regenerate_stream(
     user_id = getattr(request.state, 'user_id', None)
     if not user_id:
         raise HTTPException(status_code=401, detail="未登录")
+    user_ai_service = await get_user_ai_service_from_db_by_preset(
+        user_id,
+        db,
+        preset_id=partial_request.preset_id,
+        fallback_usage="polish",
+    )
     
     # 验证章节存在
     chapter_result = await db.execute(
@@ -5074,6 +5090,8 @@ async def partial_regenerate_stream(
                 async for chunk in wrap_stream_with_heartbeat(
                     user_ai_service.generate_text_stream(
                         prompt=effective_prompt,
+                        provider=partial_request.provider,
+                        model=partial_request.model,
                         max_tokens=calculated_max_tokens
                     ),
                     heartbeat_interval=15.0

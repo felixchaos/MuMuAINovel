@@ -130,6 +130,7 @@ class CharacterBatchRegenerateRequest(BaseModel):
     project_id: str = Field(..., description="项目ID")
     character_ids: List[str] = Field(..., min_length=1, description="要修正的角色/组织ID列表")
     requirements: str = Field(..., min_length=1, description="修正要求")
+    preset_id: Optional[str] = Field(None, description="本次使用的API配置预设ID")
     provider: Optional[str] = Field(None, description="AI提供商")
     model: Optional[str] = Field(None, description="AI模型")
     enable_mcp: bool = Field(True, description="是否启用MCP工具增强")
