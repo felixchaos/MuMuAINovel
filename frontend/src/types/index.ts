@@ -527,6 +527,9 @@ export interface ChapterImportResponse {
 export interface ChapterGenerateRequest {
   style_id?: number;
   target_word_count?: number;
+  enable_mcp?: boolean;
+  model?: string;
+  narrative_perspective?: string;
 }
 
 // 章节生成检查响应

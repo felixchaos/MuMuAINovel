@@ -306,7 +306,14 @@ export function useChapterSync() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let detail = '';
+        try {
+          const errorBody = await response.json();
+          detail = errorBody?.detail || errorBody?.message || '';
+        } catch {
+          detail = await response.text().catch(() => '');
+        }
+        throw new Error(detail || `HTTP error! status: ${response.status}`);
       }
 
       const reader = response.body?.getReader();

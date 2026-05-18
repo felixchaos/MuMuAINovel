@@ -759,18 +759,12 @@ export default function Chapters() {
   const chapterGenerateGateMap = useMemo(() => {
     const gateMap: Record<string, { canGenerate: boolean; reason: string }> = {};
     const incompleteChapterNumbers: number[] = [];
-    const unanalyzedChapters: Array<{ chapterNumber: number; reason: string }> = [];
 
     sortedChapters.forEach((chapter) => {
       if (incompleteChapterNumbers.length > 0) {
         gateMap[chapter.id] = {
           canGenerate: false,
           reason: `需要先完成前置章节：第 ${incompleteChapterNumbers.join('、')} 章`
-        };
-      } else if (unanalyzedChapters.length > 0) {
-        gateMap[chapter.id] = {
-          canGenerate: false,
-          reason: `需要先分析前置章节：第 ${unanalyzedChapters.map(c => c.chapterNumber).join('、')} 章 (${unanalyzedChapters.map(c => c.reason).join('、')})`
         };
       } else {
         gateMap[chapter.id] = { canGenerate: true, reason: '' };
@@ -780,23 +774,10 @@ export default function Chapters() {
       if (!chapter.content || chapter.content.trim() === '') {
         incompleteChapterNumbers.push(chapter.chapter_number);
       }
-
-      const task = analysisTasksMap[chapter.id];
-      if (!task || !task.has_task) {
-        unanalyzedChapters.push({ chapterNumber: chapter.chapter_number, reason: '未分析' });
-      } else if (task.status === 'pending') {
-        unanalyzedChapters.push({ chapterNumber: chapter.chapter_number, reason: '等待分析' });
-      } else if (task.status === 'running') {
-        unanalyzedChapters.push({ chapterNumber: chapter.chapter_number, reason: '分析中' });
-      } else if (task.status === 'failed') {
-        unanalyzedChapters.push({ chapterNumber: chapter.chapter_number, reason: '分析失败' });
-      } else if (task.status !== 'completed') {
-        unanalyzedChapters.push({ chapterNumber: chapter.chapter_number, reason: '状态未知' });
-      }
     });
 
     return gateMap;
-  }, [sortedChapters, analysisTasksMap]);
+  }, [sortedChapters]);
 
   // 当前可被“一键分析”的章节（有内容且未处于完成/进行中）
   const batchAnalyzableChapterCount = useMemo(() => {
@@ -1310,8 +1291,8 @@ export default function Chapters() {
     }
   };
 
-  const handleGenerate = async () => {
-    if (!editingId) return;
+  const handleGenerate = async (targetChapterId: string | null = editingId) => {
+    if (!targetChapterId) return;
 
     try {
       setIsContinuing(true);
@@ -1319,9 +1300,12 @@ export default function Chapters() {
       setSingleChapterProgress(0);
       setSingleChapterProgressMessage('准备开始生成...');
 
+      const shouldStreamToEditor = isEditorOpen && targetChapterId === editingId;
       const result = await generateChapterContentStream(
-        editingId,
+        targetChapterId,
         (content) => {
+          if (!shouldStreamToEditor) return;
+
           editorForm.setFieldsValue({ content });
 
           if (contentTextAreaRef.current) {
@@ -1349,17 +1333,22 @@ export default function Chapters() {
         const taskId = result.analysis_task_id;
         setAnalysisTasksMap(prev => ({
           ...prev,
-          [editingId]: {
+          [targetChapterId]: {
             has_task: true,
             task_id: taskId,
-            chapter_id: editingId,
+            chapter_id: targetChapterId,
             status: 'pending',
             progress: 0
           }
         }));
 
         // 启动轮询
-        startPollingTask(editingId);
+        startPollingTask(targetChapterId);
+      }
+
+      if (currentProject?.id) {
+        const updatedProject = await projectApi.getProject(currentProject.id);
+        setCurrentProject(updatedProject);
       }
     } catch (error) {
       const apiError = error as ApiError;
@@ -1450,7 +1439,7 @@ export default function Chapters() {
             });
             return;
           }
-          await handleGenerate();
+          await handleGenerate(chapter.id);
           instance.destroy();
         } catch {
           instance.update({
@@ -2320,6 +2309,27 @@ export default function Chapters() {
     }
   };
 
+  const renderGenerateButton = (chapter: Chapter, compact = false) => {
+    const canGenerate = canGenerateChapter(chapter);
+    const disabledReason = getGenerateDisabledReason(chapter);
+    const hasContent = Boolean(chapter.content && chapter.content.trim() !== '');
+    const label = hasContent ? '重写' : '创作';
+
+    return (
+      <Button
+        type={compact ? 'text' : hasContent ? 'text' : 'primary'}
+        icon={canGenerate ? <ThunderboltOutlined /> : <LockOutlined />}
+        onClick={() => showGenerateModal(chapter)}
+        disabled={!canGenerate || isGenerating || isContinuing}
+        loading={isContinuing && editingId === chapter.id}
+        size={compact ? 'small' : undefined}
+        title={!canGenerate ? disabledReason : hasContent ? '重新创作本章内容' : '生成本章内容'}
+      >
+        {compact ? undefined : label}
+      </Button>
+    );
+  };
+
   // 显示展开规划详情
   const showExpansionPlanModal = (chapter: Chapter) => {
     if (!chapter.expansion_plan) return;
@@ -2658,7 +2668,12 @@ export default function Chapters() {
   const handleOpenFullChapterRegenerate = () => {
     const content = String(editorForm.getFieldValue('content') || '');
     if (!content.trim()) {
-      message.warning('章节内容为空，无法重写');
+      const currentChapter = editingId ? chapters.find(c => c.id === editingId) : null;
+      if (currentChapter) {
+        showGenerateModal(currentChapter);
+      } else {
+        message.warning('章节内容为空，请先选择要创作的章节');
+      }
       return;
     }
 
@@ -2899,6 +2914,7 @@ export default function Chapters() {
                   >
                     编辑
                   </Button>,
+                  renderGenerateButton(item),
                   (() => {
                     const task = analysisTasksMap[item.id];
                     const isAnalyzing = task && (task.status === 'pending' || task.status === 'running');
@@ -2985,6 +3001,7 @@ export default function Chapters() {
                         size="small"
                         title="编辑"
                       />
+                      {renderGenerateButton(item, true)}
                       {(() => {
                         const task = analysisTasksMap[item.id];
                         const isAnalyzing = task && (task.status === 'pending' || task.status === 'running');
@@ -3085,6 +3102,7 @@ export default function Chapters() {
                         >
                           编辑
                         </Button>,
+                        renderGenerateButton(item),
                         (() => {
                           const task = analysisTasksMap[item.id];
                           const isAnalyzing = task && (task.status === 'pending' || task.status === 'running');
@@ -3210,6 +3228,7 @@ export default function Chapters() {
                               size="small"
                               title="编辑"
                             />
+                            {renderGenerateButton(item, true)}
                             {(() => {
                               const task = analysisTasksMap[item.id];
                               const isAnalyzing = task && (task.status === 'pending' || task.status === 'running');
@@ -3489,19 +3508,12 @@ export default function Chapters() {
             name="title"
             tooltip={
               currentProject.outline_mode === 'one-to-one'
-                ? "章节标题由大纲管理，请在大纲页面修改"
+                ? "传统模式下修改章节标题会同步更新对应大纲标题"
                 : "一对多模式下可以修改章节标题"
             }
-            rules={
-              currentProject.outline_mode === 'one-to-many'
-                ? [{ required: true, message: '请输入章节标题' }]
-                : undefined
-            }
+            rules={[{ required: true, message: '请输入章节标题' }]}
           >
-            <Input
-              placeholder="输入章节标题"
-              disabled={currentProject.outline_mode === 'one-to-one'}
-            />
+            <Input placeholder="输入章节标题" />
           </Form.Item>
 
           <Form.Item
@@ -3565,12 +3577,16 @@ export default function Chapters() {
           {/* 章节标题和AI创作按钮 */}
           <Form.Item
             label="章节标题"
-            tooltip="（1-1模式请在大纲修改，1-N模式请使用修改按钮编辑）"
+            tooltip={
+              currentProject.outline_mode === 'one-to-one'
+                ? "修改后会同步更新对应大纲标题"
+                : "修改后保存即可更新章节标题"
+            }
             style={{ marginBottom: isMobile ? 16 : 12 }}
           >
             <Space.Compact style={{ width: '100%' }}>
               <Form.Item name="title" noStyle>
-                <Input disabled style={{ flex: 1 }} />
+                <Input disabled={isGenerating} style={{ flex: 1 }} />
               </Form.Item>
               <Button
                 icon={<ThunderboltOutlined />}
@@ -3775,7 +3791,7 @@ export default function Chapters() {
                 onClick={handleOpenFullChapterRegenerate}
                 disabled={isGenerating}
               >
-                提示词重写整章
+                生成/重写整章
               </Button>
               <Button
                 size="small"

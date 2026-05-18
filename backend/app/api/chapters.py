@@ -705,7 +705,7 @@ async def update_chapter(
     
     # 验证用户权限
     user_id = getattr(request.state, 'user_id', None)
-    await verify_project_access(chapter.project_id, user_id, db)
+    project = await verify_project_access(chapter.project_id, user_id, db)
     
     # 记录旧字数
     old_word_count = chapter.word_count or 0
@@ -714,6 +714,26 @@ async def update_chapter(
     update_data = chapter_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(chapter, field, value)
+
+    # 传统模式下一条大纲对应一章，允许在章节侧改标题并同步回大纲。
+    if "title" in update_data and project.outline_mode == "one-to-one":
+        outline_result = await db.execute(
+            select(Outline).where(
+                Outline.project_id == chapter.project_id,
+                Outline.order_index == chapter.chapter_number
+            )
+        )
+        outline = outline_result.scalar_one_or_none()
+        if outline:
+            outline.title = chapter.title
+            if outline.structure:
+                try:
+                    structure_data = json.loads(outline.structure)
+                    structure_data["title"] = chapter.title
+                    outline.structure = json.dumps(structure_data, ensure_ascii=False)
+                except json.JSONDecodeError:
+                    logger.warning(f"章节侧同步标题时，大纲 {outline.id} 的structure字段格式错误")
+            logger.info(f"一对一模式：章节 {chapter.id} 标题已同步到大纲 {outline.id}")
     
     # 如果内容更新了，重新计算字数（包括清空内容的情况）
     if "content" in update_data:
