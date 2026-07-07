@@ -21,15 +21,26 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const route = chooseRoute(request, url);
-    const targetHost = shouldUseCanonicalApi(url) ? env.CN_ORIGIN_HOST : (
+    const canonicalApi = shouldUseCanonicalApi(url);
+    const targetHost = canonicalApi ? env.CN_ORIGIN_HOST : (
       route === "us" ? env.US_ORIGIN_HOST : env.CN_ORIGIN_HOST
     );
+    const originOverrideUrl = getOriginOverrideUrl(env, route, canonicalApi);
 
     const targetUrl = new URL(request.url);
-    targetUrl.protocol = "https:";
-    targetUrl.hostname = targetHost;
+    if (originOverrideUrl) {
+      targetUrl.protocol = originOverrideUrl.protocol;
+      targetUrl.hostname = originOverrideUrl.hostname;
+      targetUrl.port = originOverrideUrl.port;
+    } else {
+      targetUrl.protocol = "https:";
+      targetUrl.hostname = targetHost;
+    }
 
     const upstreamHeaders = new Headers(request.headers);
+    if (originOverrideUrl) {
+      upstreamHeaders.set("Host", targetHost);
+    }
     upstreamHeaders.set("X-Forwarded-Host", env.ENTRY_HOST);
     upstreamHeaders.set("X-NovelAI-Route", route);
 
@@ -49,6 +60,22 @@ export default {
     return normalizeResponse(upstreamResponse, env, route, url);
   },
 };
+
+function getOriginOverrideUrl(env, route, canonicalApi) {
+  if (canonicalApi && env.CN_API_ORIGIN_URL) {
+    return new URL(env.CN_API_ORIGIN_URL);
+  }
+
+  if ((canonicalApi || route === "cn") && env.CN_ORIGIN_URL) {
+    return new URL(env.CN_ORIGIN_URL);
+  }
+
+  if (!canonicalApi && route === "us" && env.US_ORIGIN_URL) {
+    return new URL(env.US_ORIGIN_URL);
+  }
+
+  return null;
+}
 
 function chooseRoute(request, url) {
   const forced = url.searchParams.get("__route");
@@ -80,6 +107,7 @@ function isImmutableStaticAsset(url) {
 
 function normalizeResponse(response, env, route, url) {
   const headers = new Headers(response.headers);
+  stripHopByHopHeaders(headers);
   rewriteLocation(headers, env);
   headers.set("X-NovelAI-Route", route);
 
@@ -100,6 +128,31 @@ function normalizeResponse(response, env, route, url) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function stripHopByHopHeaders(headers) {
+  const connectionHeader = headers.get("Connection");
+  if (connectionHeader) {
+    for (const header of connectionHeader.split(",")) {
+      const name = header.trim();
+      if (name) {
+        headers.delete(name);
+      }
+    }
+  }
+
+  for (const header of [
+    "Connection",
+    "Keep-Alive",
+    "Proxy-Authenticate",
+    "Proxy-Authorization",
+    "TE",
+    "Trailer",
+    "Transfer-Encoding",
+    "Upgrade",
+  ]) {
+    headers.delete(header);
+  }
 }
 
 function rewriteLocation(headers, env) {
