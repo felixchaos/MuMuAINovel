@@ -27,12 +27,26 @@ cleanup_http_clients = cleanup_all_clients
 
 logger = get_logger(__name__)
 
+OPENAI_COMPATIBLE_PROVIDERS = {"openai", "azure", "custom", "deepseek"}
+
 
 def normalize_provider(provider: Optional[str]) -> Optional[str]:
     """标准化 provider 名称，兼容渠道别名。"""
     if provider == "mumu":
         return "openai"
     return provider
+
+
+def is_openai_compatible_provider(provider: Optional[str]) -> bool:
+    """判断 provider 是否走 OpenAI Chat Completions 兼容客户端。"""
+    return normalize_provider(provider) in OPENAI_COMPATIBLE_PROVIDERS
+
+
+def default_base_url_for_provider(provider: Optional[str]) -> str:
+    """返回 OpenAI 兼容 provider 的默认基础地址。"""
+    if normalize_provider(provider) == "deepseek":
+        return "https://api.deepseek.com"
+    return "https://api.openai.com/v1"
 
 
 class AIService:
@@ -106,13 +120,15 @@ class AIService:
         self._anthropic_provider: Optional[AnthropicProvider] = None
         self._gemini_provider: Optional[GeminiProvider] = None
         
-        # 初始化 OpenAI
-        openai_key = api_key if self.api_provider == "openai" else app_settings.openai_api_key
+        # 初始化 OpenAI 兼容客户端
+        openai_like = is_openai_compatible_provider(self.api_provider)
+        openai_key = api_key if openai_like else app_settings.openai_api_key
         if openai_key:
-            base_url = api_base_url if self.api_provider == "openai" else app_settings.openai_base_url
-            if self.api_provider == "openai":
-                self.api_base_url = base_url or "https://api.openai.com/v1"
-            client = OpenAIClient(openai_key, base_url or "https://api.openai.com/v1", self.config)
+            base_url = api_base_url if openai_like else app_settings.openai_base_url
+            default_base_url = default_base_url_for_provider(self.api_provider)
+            if openai_like:
+                self.api_base_url = base_url or default_base_url
+            client = OpenAIClient(openai_key, base_url or default_base_url, self.config)
             self._openai_provider = OpenAIProvider(client)
         
         # 初始化 Anthropic
@@ -163,7 +179,7 @@ class AIService:
     def _get_provider(self, provider: Optional[str] = None) -> BaseAIProvider:
         """获取对应的 Provider"""
         p = normalize_provider(provider or self.api_provider)
-        if p == "openai" and self._openai_provider:
+        if is_openai_compatible_provider(p) and self._openai_provider:
             return self._openai_provider
         if p == "anthropic" and self._anthropic_provider:
             return self._anthropic_provider

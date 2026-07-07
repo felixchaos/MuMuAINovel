@@ -27,7 +27,13 @@ from app.schemas.settings import (
 from app.user_manager import User
 from app.logger import get_logger
 from app.config import settings as app_settings, PROJECT_ROOT
-from app.services.ai_service import AIService, create_user_ai_service, create_user_ai_service_with_mcp, normalize_provider
+from app.services.ai_service import (
+    AIService,
+    create_user_ai_service,
+    create_user_ai_service_with_mcp,
+    is_openai_compatible_provider,
+    normalize_provider,
+)
 from app.services.email_service import email_service
 from app.security import validate_public_http_url
 
@@ -69,6 +75,79 @@ def _set_cached_models(cache_key: str, payload: Dict[str, Any]) -> Dict[str, Any
     response_payload["cached"] = False
     response_payload["cache_ttl_seconds"] = MODEL_LIST_CACHE_TTL_SECONDS
     return response_payload
+
+
+def _extract_httpx_error_message(exc: Exception) -> str:
+    """把上游 API 错误整理成前端可读的信息。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        detail = ""
+        try:
+            data = response.json()
+            error_payload = data.get("error") if isinstance(data, dict) else None
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("message") or error_payload.get("type") or "")
+            elif isinstance(error_payload, str):
+                detail = error_payload
+            elif isinstance(data, dict):
+                detail = str(data.get("message") or data.get("detail") or "")
+        except Exception:
+            detail = response.text.strip()
+
+        if not detail:
+            detail = response.reason_phrase or "上游 API 返回错误"
+        return f"HTTP {response.status_code}: {detail[:500]}"
+
+    return str(exc)
+
+
+def _build_api_error_suggestions(error_msg: str, provider: Optional[str] = None) -> List[str]:
+    """根据常见 API 错误给出更具体的排查建议。"""
+    normalized_provider = normalize_provider(provider)
+    lower_error = error_msg.lower()
+    is_deepseek = normalized_provider == "deepseek"
+
+    if "401" in error_msg or "unauthorized" in lower_error or "authentication" in lower_error:
+        suggestions = [
+            "API Key 认证失败，请检查 Key 是否完整、未过期，并确认没有复制多余空格",
+            "请确认 API Base URL 与 Key 所属平台一致",
+        ]
+        if is_deepseek:
+            suggestions.append("DeepSeek 官方 Key 请搭配 https://api.deepseek.com 使用")
+        return suggestions
+
+    if "402" in error_msg or "insufficient" in lower_error or "balance" in lower_error or "quota" in lower_error:
+        return [
+            "账户余额或配额不足，请检查 API 平台余额",
+            "如果刚充值，请稍后重试或到供应商控制台确认额度已生效",
+        ]
+
+    if "404" in error_msg or "not found" in lower_error or "model" in lower_error and "not" in lower_error:
+        suggestions = [
+            "模型不存在或当前 Key 无权访问该模型",
+            "请检查模型名称是否正确",
+        ]
+        if is_deepseek:
+            suggestions.append("DeepSeek 官方建议使用 deepseek-v4-flash 或 deepseek-v4-pro")
+        return suggestions
+
+    if "429" in error_msg or "rate limit" in lower_error:
+        return [
+            "API 请求频率超限，请稍后重试",
+            "如频繁出现，请检查供应商套餐限制或降低并发调用",
+        ]
+
+    if "blocked" in lower_error or "region" in lower_error:
+        return [
+            "请求被 API 提供商阻止，可能是 Key 状态、地区或风控限制",
+            "请检查 API 平台账号状态，必要时更换可用的 API Base URL",
+        ]
+
+    return [
+        "请检查 API Key、API Base URL、模型名称是否与供应商一致",
+        "请确认当前服务器可以访问该 API 地址",
+        "可先点击获取模型列表，确认该 Key 能读到可用模型",
+    ]
 
 
 class CoverSettingsTestRequest(BaseModel):
@@ -692,7 +771,7 @@ async def get_available_models(
             return cached_models
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            if provider == "openai" or provider == "azure" or provider == "custom":
+            if is_openai_compatible_provider(provider):
                 # OpenAI 兼容接口获取模型列表
                 url = f"{api_base_url.rstrip('/')}/models"
                 headers = {
@@ -758,15 +837,30 @@ async def get_available_models(
                 raise HTTPException(status_code=400, detail=f"不支持的提供商: {provider}")
             
     except httpx.HTTPStatusError as e:
-        logger.error(f"获取模型列表失败 (HTTP {e.response.status_code}): {e.response.text}")
+        error_msg = _extract_httpx_error_message(e)
+        logger.error(f"获取模型列表失败: {error_msg}")
+        provider_name = normalize_provider(provider)
+        if e.response.status_code == 401:
+            detail = "API Key 认证失败，无法获取模型列表"
+            if provider_name == "deepseek":
+                detail = "DeepSeek 官方 API Key 认证失败，请确认 Key 正确，并使用 https://api.deepseek.com"
+            raise HTTPException(status_code=400, detail=detail)
         if e.response.status_code == 404:
+            endpoint = f"{api_base_url.rstrip('/')}/models"
+            if provider_name == "deepseek":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"DeepSeek 官方模型列表接口不可用或地址不正确，请确认 API Base URL 为 https://api.deepseek.com。当前请求地址: {endpoint}"
+                )
             raise HTTPException(
                 status_code=400,
-                detail=f"该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {api_base_url.rstrip('/')}/models"
+                detail=f"该 API 提供商不支持模型列表查询接口 (/models 返回 404)，请手动输入模型名称。当前请求地址: {endpoint}"
             )
+        if e.response.status_code == 402:
+            raise HTTPException(status_code=400, detail="账户余额或配额不足，无法获取模型列表")
         raise HTTPException(
             status_code=400,
-            detail=f"无法从 API 获取模型列表 (HTTP {e.response.status_code})"
+            detail=f"无法从 API 获取模型列表 ({error_msg})"
         )
     except httpx.RequestError as e:
         logger.error(f"请求模型列表失败: {str(e)}")
@@ -948,7 +1042,7 @@ async def check_function_calling_support(
         return result
         
     except ValueError as e:
-        error_msg = str(e)
+        error_msg = _extract_httpx_error_message(e)
         logger.error(f"❌ Function Calling 检测配置错误: {error_msg}")
         return {
             "success": False,
@@ -956,11 +1050,7 @@ async def check_function_calling_support(
             "message": "配置错误",
             "error": error_msg,
             "error_type": "ConfigurationError",
-            "suggestions": [
-                "请检查 API Key 是否正确",
-                "请确认 API Base URL 格式是否正确",
-                "请验证所选提供商与配置是否匹配"
-            ]
+            "suggestions": _build_api_error_suggestions(error_msg, provider)
         }
         
     except TimeoutError as e:
@@ -980,7 +1070,7 @@ async def check_function_calling_support(
         }
         
     except Exception as e:
-        error_msg = str(e)
+        error_msg = _extract_httpx_error_message(e)
         error_type = type(e).__name__
         
         logger.error(f"❌ Function Calling 检测失败: {error_msg}")
@@ -988,30 +1078,16 @@ async def check_function_calling_support(
         
         # 智能分析错误原因
         suggestions = []
-        if "tool" in error_msg.lower() or "function" in error_msg.lower():
+        if "401" in error_msg or "unauthorized" in error_msg.lower() or "authentication" in error_msg.lower():
+            suggestions = _build_api_error_suggestions(error_msg, provider)
+        elif "tool" in error_msg.lower() or "function" in error_msg.lower():
             suggestions = [
                 "该模型可能不支持 Function Calling 功能",
                 "API 返回了与工具调用相关的错误",
                 "建议：更换支持工具调用的模型或联系 API 提供商"
             ]
-        elif "unauthorized" in error_msg.lower() or "401" in error_msg:
-            suggestions = [
-                "API Key 认证失败",
-                "请检查 API Key 是否正确且有效",
-                "请确认 API Key 是否有足够的权限"
-            ]
-        elif "not found" in error_msg.lower() or "404" in error_msg:
-            suggestions = [
-                "模型不存在或不可用",
-                "请检查模型名称是否正确",
-                "请确认该模型在当前 API 中是否可用"
-            ]
         else:
-            suggestions = [
-                "检测过程中遇到未知错误",
-                "建议：检查所有配置参数是否正确",
-                "提示：查看详细错误信息以获取更多线索"
-            ]
+            suggestions = _build_api_error_suggestions(error_msg, provider)
         
         return {
             "success": False,
@@ -1111,18 +1187,14 @@ async def test_api_connection(
         
     except ValueError as e:
         # 配置错误
-        error_msg = str(e)
+        error_msg = _extract_httpx_error_message(e)
         logger.error(f"❌ API 配置错误: {error_msg}")
         return {
             "success": False,
             "message": "API 配置错误",
             "error": error_msg,
             "error_type": "ConfigurationError",
-            "suggestions": [
-                "请检查 API Key 是否正确",
-                "请确认 API Base URL 格式正确",
-                "请验证所选提供商是否匹配"
-            ]
+            "suggestions": _build_api_error_suggestions(error_msg, provider)
         }
         
     except TimeoutError as e:
@@ -1143,51 +1215,14 @@ async def test_api_connection(
         
     except Exception as e:
         # 其他错误
-        error_msg = str(e)
+        error_msg = _extract_httpx_error_message(e)
         error_type = type(e).__name__
         
         logger.error(f"❌ API 测试失败: {error_msg}")
         logger.error(f"  - 错误类型: {error_type}")
         
         # 分析错误原因并提供建议
-        suggestions = []
-        if "blocked" in error_msg.lower():
-            suggestions = [
-                "请求被 API 提供商阻止",
-                "可能原因：API Key 被限制或地区限制",
-                "建议：检查 API Key 状态和账户余额",
-                "建议：尝试更换 API Base URL 或使用代理"
-            ]
-        elif "unauthorized" in error_msg.lower() or "401" in error_msg:
-            suggestions = [
-                "API Key 认证失败",
-                "建议：检查 API Key 是否正确",
-                "建议：确认 API Key 是否过期"
-            ]
-        elif "not found" in error_msg.lower() or "404" in error_msg:
-            suggestions = [
-                "API 端点不存在或模型不可用",
-                "建议：检查 API Base URL 是否正确",
-                "建议：确认模型名称是否正确"
-            ]
-        elif "rate limit" in error_msg.lower() or "429" in error_msg:
-            suggestions = [
-                "API 请求频率超限",
-                "建议：稍后重试",
-                "建议：升级 API 套餐"
-            ]
-        elif "insufficient" in error_msg.lower() or "quota" in error_msg.lower():
-            suggestions = [
-                "API 配额不足",
-                "建议：检查账户余额",
-                "建议：充值或升级套餐"
-            ]
-        else:
-            suggestions = [
-                "请检查所有配置参数是否正确",
-                "请确认网络连接正常",
-                "请查看详细错误信息"
-            ]
+        suggestions = _build_api_error_suggestions(error_msg, provider)
         
         return {
             "success": False,

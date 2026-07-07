@@ -327,6 +327,15 @@ export default function SettingsPage() {
 
   const mumuTextDefaultUrl = 'https://api.mumuverse.space/v1';
   const mumuRegisterUrl = 'https://api.mumuverse.space/register?aff=4NN8';
+  const deepseekModelOptions = [
+    { value: 'deepseek-v4-flash', label: 'deepseek-v4-flash', description: 'DeepSeek 官方推荐，响应更快' },
+    { value: 'deepseek-v4-pro', label: 'deepseek-v4-pro', description: 'DeepSeek 官方推荐，能力更强' },
+    { value: 'deepseek-chat', label: 'deepseek-chat', description: '旧版兼容别名，将于 2026-07-24 停用' },
+    { value: 'deepseek-reasoner', label: 'deepseek-reasoner', description: '旧版兼容别名，将于 2026-07-24 停用' },
+  ];
+  const getFallbackModelOptions = (provider?: string) => (
+    provider === 'deepseek' ? deepseekModelOptions : []
+  );
   const mumuCoverBaseUrlOptions = [
     { value: 'https://api.mumuverse.space/v1beta', label: 'https://api.mumuverse.space/v1beta', defaultModel: 'gemini-3.1-flash-image-preview' },
     { value: 'https://api.mumuverse.space/v1', label: 'https://api.mumuverse.space/v1', defaultModel: 'gpt-image-1.5' },
@@ -346,6 +355,12 @@ export default function SettingsPage() {
       defaultUrl: mumuTextDefaultUrl,
       defaultModel: 'gemini-3-flash-preview'
     },
+    {
+      value: 'deepseek',
+      label: 'DeepSeek 官方',
+      defaultUrl: 'https://api.deepseek.com',
+      defaultModel: 'deepseek-v4-flash'
+    },
     { value: 'openai', label: 'OpenAI Compatible', defaultUrl: 'https://api.openai.com/v1' },
     { value: 'anthropic', label: 'Anthropic (Claude)', defaultUrl: 'https://api.anthropic.com' },
     { value: 'gemini', label: 'Google Gemini', defaultUrl: 'https://generativelanguage.googleapis.com/v1beta' },
@@ -362,14 +377,16 @@ export default function SettingsPage() {
       if (provider.defaultUrl) {
         nextValues.api_base_url = provider.defaultUrl;
       }
+      if (provider.defaultModel) {
+        nextValues.llm_model = provider.defaultModel;
+      }
       if (provider.value === 'mumu') {
         nextValues.api_key = '';
-        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
       }
       form.setFieldsValue(nextValues);
     }
     // 清空模型列表，需要重新获取
-    setModelOptions([]);
+    setModelOptions(getFallbackModelOptions(value));
     setModelsFetched(false);
   };
 
@@ -470,7 +487,7 @@ export default function SettingsPage() {
         provider: provider || 'openai'
       });
 
-      setModelOptions(response.models);
+      setModelOptions(response.models.length > 0 ? response.models : getFallbackModelOptions(provider));
       setModelsFetched(true);
       if (!silent) {
         message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
@@ -481,7 +498,7 @@ export default function SettingsPage() {
       if (!silent) {
         message.error(errorMsg);
       }
-      setModelOptions([]);
+      setModelOptions(getFallbackModelOptions(provider));
       setModelsFetched(true); // 即使失败也标记为已尝试，避免重复请求
     } finally {
       setFetchingModels(false);
@@ -489,6 +506,10 @@ export default function SettingsPage() {
   };
 
   const handleModelSelectFocus = () => {
+    const provider = form.getFieldValue('api_provider');
+    if (modelOptions.length === 0) {
+      setModelOptions(getFallbackModelOptions(provider));
+    }
     // 如果还没有获取过模型列表，自动获取
     if (!modelsFetched && !fetchingModels) {
       handleFetchModels(true); // silent模式，不显示成功消息
@@ -620,7 +641,7 @@ export default function SettingsPage() {
         provider: provider || 'openai'
       });
 
-      setPresetModelOptions(response.models);
+      setPresetModelOptions(response.models.length > 0 ? response.models : getFallbackModelOptions(provider));
       setPresetModelsFetched(true);
       if (!silent) {
         message.success(`成功获取 ${response.count || response.models.length} 个可用模型`);
@@ -631,7 +652,7 @@ export default function SettingsPage() {
       if (!silent) {
         message.error(errorMsg);
       }
-      setPresetModelOptions([]);
+      setPresetModelOptions(getFallbackModelOptions(provider));
       setPresetModelsFetched(true);
     } finally {
       setFetchingPresetModels(false);
@@ -640,6 +661,10 @@ export default function SettingsPage() {
 
   // 预设编辑窗口：模型选择框获得焦点时自动获取
   const handlePresetModelSelectFocus = () => {
+    const provider = presetForm.getFieldValue('api_provider');
+    if (presetModelOptions.length === 0) {
+      setPresetModelOptions(getFallbackModelOptions(provider));
+    }
     if (!presetModelsFetched && !fetchingPresetModels) {
       handleFetchPresetModels(true);
     }
@@ -653,14 +678,16 @@ export default function SettingsPage() {
       if (provider.defaultUrl) {
         nextValues.api_base_url = provider.defaultUrl;
       }
+      if (provider.defaultModel) {
+        nextValues.llm_model = provider.defaultModel;
+      }
       if (provider.value === 'mumu') {
         nextValues.api_key = '';
-        nextValues.llm_model = provider.defaultModel || 'gemini-3-flash-preview';
       }
       presetForm.setFieldsValue(nextValues);
     }
     // 清空模型列表，需要重新获取
-    setPresetModelOptions([]);
+    setPresetModelOptions(getFallbackModelOptions(value));
     setPresetModelsFetched(false);
   };
 
@@ -984,6 +1011,8 @@ export default function SettingsPage() {
         return 'green';
       case 'mumu':
         return 'magenta';
+      case 'deepseek':
+        return 'cyan';
       default:
         return 'default';
     }
@@ -1476,6 +1505,16 @@ export default function SettingsPage() {
                                   </div>
                                 </Space>
                               }
+                              style={{ marginBottom: 16 }}
+                            />
+                          )}
+
+                          {selectedProvider === 'deepseek' && (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="DeepSeek 官方配置"
+                              description="已自动填入官方地址。模型建议使用 deepseek-v4-flash 或 deepseek-v4-pro；deepseek-chat 和 deepseek-reasoner 是旧版兼容别名，将于 2026-07-24 15:59 UTC 停用。"
                               style={{ marginBottom: 16 }}
                             />
                           )}
@@ -2139,6 +2178,16 @@ export default function SettingsPage() {
                         </div>
                       </Space>
                     }
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
+
+                {selectedPresetProvider === 'deepseek' && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="DeepSeek 官方配置"
+                    description="已自动填入官方地址。模型建议使用 deepseek-v4-flash 或 deepseek-v4-pro；deepseek-chat 和 deepseek-reasoner 是旧版兼容别名，将于 2026-07-24 15:59 UTC 停用。"
                     style={{ marginBottom: 16 }}
                   />
                 )}
